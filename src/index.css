@@ -1,0 +1,694 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xs: calc(var(--radius) - 6px);
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.75rem;
+  --background: #f5f3ff;
+  --foreground: #1e1b4b;
+  --card: rgba(255, 255, 255, 0.65);
+  --card-foreground: #1e1b4b;
+  --popover: rgba(255, 255, 255, 0.85);
+  --popover-foreground: #1e1b4b;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --secondary: #818cf8;
+  --secondary-foreground: #1e1b4b;
+  --muted: #ede9fe;
+  --muted-foreground: #6d6693;
+  --accent: #e0e7ff;
+  --accent-foreground: #4338ca;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(99, 102, 241, 0.18);
+  --input: rgba(255, 255, 255, 0.6);
+  --ring: #6366f1;
+  --chart-1: #6366f1;
+  --chart-2: #818cf8;
+  --chart-3: #10b981;
+  --chart-4: #f59e0b;
+  --chart-5: #ec4899;
+  --sidebar: rgba(255, 255, 255, 0.5);
+  --sidebar-foreground: #1e1b4b;
+  --sidebar-primary: #6366f1;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(99, 102, 241, 0.1);
+  --sidebar-accent-foreground: #6366f1;
+  --sidebar-border: rgba(99, 102, 241, 0.15);
+  --sidebar-ring: #6366f1;
+}
+
+.dark {
+  --background: #0f0a24;
+  --foreground: #ede9fe;
+  --card: rgba(30, 27, 75, 0.5);
+  --card-foreground: #ede9fe;
+  --popover: rgba(30, 27, 75, 0.85);
+  --popover-foreground: #ede9fe;
+  --primary: #818cf8;
+  --primary-foreground: #0f0a24;
+  --secondary: #6366f1;
+  --secondary-foreground: #ede9fe;
+  --muted: rgba(99, 102, 241, 0.15);
+  --muted-foreground: #a5b4fc;
+  --accent: rgba(129, 140, 248, 0.28);
+  --accent-foreground: #c7d2fe;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(129, 140, 248, 0.2);
+  --input: rgba(30, 27, 75, 0.6);
+  --ring: #818cf8;
+  --chart-1: #818cf8;
+  --chart-2: #6366f1;
+  --chart-3: #10b981;
+  --chart-4: #f59e0b;
+  --chart-5: #ec4899;
+  --sidebar: rgba(30, 27, 75, 0.5);
+  --sidebar-foreground: #ede9fe;
+  --sidebar-primary: #818cf8;
+  --sidebar-primary-foreground: #0f0a24;
+  --sidebar-accent: rgba(129, 140, 248, 0.15);
+  --sidebar-accent-foreground: #818cf8;
+  --sidebar-border: rgba(129, 140, 248, 0.2);
+  --sidebar-ring: #818cf8;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html, body, #root {
+    @apply h-full;
+  }
+  body {
+    @apply text-foreground antialiased;
+    font-family: 'Open Sans', system-ui, -apple-system, sans-serif;
+    background:
+      radial-gradient(ellipse 80% 60% at 0% 0%, rgba(99, 102, 241, 0.18) 0%, transparent 60%),
+      radial-gradient(ellipse 70% 50% at 100% 0%, rgba(16, 185, 129, 0.15) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 50% at 50% 100%, rgba(129, 140, 248, 0.15) 0%, transparent 60%),
+      linear-gradient(135deg, #f5f3ff 0%, #ede9fe 50%, #e0e7ff 100%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+  .dark body {
+    background:
+      radial-gradient(ellipse 80% 60% at 0% 0%, rgba(99, 102, 241, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse 70% 50% at 100% 0%, rgba(16, 185, 129, 0.18) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 50% at 50% 100%, rgba(129, 140, 248, 0.2) 0%, transparent 60%),
+      linear-gradient(135deg, #0f0a24 0%, #1e1b4b 50%, #312e81 100%);
+    background-attachment: fixed;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Poppins', system-ui, sans-serif;
+    @apply font-semibold tracking-tight;
+  }
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: var(--card);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid var(--border);
+  }
+  .glass-strong {
+    background: rgba(255, 255, 255, 0.75);
+    backdrop-filter: blur(24px) saturate(200%);
+    -webkit-backdrop-filter: blur(24px) saturate(200%);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+  }
+  .dark .glass-strong {
+    background: rgba(30, 27, 75, 0.6);
+    border: 1px solid rgba(129, 140, 248, 0.25);
+  }
+  /* Radix 菜单项高亮兜底：不依赖 Tailwind 编译，必然生效 */
+  [data-slot='dropdown-menu-item'],
+  [data-slot='dropdown-menu-checkbox-item'],
+  [data-slot='dropdown-menu-radio-item'] {
+    outline: none;
+  }
+  [data-slot='dropdown-menu-item']:hover,
+  [data-slot='dropdown-menu-item'][data-highlighted],
+  [data-slot='dropdown-menu-checkbox-item']:hover,
+  [data-slot='dropdown-menu-checkbox-item'][data-highlighted],
+  [data-slot='dropdown-menu-radio-item']:hover,
+  [data-slot='dropdown-menu-radio-item'][data-highlighted] {
+    background-color: var(--accent);
+    color: var(--accent-foreground);
+  }
+  [data-slot='dropdown-menu-item'][data-variant='destructive']:hover,
+  [data-slot='dropdown-menu-item'][data-variant='destructive'][data-highlighted] {
+    background-color: rgba(239, 68, 68, 0.08);
+    color: #ef4444;
+  }
+  .gradient-text {
+    background: linear-gradient(135deg, #6366f1 0%, #818cf8 50%, #10b981 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .gradient-bg {
+    background: linear-gradient(135deg, #6366f1 0%, #818cf8 50%, #10b981 100%);
+  }
+  .gradient-border {
+    position: relative;
+  }
+  .gradient-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(135deg, #6366f1, #818cf8, #10b981);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  .float-animation {
+    animation: float 6s ease-in-out infinite;
+  }
+  .float-animation-delay {
+    animation: float 6s ease-in-out infinite;
+    animation-delay: -2s;
+  }
+  .pulse-glow {
+    animation: pulseGlow 2.5s ease-in-out infinite;
+  }
+  .shimmer {
+    background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.1), transparent);
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite;
+  }
+  /* 编辑器与预览共用一套滚动条外观。
+     CodeMirror 的滚动发生在 .cm-scroller 上，它用的是浏览器默认滚动条——
+     更宽、更灰，和预览侧那条细靛蓝的并排时像是两个不同的界面。
+     把它并进 .scrollbar-thin 的规则组，两侧就成了同一样东西。 */
+  .scrollbar-thin,
+  .cm-scroller {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(99, 102, 241, 0.3) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar,
+  .cm-scroller::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track,
+  .cm-scroller::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb,
+  .cm-scroller::-webkit-scrollbar-thumb {
+    background: rgba(99, 102, 241, 0.3);
+    border-radius: 3px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover,
+  .cm-scroller::-webkit-scrollbar-thumb:hover {
+    background: rgba(99, 102, 241, 0.5);
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-12px); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 24px rgba(99, 102, 241, 0.3); }
+  50% { box-shadow: 0 0 36px rgba(99, 102, 241, 0.5); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-slide-in {
+  animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Markdown preview styles (markdown-body) */
+.markdown-body {
+  color: var(--foreground);
+  line-height: 1.7;
+  word-wrap: break-word;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0 !important;
+}
+
+/*
+ * 标题层级：字号 + 装饰 + 颜色三重递减。
+ *
+ * 只靠字号区分层级是不可靠的：h3 1.1em 与 h4 1.05em 在正文里几乎看不出差别，
+ * 读者只觉得「这一段怪怪的」却说不清哪里不对。因此每级都配了形态互不相同的
+ * 视觉标记——即使对字号不敏感，也能凭装饰判断当前处在第几层。
+ *
+ * 字号必须逐级显式给出。Tailwind preflight 把 h1-h6 统一设成
+ * font-size: inherit，这里漏掉的级别会静默退回正文字号——层级在预览里
+ * 凭空消失且不报任何错，只会「看着怪但说不出哪里不对」。
+ * 上下间距也随层级递减：越高的标题越该有章节感，越低的越贴近正文。
+ */
+.markdown-body :is(h1, h2, h3, h4, h5, h6) {
+  /* Poppins 只含拉丁字形，汉字会逐字符回落到系统 sans-serif，
+     中英混排时字形与字重都不统一（西文偏几何、汉字偏细）。补中文字体栈后，
+     汉字固定走苹方/雅黑/思源，西文仍保留 Poppins。 */
+  font-family: 'Poppins', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+  font-weight: 600;
+  /* 标题多是长句，balance 让各行长度接近，避免末行只剩一两个字 */
+  text-wrap: balance;
+  /* 大纲跳转走 scrollIntoView(block:'start')，留出间距，避免标题贴住容器顶边 */
+  scroll-margin-top: 1.5rem;
+}
+
+/* L1 文档标题：主色 + 粗底边，全篇唯一的强锚点 */
+.markdown-body h1 {
+  font-size: 2em;
+  /* 大字号配窄行高，否则标题上下会撑出大片空白 */
+  line-height: 1.3;
+  margin-top: 1.4em;
+  margin-bottom: 0.55em;
+  /* 主色做视觉锚点，一眼定位文档标题；var(--primary) 深浅色模式各自适配 */
+  color: var(--primary);
+  padding-bottom: 0.35em;
+  border-bottom: 2px solid color-mix(in srgb, var(--primary) 40%, transparent);
+}
+
+/* L2 章节：撤掉主色，只留一条浅分隔线 */
+.markdown-body h2 {
+  font-size: 1.5em;
+  line-height: 1.4;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+
+/* L3 小节：改用左侧竖条，形态与上两级的「横线」明确不同，不会认错层级 */
+.markdown-body h3 {
+  font-size: 1.24em;
+  line-height: 1.45;
+  margin-top: 1.4em;
+  margin-bottom: 0.45em;
+  padding-left: 0.75em;
+  border-left: 3px solid var(--primary);
+}
+
+/*
+ * L4 及以下不再加装饰：横线与竖条都已用尽，再叠加只会把正文压花。
+ * 改为字色弱化 + 字重递减，字号守在 1em 以上——缩到与正文等大就会被
+ * 读成普通段落，那才是真正的层级丢失。
+ */
+.markdown-body h4 {
+  font-size: 1.1em;
+  line-height: 1.5;
+  margin-top: 1.3em;
+  margin-bottom: 0.4em;
+}
+.markdown-body h5 {
+  font-size: 1em;
+  line-height: 1.5;
+  margin-top: 1.2em;
+  margin-bottom: 0.35em;
+  color: var(--muted-foreground);
+}
+/* 最深一层：与 h5 同色，靠更轻的字重与略宽的字距收束，与正文拉开质感差异 */
+.markdown-body h6 {
+  font-size: 0.9em;
+  line-height: 1.5;
+  margin-top: 1.15em;
+  margin-bottom: 0.35em;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--muted-foreground);
+}
+
+.markdown-body p {
+  margin: 0.8em 0;
+}
+
+.markdown-body a {
+  color: #6366f1;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.markdown-body a:hover {
+  border-bottom-color: #6366f1;
+}
+
+.markdown-body code {
+  background: rgba(99, 102, 241, 0.1);
+  color: #6366f1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+}
+
+.dark .markdown-body code {
+  background: rgba(129, 140, 248, 0.2);
+  color: #a5b4fc;
+}
+
+/*
+ * 代码块在预览里折行，而不是横向滚动。
+ *
+ * 横向滚动的代价是：预览栏宽度有限，JSON 参数这类长行会被切掉一大截，
+ * 而滚动条压在代码块底部、不滚动根本看不见——读者只会以为内容就这么长。
+ * 折行后内容全在视野里，代价是列对不齐；预览是只读的，看全比对齐重要。
+ * overflow-x 保留着，万一遇到极长的不可断串（长 URL）还能兜底。
+ */
+.markdown-body pre {
+  background: rgba(30, 27, 75, 0.95);
+  border-radius: 10px;
+  padding: 16px;
+  overflow-x: auto;
+  margin: 1em 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  color: #e0e7ff;
+  padding: 0;
+  font-size: 0.85em;
+  line-height: 1.6;
+}
+
+/*
+ * 窄容器排版（Agent 面板内的润色结果）。
+ *
+ * 面板宽度上限 448px，默认排版里 16px 的代码块内边距、1.5em 的标题上边距
+ * 在单栏下也要占掉三四十像素，直接挤压本来就紧张的正文宽度，导致行内代码
+ * 更频繁地被 word-wrap: break-word 拦腰截断。
+ */
+.markdown-body-compact pre {
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin: 0.6em 0;
+}
+.markdown-body-compact :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 1em;
+  margin-bottom: 0.35em;
+  scroll-margin-top: 0.75rem;
+}
+/* 窄面板里装饰一律收窄：2px 底边显得笨重，竖条缩进也会挤占本就不宽的行宽 */
+.markdown-body-compact h1 {
+  font-size: 1.6em;
+  line-height: 1.35;
+  padding-bottom: 0.25em;
+  border-bottom-width: 1px;
+}
+.markdown-body-compact h2 { font-size: 1.3em; line-height: 1.4; }
+.markdown-body-compact h3 {
+  font-size: 1.12em;
+  line-height: 1.45;
+  padding-left: 0.5em;
+  border-left-width: 2px;
+}
+/* h4-h6 同样必须显式给出：漏掉会回落到非 compact 的字号，
+   而非 compact 的值对窄面板偏大，层级又会显得扁平 */
+.markdown-body-compact h4 { font-size: 1em; line-height: 1.5; }
+.markdown-body-compact h5 { font-size: 0.95em; }
+.markdown-body-compact h6 { font-size: 0.88em; }
+.markdown-body-compact p { margin: 0.5em 0; }
+/*
+ * 双类名提高特异性。这三条原本写成 .markdown-body-compact ul，与后面第 461 行的
+ * .markdown-body ul 特异性完全相同（都是 0,1,1），而后者写在后面，会把这里的
+ * margin 和 padding-left 整体覆盖掉——紧凑模式在窄面板里等于没生效。
+ */
+.markdown-body.markdown-body-compact ul,
+.markdown-body.markdown-body-compact ol {
+  margin: 0.5em 0;
+  padding-left: 1.35em;
+}
+.markdown-body.markdown-body-compact li { margin: 0.15em 0; }
+.markdown-body-compact code { padding: 1px 4px; font-size: 0.85em; }
+.markdown-body-compact blockquote { margin: 0.6em 0; }
+/* 间距落在滚动容器上：table 自身的 margin 已被后面的规则归零，
+   紧凑模式若仍写 .markdown-body-compact table 会因同特异性 + 位置更靠前而失效。
+   选择器补上 .markdown-body 前缀，抬到 (0,2,1) 才压得住后面的非 compact 规则。 */
+.markdown-body.markdown-body-compact .md-table-scroll { margin: 0.6em 0; }
+.markdown-body.markdown-body-compact table th,
+.markdown-body.markdown-body-compact table td { padding: 5px 8px; font-size: 1em; }
+
+.markdown-body blockquote {
+  border-left: 4px solid #6366f1;
+  color: var(--muted-foreground);
+  padding: 4px 16px;
+  margin: 1em 0;
+  background: rgba(99, 102, 241, 0.05);
+  border-radius: 0 8px 8px 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.6em;
+  margin: 0.8em 0;
+}
+
+/*
+ * 恢复列表标记。
+ *
+ * Tailwind 的 preflight 把 ul/ol 的 list-style 清成了 none，
+ * 于是预览里的列表只剩缩进、没有圆点和序号。在分屏预览里勉强能忍，
+ * 在「正文直接改」的编辑视图里就不像一份文档了：用户照着看到的结构写，
+ * 会怀疑自己写的列表到底有没有被识别成列表。
+ *
+ * 任务列表不受影响：下面那条 li:has(> input[type='checkbox']) 的
+ * 特异性更高，仍然保持无标记（有勾选框就够了）。
+ */
+.markdown-body ul {
+  list-style: disc;
+}
+
+.markdown-body ol {
+  list-style: decimal;
+}
+
+.markdown-body li {
+  margin: 0.3em 0;
+}
+
+.markdown-body input[type='checkbox'] {
+  margin-right: 6px;
+  accent-color: #6366f1;
+}
+
+/*
+ * GFM task list（`- [ ]` / `- [x]`）。
+ *
+ * marked 的输出有两种形态：紧凑连续列表是 <li><input>…</li>，项间有空行时因为
+ * breaks:true 会多包一层 <p>。两种都要覆盖，所以下面每条规则都成对写。
+ *
+ * 复选框老老实实留在文档流里。三个坑都踩过，改之前请先读：
+ *
+ * 1. 绝对定位 + 负偏移（position:absolute; left:-1.2em）把它「退到 marker 的空档」
+ *    ——这个空档并不总是存在。窄面板里 ul 的实际缩进可能远小于 1.2em，复选框就被
+ *    甩到内容区外面、压到面板边框上（用户截图里就是这个现象）。
+ *    只要用负偏移，就必然会溢出，没有例外。
+ * 2. 千万别用 ul:has(...) 去改 ul 的 padding-left。:has() 只看「有没有」，
+ *    不看「是不是全部」——一个 ul 里只要有一个 task 项，整个 ul 的缩进就被改掉，
+ *    同列表内的普通项圆点也跟着错位。
+ * 3. display:flex 让复选框占位同样不行，那样文字列会被 checkbox宽+gap 顶得右移。
+ *
+ * 代价是 task 项的文字比同列表普通项多缩进一个复选框的宽度。这点缩进换来
+ * 「永远不会溢出」，在会横向滚动的窄面板里是明确的正确取舍。
+ */
+.markdown-body li:has(> input[type='checkbox']),
+.markdown-body li:has(> p > input[type='checkbox']) {
+  list-style: none;
+}
+
+.markdown-body li > input[type='checkbox'],
+.markdown-body li > p > input[type='checkbox'] {
+  /* 不用任何负偏移：复选框左边永远 >= li 内容左边界，不可能跑出内容区 */
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+  accent-color: #6366f1;
+}
+
+/* 已勾选项整体减淡，让未完成项在一屏内更容易被扫到 */
+.markdown-body li:has(> input[type='checkbox']:checked),
+.markdown-body li:has(> p > input[type='checkbox']:checked) {
+  color: var(--muted-foreground);
+}
+
+/*
+ * 表格：横向分隔线的「清单表」样式，不要网格。
+ *
+ * 网格（每格四边都有线）把表切成一块块小方格，读者得沿着格子一格格找对应关系；
+ * 只留横线（GitHub / Notion 的做法）时，眼睛沿着一条条横线扫下去就够了，
+ * 行的边界反而更清楚——表格本来就是给「横着读」用的。
+ *
+ * 列宽由内容决定：表格既不按比例挤压，也不硬撑满容器。
+ * min-width: 100% 会把多出来的宽度整个塞给某一列（截图里「项目」列占了半张表，
+ * 里面只有四个字），列宽与内容量就此脱钩，短表看着像被人拽开的；
+ * 去掉它，短表就贴着自己的内容站，长表（长 URL、长路径）撑出容器时
+ * 交给 .md-table-scroll 横向滚动承接。
+ */
+.md-table-scroll {
+  overflow-x: auto;
+  /* 表格两端各留一点余量，滚动到最后一行时不会紧贴卡片边缘 */
+  margin: 1em 0;
+}
+
+.markdown-body table {
+  /* separate + border-spacing:0 才有圆角：collapse 模式下边框是合并的，
+     外框切不出圆角，只能得到一个生硬的直角矩形 */
+  border-collapse: separate;
+  border-spacing: 0;
+  width: max-content;
+  /* 表格已是块内唯一内容，去掉自身外边距，避免与滚动容器间距叠加 */
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.markdown-body table th,
+.markdown-body table td {
+  padding: 8px 14px;
+  font-size: 0.95em;
+  /* 多行单元格顶对齐：默认的垂直居中会把首行推到中间，读起来像少了行 */
+  vertical-align: top;
+  /* th 浏览器默认居中、td 默认左向，两种对齐混在一张表里像两种排版拼在一起 */
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-body table thead th {
+  background: rgba(99, 102, 241, 0.08);
+  font-weight: 600;
+  color: var(--foreground);
+  /* 表头不换行：它是这一列的字段名，被折成两行会让整列读起来错位 */
+  white-space: nowrap;
+  border-bottom-color: color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+.markdown-body table tbody tr:last-child td {
+  /* 末行不再画底线：外框已经有一条，重复一条会在底部多出一道双线 */
+  border-bottom: none;
+}
+
+/* 行底色只做很浅的一层托底，不做斑马纹：
+   斑马纹在只有三四行的表里会让人误以为隔行还有别的分组 */
+.markdown-body table tr {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.dark .markdown-body table tr {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dark .markdown-body table thead th {
+  background: rgba(129, 140, 248, 0.12);
+}
+
+/* 单元格里的行内代码收紧一档：表格里多半整格只装一个代码片段，
+   默认那圈padding 会让它看着像个按钮 */
+.markdown-body table code {
+  padding: 1px 5px;
+  font-size: 0.88em;
+  border-radius: 5px;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+
+
+
+/*
+ * 目录跳转的落点提示。滚动是平滑动画，停稳时必须告诉用户落在了哪一节，
+ * 否则长文档里很容易误判位置。class 由 DocEditor 挂上、1.2s 后摘除。
+ */
+@keyframes mdhub-outline-flash {
+  0%, 100% { background-color: transparent; }
+  25%, 55% { background-color: rgba(99, 102, 241, 0.25); }
+}
+.markdown-body .outline-flash {
+  animation: mdhub-outline-flash 1.2s ease-out;
+  border-radius: 4px;
+}
