@@ -1,0 +1,48 @@
+name: CI
+
+# 每次推送与 PR 都跑一遍：类型、风格、单测、端到端自检。
+# 端到端自检需要一份可用的库与仓库目录，这里用示例数据现场生成，
+# 不依赖任何真实数据——仓库里的 data/ 本来就不该被提交。
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 起 .ts 可以直接跑（类型剥离），测试与自检脚本都依赖这一点
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: 类型检查
+        run: npx tsc -b --pretty false
+
+      - name: 代码风格
+        run: npm run lint
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 准备示例库与仓库目录
+        shell: bash
+        run: |
+          # 自检脚本要复制一份「正在使用的库」再验证，所以先造一份出来：
+          # 只导入 db.ts 就会建库、灌示例文档，并把正文写进仓库目录。
+          node -e "console.log('MDHUB_SECRET=' + require('crypto').randomBytes(32).toString('hex'))" > .env
+          echo "MDHUB_ADMIN_PASSWORD=CiCheck#2026a" >> .env
+          # --env-file-if-exists 不能省：缺 MDHUB_SECRET 时服务端会拒绝加载，
+          # 那样连库都建不出来。
+          MDHUB_SEED_DEMO=1 node --env-file-if-exists=.env -e "import('./server/db.ts')"
+
+      - name: 端到端自检
+        run: npm run verify
