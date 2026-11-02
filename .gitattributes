@@ -1,0 +1,17 @@
+# 仓库里统一存 LF，Windows 检出时再转 CRLF。
+# 不加这条，Windows 上每次改动都会产生整文件 diff，评审时噪音极大。
+* text=auto eol=lf
+
+# 批处理与 PowerShell 脚本必须是 CRLF，否则在 Windows 上可能执行异常
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制资源不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

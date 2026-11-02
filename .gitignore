@@ -1,0 +1,47 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*
+!.env.example
+
+# 服务端运行产物
+# 注意：数据库目录是项目根的 data/（server/db.ts 用 resolve(HERE, '../data/mdhub.db')，
+# HERE 即 server/，所以落在项目根而非 server/data）。
+# 规则要写成 /data/：不带前导斜杠的 data/ 匹配任意层级，
+# 会连带把 src/data/seed.ts（种子数据，该上传）一起忽略掉。
+/data/
+/server/data/
+*.db
+*.db-shm
+*.db-wal
+
+# 导出的文档正文（node scripts/docs.mjs --export 产出）
+# 默认不上传：里面是数据库里的真实内容，进公开仓库等于公开文档。
+# 确认要一起上传，就删掉下面这行。
+/content/
+
+# 运行日志：dev / dev:all / server 会把输出重定向到项目根，日志名随启动命令而变
+# （server.log、server-run.log、dev-all.log、web.log …），逐个列举必然漏掉，统一按后缀忽略
+*.log
+*.err
+*.out
+logs/
+
+# 一次性调试/验证产物（只忽略项目根下的这些文件）
+# 规则要带前导斜杠：不带的话会匹配任意层级，
+# 会连带把 scripts/verify.mjs（正式的端到端自检脚本）一起忽略掉。
+/real-check.png
+/speed.*
+/boot.*
+/verify.*
+
+# 冒烟测试的一次性目录（临时库 + 临时仓库目录，跑完就该删）
+/.smoke/
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
