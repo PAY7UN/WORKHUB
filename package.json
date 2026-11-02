@@ -5,13 +5,13 @@
   "description": "文档与原件一体化归档平台：文档与 Agent 配置存服务端，访客浏览器不持有不可见文档与模型凭据",
   "license": "MIT",
   "author": "PAY7UN",
-  "homepage": "https://github.com/PAY7UN/WorkHub#readme",
+  "homepage": "https://github.com/PAY7UN/WORKHUB#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/PAY7UN/WorkHub.git"
+    "url": "git+https://github.com/PAY7UN/WORKHUB.git"
   },
   "bugs": {
-    "url": "https://github.com/PAY7UN/WorkHub/issues"
+    "url": "https://github.com/PAY7UN/WORKHUB/issues"
   },
   "keywords": [
     "markdown",

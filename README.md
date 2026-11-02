@@ -1,6 +1,6 @@
 ﻿# WorkHub
 
-[![CI](https://github.com/PAY7UN/WorkHub/actions/workflows/ci.yml/badge.svg)](https://github.com/PAY7UN/WorkHub/actions/workflows/ci.yml)
+[![CI](https://github.com/PAY7UN/WORKHUB/actions/workflows/ci.yml/badge.svg)](https://github.com/PAY7UN/WORKHUB/actions/workflows/ci.yml)
 
 文档与原件一体化归档平台。笔记用 Markdown 写，压缩包 / 图片 / PDF 按原样存；
 文档与 Agent 配置均存储在服务端，访客浏览器不再持有模型凭据，加密文档的正文始终留在服务端。
