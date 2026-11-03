@@ -20,6 +20,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const { makeTrayImages } = require('./icon.cjs');
+const { fetchStatus, fetchLogs, restartServer, manageToken } = require('./manage.cjs');
 
 const DEFAULT_PORT = 8787;
 /** 连续崩溃多少次后不再自动重启——服务起不来时反复重启只会刷日志、占 CPU */
@@ -39,6 +40,10 @@ let config = null;
 /** 运行路径：开发态与打包态的差别全在这里 */
 let paths = null;
 let tray = null;
+/** remote 模式：最近一次从服务器拿到的状态，给菜单显示用 */
+let remoteInfo = null;
+/** remote 模式：上次拉状态的时间，用来限流 */
+let remoteFetchAt = 0;
 /** 当前拉起的服务进程（remote 模式恒为 null） */
 let child = null;
 /** 用户主动点的「停止服务」——这种退出不该被当成崩溃而拉起来 */
@@ -113,7 +118,11 @@ function loadConfig() {
   ];
   for (const file of candidates) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // 去掉 BOM：Windows 上记事本、PowerShell 写出来的 UTF-8 文件都带 BOM，
+      // 而 JSON.parse 不认它。一个 BOM 不该让托盘悄悄退回默认模式——
+      // 退回意味着 remote 变成本地，看起来像是「连不上服务器」。
+      const raw = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+      const parsed = JSON.parse(raw);
       const merged = { ...DEFAULTS, ...parsed };
       merged.configFile = file;
       return merged;
@@ -322,8 +331,38 @@ function stopService() {
 
 /* --------------------------------- 菜单 --------------------------------- */
 
+/** 把秒数说成人话 */
+function formatUptime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (days) return `${days} 天 ${hours} 小时`;
+  if (hours) return `${hours} 小时 ${minutes} 分`;
+  if (minutes) return `${minutes} 分 ${total % 60} 秒`;
+  return `${total} 秒`;
+}
+
+/** 字节数说成人话 */
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return '未知';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 function statusLabel() {
-  if (config.mode === 'remote') return `WorkHub（远程 ${config.target}）`;
+  if (config.mode === 'remote') {
+    // 远端模式显示的是「那台服务器」的状态，不是本机的
+    const detail = !remoteInfo
+      ? '连接中'
+      : remoteInfo.online
+        ? `运行中${remoteInfo.version ? ` v${remoteInfo.version}` : ''}`
+        : '离线';
+    return `WorkHub（远程 ${config.target} · ${detail}）`;
+  }
   return status === 'running' ? 'WorkHub（运行中）' : 'WorkHub（已停止）';
 }
 
@@ -354,10 +393,129 @@ function refreshMenu() {
         click: stopService,
       },
     );
+  } else {
+    // remote 模式：这一组是「管那台服务器」的动作
+    template.push(
+      { type: 'separator' },
+      { label: '查看服务器状态', click: showRemoteStatus },
+      { label: '查看最近日志', click: showRemoteLogs },
+      { label: '重启服务器', click: confirmRemoteRestart },
+    );
   }
   template.push({ type: 'separator' }, { label: '退出', click: quit });
   tray.setContextMenu(Menu.buildFromTemplate(template));
   tray.setToolTip(statusLabel());
+}
+
+/* ------------------------------ 远端管理动作 ------------------------------ */
+
+/** 把远端调用失败原样告诉使用者，别让错误消失在控制台里 */
+function reportRemoteError(title, err) {
+  log(`${title}失败：${err?.message ?? err}`);
+  dialog.showMessageBox({
+    type: 'error',
+    title,
+    message: `${title}失败`,
+    detail: String(err?.message ?? err),
+    buttons: ['好'],
+  });
+}
+
+/** 服务器状态详情 */
+async function showRemoteStatus() {
+  try {
+    const info = await fetchStatus(config);
+    const counts = info.counts ?? {};
+    const supervisor = info.supervisor?.detected
+      ? `${info.supervisor.detected}${info.supervisor.managedByTray ? '（托盘托管）' : ''}`
+      : '无（裸跑）';
+    dialog.showMessageBox({
+      type: 'info',
+      title: '服务器状态',
+      message: `${config.target} · v${info.version ?? '未知'}`,
+      detail: [
+        `运行时长：${formatUptime(info.uptime)}`,
+        `进程：pid ${info.pid} · ${info.runtime?.node ?? '?'} · ${info.runtime?.platform ?? '?'}`,
+        `内存：${formatBytes(info.memory?.rss)}（堆 ${formatBytes(info.memory?.heapUsed)}）`,
+        `数据库：${info.database?.path ?? '?'}（${formatBytes(info.database?.sizeBytes)}）`,
+        `内容：仓库 ${counts.repos ?? '?'} 个 · 节点 ${counts.nodes ?? '?'} 条 · 用户 ${counts.users ?? '?'} 个`,
+        `托管方式：${supervisor}`,
+      ].join('\n'),
+      buttons: ['好'],
+    });
+  } catch (err) {
+    reportRemoteError('查看服务器状态', err);
+  }
+}
+
+/** 最近日志 */
+async function showRemoteLogs() {
+  try {
+    const data = await fetchLogs(config, 60);
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+    dialog.showMessageBox({
+      type: 'info',
+      title: '服务器最近日志',
+      message: lines.length ? `最近 ${lines.length} 行` : '（暂时没有日志）',
+      detail: lines.length ? lines.join('\n') : '（空）',
+      buttons: ['好'],
+    });
+  } catch (err) {
+    reportRemoteError('查看最近日志', err);
+  }
+}
+
+/** 重启服务器（先问一句——这一步会短暂中断服务） */
+async function confirmRemoteRestart() {
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    title: '重启服务器',
+    message: '确定要重启这台服务器吗？',
+    detail: '重启期间服务会短暂不可用。已经在跑的请求会被中断。',
+    buttons: ['取消', '重启'],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  if (response !== 1) return;
+  try {
+    const result = await restartServer(config);
+    log(`已请求重启服务器：${result.strategy}（${result.detail}）`);
+    dialog.showMessageBox({
+      type: 'info',
+      title: '重启服务器',
+      message: '已发出重启请求',
+      detail: `${result.strategy}：${result.detail}`,
+      buttons: ['好'],
+    });
+  } catch (err) {
+    reportRemoteError('重启服务器', err);
+  }
+}
+
+/**
+ * 拉一次远端状态，给菜单显示用。
+ *
+ * 限流到 15 秒一次：菜单上的信息不需要秒级新鲜，
+ * 而服务器那边可能是个跑在树莓派上的小机器。
+ */
+async function refreshRemoteInfo() {
+  if (!manageToken(config)) return;
+  const now = Date.now();
+  if (now - remoteFetchAt < 15000) return;
+  remoteFetchAt = now;
+  const wasOnline = remoteInfo?.online;
+  try {
+    const info = await fetchStatus(config);
+    remoteInfo = { ...info, online: true };
+    if (wasOnline !== true) {
+      log(`远端在线：${config.target} v${info.version ?? '?'}，已运行 ${formatUptime(info.uptime)}`);
+    }
+  } catch (err) {
+    remoteInfo = { online: false };
+    // 只在状态翻转时记：每 15 秒一条同样的话会把真正的异常淹掉
+    if (wasOnline !== false) log(`远端连不上：${config.target}（${err?.message ?? err}）`);
+  }
+  refreshMenu();
 }
 
 function quit() {
@@ -422,10 +580,12 @@ app.whenReady().then(async () => {
   setInterval(async () => {
     const alive = await probe();
     const next = alive ? 'running' : 'stopped';
-    if (next === status) return;
+    const changed = next !== status;
     status = next;
     if (alive) restarts = 0; // 活过一次就说明这次不是崩溃循环
-    refreshMenu();
+    if (changed) refreshMenu();
+    // remote 模式：顺带拉一次服务器详情，让菜单能显示版本与运行时长
+    if (config.mode === 'remote') void refreshRemoteInfo();
   }, 3000);
 
   // 自动化验证用的钩子：菜单动作没法在无人值守下点，测试时用环境变量触发同一条路径。
@@ -437,6 +597,20 @@ app.whenReady().then(async () => {
       if (testAction === 'stop') stopService();
       else quit();
     }, 5000);
+  }
+  // remote 模式的动作同理：走的是同一套客户端，只是不弹窗，把结果记进日志
+  if (testAction && testAction.startsWith('manage-')) {
+    setTimeout(async () => {
+      log(`测试钩子触发：${testAction}`);
+      try {
+        if (testAction === 'manage-status') log(`状态：${JSON.stringify(await fetchStatus(config))}`);
+        else if (testAction === 'manage-logs') log(`日志：${JSON.stringify(await fetchLogs(config, 5))}`);
+        else log(`重启：${JSON.stringify(await restartServer(config))}`);
+      } catch (err) {
+        log(`远端调用失败：${err?.message ?? err}`);
+      }
+      quit();
+    }, 4000);
   }
 
   // 本地版：托盘启动时服务没在跑就把它拉起来

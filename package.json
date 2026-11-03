@@ -31,6 +31,7 @@
     "pack:tray": "node scripts/pack-tray.mjs",
     "dev:all": "concurrently -n api,web -c magenta,cyan \"npm run server\" \"npm run dev\"",
     "admin:password": "node --env-file-if-exists=.env server/resetAdminPassword.ts",
+    "manage:token": "node --env-file-if-exists=.env server/manageToken.ts",
     "docs:list": "node scripts/docs.mjs --list",
     "docs:export": "node scripts/docs.mjs --export",
     "test": "node --test",

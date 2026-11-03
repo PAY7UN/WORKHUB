@@ -173,6 +173,25 @@ CREATE TABLE IF NOT EXISTS agent_usage (
   created_at         INTEGER NOT NULL
 );
 
+-- 机器令牌：运维面板（托盘 remote 模式）用的长期凭证。
+--
+-- 它只认令牌，不认用户会话：服务器上没有浏览器登录的时候，
+-- 运维机器仍要能问一句「服务还活着吗」「最近报了什么错」。
+--
+-- 库里只存哈希。明文只在发放那一刻出现一次，丢了就再发一把——
+-- 令牌是高熵随机串（不是人选的密码），所以用 sha256 足够，
+-- 不需要 scrypt 那套慢哈希来拖慢暴力破解。
+--
+-- 撤销靠 revoked_at 而不是删行：删了就看不出「这把令牌曾经存在过」。
+CREATE TABLE IF NOT EXISTS manage_tokens (
+  id           TEXT PRIMARY KEY,
+  label        TEXT NOT NULL DEFAULT '',
+  token_hash   TEXT NOT NULL UNIQUE,
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER,
+  revoked_at   INTEGER
+);
+
 -- 访客会话：让「谁申请的」有个可追的落点
 CREATE TABLE IF NOT EXISTS guest_sessions (
   id           TEXT PRIMARY KEY,

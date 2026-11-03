@@ -34,6 +34,28 @@ function readLogLevel(): LogLevel {
 export const LOG_LEVEL = readLogLevel();
 
 /**
+ * 最近日志的内存环形缓冲。
+ *
+ * 服务端日志只往 stdout/stderr 写，不落盘——运维在另一台机器上想看
+ * 「刚才报了什么错」，总不能 SSH 上去 tail 一把。所以这里留一份最近的行，
+ * 供 /api/manage/logs 取用（见 server/manage.ts）。
+ *
+ * 只留 500 行：够看清一次故障的前因后果，又不至于让长跑进程的内存无界增长。
+ * 缓冲里的行已经过脱敏（emit 里 redact 过），不会把密钥带出去。
+ *
+ * `notice` 走的是另一条路（不经 emit），因此不进缓冲——
+ * 那条通道用来交付一次性密码，不能让它在接口里躺着。
+ */
+const RING_SIZE = 500;
+const recentLines: string[] = [];
+
+/** 取最近若干行日志（默认 200，最多不超过缓冲长度） */
+export function recentLogLines(limit = 200): string[] {
+  const count = Math.max(0, Math.min(limit, recentLines.length));
+  return recentLines.slice(-count);
+}
+
+/**
  * 把任意入参格式化成一行文本。
  *
  * Error 只取 name: message——堆栈在 info 级是噪音，在 debug 级才是定位线索；
@@ -67,6 +89,9 @@ function emit(level: EmitLevel, message: string, args: unknown[]): void {
   if (level === 'error' || level === 'fatal') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);
+  // 留一份在内存里，供运维接口读取（已脱敏，可安全外发）
+  recentLines.push(line);
+  if (recentLines.length > RING_SIZE) recentLines.shift();
 }
 
 export const logger = {

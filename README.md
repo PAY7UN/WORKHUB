@@ -29,13 +29,17 @@ mdhub/
 │  ├─ dingtalk.ts   钉钉接入：加签、工作通知、钉钉待办
 │  ├─ reminderScheduler.ts 提醒调度：30 秒一轮巡检到期的提醒
 │  ├─ guests.ts     访客会话：httpOnly cookie 承载的访客身份
-│  ├─ logger.ts     统一日志出口：分级、脱敏、路径脱敏
-│  └─ *.test.ts     node --test 用例（password / loginThrottle / logger / docCrypto / docAccess / accessGrant / dingtalk）
+│  ├─ manage.ts     运维接口：状态 / 最近日志 / 重启（认机器令牌，不认用户会话）
+│  ├─ manageTokens.ts 机器令牌：发放、校验、列出、撤销（库里只存哈希）
+│  ├─ manageToken.ts 机器令牌的命令行入口（npm run manage:token）
+│  ├─ logger.ts     统一日志出口：分级、脱敏、路径脱敏，兼带最近 500 行的内存缓冲
+│  └─ *.test.ts     node --test 用例（password / loginThrottle / logger / docCrypto / docAccess / accessGrant / dingtalk / manage）
 ├─ scripts/         工具：docs.mjs（文档查看/导出）、verify.mjs（端到端自检）、
 │                   pack-tray.mjs（组装服务 payload + 调 electron-builder 出安装包）
 ├─ electron-builder.yml 托盘工具的打包配置（应用目录、payload、NSIS 安装项）
 ├─ tray/            Windows 托盘工具（Electron 主进程）
 │  ├─ main.cjs      托盘图标与菜单；local 模式拉起并守护服务进程，remote 模式走 HTTP
+│  ├─ manage.cjs    remote 模式的 HTTP 客户端：状态 / 日志 / 重启
 │  ├─ run-server.cjs 服务进程的包装：父进程（托盘）没了就自己退出，不留孤儿占端口
 │  ├─ icon.cjs      用代码画托盘图标 PNG 与 exe 图标 ICO（不往仓库里塞二进制资源）
 │  └─ package.json  Electron 应用入口声明
@@ -106,6 +110,54 @@ npm run tray      # 开发态启动（Electron 自带运行时）
   （Windows 不像 Unix 会自动收拾孤儿进程）。
 - 配置放在 `tray/tray.config.json`（按机器而异，不进版本库；样例见 `tray/tray.config.example.json`）：
   `mode` / `target` / `appDir` / `entry` / `token`。
+
+### remote 模式：拿托盘当运维面板
+
+`mode: "remote"` 时托盘不碰本机服务，只跟一台远端服务器说话。菜单里是三个动作：
+
+| 菜单项 | 做什么 |
+| --- | --- |
+| 查看服务器状态 | 版本、运行时长、内存、数据库大小、内容条数、托管方式 |
+| 查看最近日志 | 服务端最近 200 行（默认，可指定行数） |
+| 重启服务器 | 先弹窗确认，再发重启请求 |
+
+凭据是**机器令牌**（`x-workhub-token` 请求头），和用户登录口令是两套东西，互不通用：
+
+```bash
+# 在服务器上发一把令牌（明文只出现这一次）
+npm run manage:token -- issue "运维笔记本"
+
+# 列出已发放的令牌
+npm run manage:token -- list
+
+# 撤销
+npm run manage:token -- revoke <令牌 id>
+```
+
+把令牌填进托盘配置，或用环境变量 `WORKHUB_MANAGE_TOKEN`：
+
+```json
+{
+  "mode": "remote",
+  "target": "http://192.168.1.10:8787",
+  "token": "mht_xxxxxxxx"
+}
+```
+
+托盘在 remote 模式下每 15 秒拉一次状态，显示在菜单标题上；连不上时菜单标题直接写「离线」，
+并往 `logs/tray.log` 记一条（只在状态翻转时记，不刷屏）。
+
+对应的服务端接口（认机器令牌，不认用户会话）：
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/manage/status` | 状态快照 |
+| `GET /api/manage/logs?tail=N` | 最近 N 行日志（默认 200） |
+| `POST /api/manage/restart` | 重启服务 |
+
+重启会先判断服务是谁拉起来的（systemd / pm2 / docker / 托盘托管 / 裸跑），
+再选对应的重启方式；**被托盘托管时拒绝远端重启**——那种情况归本地托盘管，
+从外面再拉一个进程会跟托盘抢端口。
 
 ### 打包成 exe
 
@@ -260,6 +312,7 @@ npm run admin:password -- --generate
 | `MDHUB_SEED_DEMO` | 关闭 | 置 `1` 时首次建库灌入示例文档（`shared/seed.ts`）；正式部署保持关闭 |
 | `MDHUB_ALLOW_INSECURE_DEV` | 关闭 | 置 `1` 时允许使用公开的开发默认值（密钥 `mdhub-dev-secret-change-me`、密码 `admin123`）；`NODE_ENV=production` 下无效 |
 | `NODE_ENV` | 未设置 | 置 `production` 启用生产模式：强制要求显式配置密钥与管理员密码 |
+| `WORKHUB_MANAGE_TOKEN` | 无 | 机器令牌：托盘 remote 模式用；优先于配置文件里的 `token`。**只发给可信机器**，它等价于运维权限 |
 
 ## 日志
 
@@ -619,6 +672,17 @@ Agent 配置脱敏、改密后旧令牌立即失效，文档加密全流程
 | `GET` `POST` | `/api/reminders` | 管理员（提醒清单 / 新建提醒） |
 | `PATCH` `DELETE` | `/api/reminders/:id` | 管理员（改时间、标记完成、取消、删除） |
 | `POST` | `/api/reminders/:id/fire` | 管理员（立即推送，与自动触发同一套逻辑） |
+
+### 运维接口（机器令牌）
+
+这一组不认用户会话，只认 `x-workhub-token` 请求头里的机器令牌——给没有浏览器的场景用
+（托盘 remote 模式、监控脚本）。令牌在服务器上用 `npm run manage:token -- issue "<用途>"` 发放。
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET` | `/api/manage/status` | 状态快照：版本、运行时长、内存、数据库、各类条数、托管方式 |
+| `GET` | `/api/manage/logs?tail=N` | 最近 N 行日志（默认 200，内存里最多留 500 行） |
+| `POST` | `/api/manage/restart` | 重启服务（按托管方式选择 systemd / pm2 / docker / 自拉起） |
 
 ## License
 

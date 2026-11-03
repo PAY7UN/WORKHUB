@@ -136,6 +136,7 @@ import {
   updateRepo,
 } from './repos.ts';
 import { ensureGuestSession } from './guests.ts';
+import { createManageRouter } from './manage.ts';
 import {
   hashPassword,
   needsUpgrade,
@@ -334,6 +335,15 @@ app.get('/api/healthz', (_req, res) => {
     res.status(503).json({ status: 'degraded', db: 'error' });
   }
 });
+
+/**
+ * 管理接口：给运维面板（托盘 remote 模式）用。
+ *
+ * 挂在这里而不是散在各处，是为了让「谁能做什么」一目了然：
+ * /api/manage/* 认机器令牌，其余接口认用户会话，两套凭证互不通用。
+ * 详细说明见 server/manage.ts。
+ */
+app.use('/api/manage', createManageRouter(db, DB_PATH));
 
 app.get('/api/auth/me', (req, res) => {
   res.json({
@@ -2306,22 +2316,46 @@ startReminderScheduler();
 // 扫在清道夫线程里做，不占着启动不放。
 sweepStashed();
 
-app.listen(PORT, '0.0.0.0', () => {
-  const cfg = getAgentConfigPublic();
-  const ding = getDingTalkConfigPublic();
-  logger.info(`服务已启动: http://localhost:${PORT}`);
-  for (const addr of lanAddresses(PORT)) logger.info(`局域网访问: ${addr}`);
-  // 路径给相对形式：启动日志常被原样贴进 issue，绝对路径会带出本机用户名目录
-  logger.info(`数据库: ${displayPath(DB_PATH)}`);
-  logger.info(`模型: ${cfg.model} @ ${cfg.baseUrl}，API Key ${cfg.hasApiKey ? '已配置' : '未配置'}`);
-  logger.info(
-    `钉钉同步: ${ding.enabled ? '已开启' : '未开启'}${ding.enabled ? `（通道：${ding.channel}）` : ''}`,
-  );
-  // 密码相关的两个入口都指到启动日志里：登录后才能改密，忘了密码反而进不去，
-  // 所以离线重置这条退路必须让人在第一时间看见，而不是等到真忘了再去翻文档
-  logger.info('修改管理员密码: 登录后点侧边栏头像旁的钥匙图标');
-  logger.info('已忘记密码: npm run admin:password -- <新密码>');
-  logger.info(
-    `密钥来源: ${USING_DEV_FALLBACK ? '开发默认值（仅限本地）' : IS_PRODUCTION ? '生产环境变量' : '.env / 系统环境变量'}`,
-  );
-});
+/**
+ * 监听端口。
+ *
+ * 端口被占时重试一小会儿，而不是直接死掉。
+ *
+ * 重启场景下旧进程刚退出、socket 还没完全释放，这时候新进程 listen 会撞
+ * EADDRINUSE，进程当场退出——表现是「重启接口返回成功，但服务没起来」，
+ * 比直接报错更难查。重试几秒就能接上。
+ */
+let listenAttempts = 0;
+function listenForPort(): void {
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    const cfg = getAgentConfigPublic();
+    const ding = getDingTalkConfigPublic();
+    logger.info(`服务已启动: http://localhost:${PORT}`);
+    for (const addr of lanAddresses(PORT)) logger.info(`局域网访问: ${addr}`);
+    // 路径给相对形式：启动日志常被原样贴进 issue，绝对路径会带出本机用户名目录
+    logger.info(`数据库: ${displayPath(DB_PATH)}`);
+    logger.info(`模型: ${cfg.model} @ ${cfg.baseUrl}，API Key ${cfg.hasApiKey ? '已配置' : '未配置'}`);
+    logger.info(
+      `钉钉同步: ${ding.enabled ? '已开启' : '未开启'}${ding.enabled ? `（通道：${ding.channel}）` : ''}`,
+    );
+    // 密码相关的两个入口都指到启动日志里：登录后才能改密，忘了密码反而进不去，
+    // 所以离线重置这条退路必须让人在第一时间看见，而不是等到真忘了再去翻文档
+    logger.info('修改管理员密码: 登录后点侧边栏头像旁的钥匙图标');
+    logger.info('已忘记密码: npm run admin:password -- <新密码>');
+    logger.info(
+      `密钥来源: ${USING_DEV_FALLBACK ? '开发默认值（仅限本地）' : IS_PRODUCTION ? '生产环境变量' : '.env / 系统环境变量'}`,
+    );
+  });
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && listenAttempts < 20) {
+      listenAttempts += 1;
+      logger.warn(`端口 ${PORT} 还被占用，500ms 后重试（第 ${listenAttempts} 次）`);
+      setTimeout(listenForPort, 500);
+      return;
+    }
+    logger.error(`监听端口失败：${err.message}`);
+    process.exit(1);
+  });
+}
+
+listenForPort();

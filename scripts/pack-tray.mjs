@@ -83,6 +83,9 @@ function buildPayload() {
   });
   cpSync(join(ROOT, 'shared'), join(PAYLOAD, 'shared'), { recursive: true });
 
+  // package.json：管理接口要靠它报版本号（server/manage.ts 的 readVersion）
+  cpSync(join(ROOT, 'package.json'), join(PAYLOAD, 'package.json'));
+
   // 前端构建产物：服务端要托管它，页面才能打开
   if (!existsSync(join(ROOT, 'dist', 'index.html'))) {
     throw new Error('没有 dist/，先执行 npm run build 再打包');
