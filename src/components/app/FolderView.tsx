@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Lock,
   Boxes,
+  FileWarning,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { api } from '@/lib/api';
@@ -28,6 +29,26 @@ import { downloadAsFile, formatBytes, formatRelativeTime } from '@/utils';
 import type { DocNode } from '@/types';
 import { cn } from '@/lib/utils';
 import { FileTypeIcon } from './fileIcons';
+import { previewModeOf } from '../../../shared/files';
+
+/**
+ * 这个节点能不能在浏览器里直接打开。
+ *
+ * 原件的形态由 previewModeOf 判定：图片、PDF、文本（源码、Markdown 等）
+ * 能直接看；其余的（zip、docx、exe…）浏览器根本打不开——它们能收进来、
+ * 能被下载，可点开只会得到一句「这个格式没法在浏览器里直接预览」。
+ *
+ * 目录里混着这两类文件时，不做区分就都长成「能点开」的样子。
+ * 上传一整个文件夹尤其明显：源码和图片能看，压缩包和 Office 文档不能，
+ * 两类并排躺着，用户只能一个个点过去撞墙才分辨得出。
+ *
+ * 文件夹与笔记不算：文件夹是去路，笔记永远是 Markdown，都打得开。
+ */
+function isPreviewable(doc: DocNode): boolean {
+  if (doc.type === 'folder') return true;
+  if (doc.kind !== 'file') return true;
+  return previewModeOf(doc.ext ?? '') !== 'generic';
+}
 
 interface FolderViewProps {
   folderId: string | null;
@@ -52,6 +73,11 @@ export function FolderView({
   const canAssignRepo = Boolean(onRequestRepo) && isAdmin;
   const [search, setSearch] = useState('');
   const [view, setView] = useState<'grid' | 'list'>('grid');
+  // 「只看可预览」：上传一整个目录时，里面常混着 zip、Office 文档这类
+  // 浏览器打不开的文件。这个开关让想读的人一眼看到能读的，
+  // 也不想读的人不必逐个点开撞墙。
+  // 默认全显示——文件已经入库了，藏起来等于假装它不存在。
+  const [onlyPreviewable, setOnlyPreviewable] = useState(false);
 
   const folder = folderId ? getDoc(folderId) : null;
   const breadcrumbs = useMemo(() => (folderId ? getPath(folderId) : []), [folderId, getPath]);
@@ -78,7 +104,8 @@ export function FolderView({
     }
   }, []);
 
-  const children = useMemo(() => {
+  // 目录里的全部条目（搜索后），以及其中能在浏览器里打开的那些
+  const matched = useMemo(() => {
     return repoScopedDocs
       .filter((d) => d.parentId === folderId)
       .filter((d) => (search ? d.name.toLowerCase().includes(search.toLowerCase()) : true))
@@ -87,6 +114,11 @@ export function FolderView({
         return a.name.localeCompare(b.name, 'zh-Hans-CN');
       });
   }, [repoScopedDocs, folderId, search]);
+
+  const children = useMemo(
+    () => (onlyPreviewable ? matched.filter(isPreviewable) : matched),
+    [matched, onlyPreviewable],
+  );
 
   const stats = useMemo(() => {
     const allInFolder = (id: string | null): { files: number; folders: number } => {
@@ -185,6 +217,28 @@ export function FolderView({
                 <List className="h-4 w-4" />
               </button>
             </div>
+            {/* 「只看可预览」：浏览器打不开的文件（zip、Office 文档…）
+                在列表里长得和能看的文件一模一样，用户只能挨个点开试。
+                这个开关把能读的挑出来；被筛掉的那些仍在这个目录里，
+                关掉开关就都回来，不会凭空少掉文件。 */}
+            <button
+              onClick={() => setOnlyPreviewable((v) => !v)}
+              aria-pressed={onlyPreviewable}
+              className={cn(
+                'h-8 px-2.5 rounded-lg flex items-center gap-1.5 text-xs border transition-all shrink-0',
+                onlyPreviewable
+                  ? 'bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-500/20 dark:text-indigo-300 dark:border-indigo-800'
+                  : 'bg-indigo-50/60 dark:bg-indigo-950/30 border-indigo-100/40 text-muted-foreground hover:text-foreground',
+              )}
+              title={
+                onlyPreviewable
+                  ? '正在只看能直接打开的文件，点击显示全部'
+                  : '只看浏览器能直接打开的文件'
+              }
+            >
+              <Eye className="h-3.5 w-3.5" />
+              只看可预览
+            </button>
           </div>
         </div>
       </div>
@@ -195,10 +249,18 @@ export function FolderView({
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-12">
             <Folder className="h-16 w-16 mb-3 opacity-30" />
             <div className="text-base font-medium">
-              {search ? '没有匹配的文档' : '此目录为空'}
+              {search
+                ? '没有匹配的文档'
+                : onlyPreviewable
+                  ? '这个目录里没有能直接打开的文件'
+                  : '此目录为空'}
             </div>
             <div className="text-xs mt-1">
-              {search ? '尝试其他关键词' : '通过左侧新建按钮或上传按钮添加内容'}
+              {search
+                ? '尝试其他关键词'
+                : onlyPreviewable
+                  ? '关掉「只看可预览」就能看到目录里的全部文件'
+                  : '通过左侧新建按钮或上传按钮添加内容'}
             </div>
           </div>
         ) : view === 'grid' ? (
@@ -283,6 +345,8 @@ function DocGridCard({
   delay = 0,
 }: DocCardProps) {
   const isFolder = doc.type === 'folder';
+  // 浏览器打不开的文件：图标降饱和，别让它和能看的文件长得一模一样
+  const previewable = isPreviewable(doc);
   return (
     <Card
       onClick={() => onOpen(doc)}
@@ -296,6 +360,8 @@ function DocGridCard({
             isFolder
               ? 'bg-gradient-to-br from-amber-400 to-orange-400 text-white'
               : 'bg-gradient-to-br from-indigo-500 to-violet-500 text-white',
+            // 降饱和：这是「看不了」的信号，与徽标一起说明，不必点开才知道
+            !isFolder && !previewable && 'opacity-60 saturate-50',
           )}
         >
           {isFolder ? (
@@ -386,6 +452,17 @@ function DocGridCard({
             已加密
           </span>
         )}
+        {/* 不可预览：浏览器打不开这个格式，能做的只有下载。
+            与「已加密」一样放在名字前面——两件事都关乎「点开之前得先知道」。 */}
+        {!previewable && (
+          <span
+            className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100/70 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+            title="这个格式没法在浏览器里直接预览，只能下载"
+          >
+            <FileWarning className="h-2.5 w-2.5" />
+            不可预览
+          </span>
+        )}
         <span className="truncate">{doc.name}</span>
       </div>
       <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -433,6 +510,7 @@ function DocListRow({
   delay = 0,
 }: DocCardProps) {
   const isFolder = doc.type === 'folder';
+  const previewable = isPreviewable(doc);
   return (
     <div
       onClick={() => onOpen(doc)}
@@ -445,6 +523,8 @@ function DocListRow({
           isFolder
             ? 'bg-gradient-to-br from-amber-400 to-orange-400 text-white'
             : 'bg-gradient-to-br from-indigo-500 to-violet-500 text-white',
+          // 与网格卡片一致：看不了的文件，图标先降饱和
+          !isFolder && !previewable && 'opacity-60 saturate-50',
         )}
       >
         {isFolder ? (
@@ -466,6 +546,15 @@ function DocListRow({
               已加密
             </span>
           )}
+          {!previewable && (
+            <span
+              className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100/70 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+              title="这个格式没法在浏览器里直接预览，只能下载"
+            >
+              <FileWarning className="h-2.5 w-2.5" />
+              不可预览
+            </span>
+          )}
           <span className="truncate">{doc.name}</span>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
@@ -484,7 +573,10 @@ function DocListRow({
         </div>
       )}
       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-        {!isFolder && (
+        {/* 「预览」只给打得开的文件：浏览器打不开的格式点进去只会撞上一句
+            「这个格式没法在浏览器里直接预览」，那这个按钮就只是在骗人。
+            这类文件的唯一去处是下载。 */}
+        {!isFolder && previewable && (
           <Button
             size="sm"
             variant="ghost"

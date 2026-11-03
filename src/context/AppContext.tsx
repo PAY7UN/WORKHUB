@@ -41,6 +41,27 @@ interface LoginResult {
   message: string;
 }
 
+/**
+ * 从清单里摘掉一棵子树（含它自己）。
+ *
+ * 删除文件夹时子孙一并消失——留着孩子却没了爹，文件树里点开就是一个
+ * 没有父亲的文件夹。
+ */
+function withoutSubtree(docs: DocNode[], rootId: string): DocNode[] {
+  const ids = new Set<string>([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    docs.forEach((d) => {
+      if (d.parentId && ids.has(d.parentId) && !ids.has(d.id)) {
+        ids.add(d.id);
+        changed = true;
+      }
+    });
+  }
+  return docs.filter((d) => !ids.has(d.id));
+}
+
 interface AppContextValue {
   // 认证
   currentUser: User;
@@ -1086,24 +1107,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const deleteDoc = useCallback(
     (id: string): Promise<boolean> => {
       if (!isAdmin) return Promise.resolve(false);
+      // 乐观删除：先把本地这棵子树摘掉，界面立刻就少了这一块。
+      //
+      // 等服务端回话再更新界面是不行的：删一个装着几十个文件的文件夹，
+      // 服务端在 Windows 上要忙上好几秒（杀软要逐个扫被删的文件），
+      // 前端只能干等，用户看到的就是「点了删除，界面半天不动」。
+      //
+      // 服务端真失败时下面的 catch 会回读一次清单，界面自动回到删除前的样子。
+      setDocs((prev) => withoutSubtree(prev, id));
       return api
         .deleteDoc(id)
         .then(() => {
-          setDocs((prev) => {
-            // 服务端级联删除整棵子树，这里同步移除本地对应节点
-            const ids = new Set<string>([id]);
-            let changed = true;
-            while (changed) {
-              changed = false;
-              prev.forEach((d) => {
-                if (d.parentId && ids.has(d.parentId) && !ids.has(d.id)) {
-                  ids.add(d.id);
-                  changed = true;
-                }
-              });
-            }
-            return prev.filter((d) => !ids.has(d.id));
-          });
           // 以服务端为准回读一次：删除不可逆，避免残留幽灵数据与过期缓存
           void refreshDocs({ persist: true }).catch(() => undefined);
           // 仓库统计也要重算：删掉文件后仓库里的文件个数必须跟着减，

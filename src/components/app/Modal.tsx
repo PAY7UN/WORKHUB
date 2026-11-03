@@ -587,7 +587,7 @@ export function UploadDialog({
           </DialogTitle>
           <DialogDescription>
             {parentName ? `上传到「${parentName}」` : '上传到根目录'}：.md 变成文档，
-            其它格式（含压缩包）原样存为附件。
+            其它格式（含压缩包）原样存为原件文件。
           </DialogDescription>
         </DialogHeader>
         <div
@@ -634,7 +634,7 @@ export function UploadDialog({
           <div className="text-sm font-medium text-foreground">
             {uploading ? '处理中…' : dragOver ? '松开鼠标上传' : '点击或拖拽文件到这里'}
           </div>
-          <div className="text-xs text-muted-foreground/90 mt-1">可多选；压缩包会原样存为附件</div>
+          <div className="text-xs text-muted-foreground/90 mt-1">可多选；压缩包与其它格式一样，原样存为原件文件</div>
         </div>
 
         {/* 选整个文件夹：目录结构会被一并还原 */}

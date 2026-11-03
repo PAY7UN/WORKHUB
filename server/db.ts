@@ -3,7 +3,7 @@
  * API Key 以 AES-256-GCM 加密落库，主密钥来自 config.ts 中已校验的 MDHUB_SECRET。
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ADMIN_PASSWORD, SECRET } from './config.ts';
 import { logger } from './logger.ts';
@@ -14,12 +14,12 @@ import {
   bodyPath,
   contentHash,
   filePath,
+  folderDirs,
   moveAssetFile,
   moveBodyFile,
   moveFileAt,
   readFileSafe,
   removeBodyFile,
-  removeFileAt,
   removeRepoDir,
   writeFileAtomic,
 } from './storage/v2/vault.ts';
@@ -1544,16 +1544,21 @@ export function collectSubtreeIds(rootId: string): string[] {
 }
 
 /**
- * 删除一棵子树。
+ * 摘掉一棵子树在库里的痕迹，并列出还留在盘上的文件。
  *
- * 没有回收站，删除就是删除：文件没了，行没了，索引也没了。
- * 子孙一并删除——留着孩子却没了爹，文件树里点开就是一个没有父亲的文件夹。
+ * 删库和删盘得分开：Windows 上 unlink 一个文件要一百多毫秒——杀软要逐个
+ * 扫一遍才肯放手——一个装着几十个文件的文件夹删完就是好几秒。这几秒里
+ * 请求线程被占着，整个 API 都在打转，前端只能干等，用户看到的就是
+ * 「点了删除，什么都没发生」。
+ *
+ * 这里只负责「库里的痕迹」和「该删哪些文件、哪些空目录」；盘上的清理由调用方安排：
+ * 改名挪进暂存区，再让清道夫线程去删（见 vault.ts）。
  */
-export function deleteSubtree(rootId: string): number {
+export function detachSubtree(rootId: string): { removed: number; files: string[]; dirs: string[] } {
   const ids = collectSubtreeIds(rootId);
-  if (!ids.length) return 0;
+  if (!ids.length) return { removed: 0, files: [], dirs: [] };
 
-  // 文件先收走：附件行会被外键 CASCADE 连带删掉，之后就再也查不到它的存储路径了
+  // 文件路径先收走：附件行会被外键 CASCADE 连带删掉，之后就再也查不到它的存储路径了
   const attachmentFiles = collectAttachmentFiles(ids);
   const attachmentIds = (
     db
@@ -1570,27 +1575,20 @@ export function deleteSubtree(rootId: string): number {
     for (const id of attachmentIds) unindexAttachment(db, id);
   })();
 
-  // 行删完了，文件再删。反过来做的话，删文件失败就会留下指向空文件的索引行
+  // 行删完了，路径也就定下来了：这些就是该从盘上抹掉的东西
+  const files: string[] = [];
+  // 文件夹删掉后占的目录会空下来，顺手记下来，等会儿连目录一起收掉
+  const dirs: string[] = [];
   for (const node of nodes) {
-    try {
-      if (kindOf(node) === 'file') {
-        removeFileAt(filePath(repoSlugOf(node.repo_id), node.path));
-      } else {
-        removeBodyFile(repoSlugOf(node.repo_id), node.path, node.encrypted === 1);
-      }
-    } catch {
-      // 删不掉就留给下一次的清理；索引行已经没了，不会有人再指向它
-      logger.warn('删除正文文件失败', node.id, node.path);
+    if (kindOf(node) === 'file') {
+      files.push(filePath(repoSlugOf(node.repo_id), node.path));
+    } else {
+      files.push(bodyPath(repoSlugOf(node.repo_id), node.path, node.encrypted === 1));
+      dirs.push(...folderDirs(repoSlugOf(node.repo_id), node.path));
     }
   }
-  for (const file of attachmentFiles) {
-    try {
-      if (existsSync(file)) unlinkSync(file);
-    } catch {
-      logger.warn('删除附件文件失败', file);
-    }
-  }
-  return ids.length;
+  files.push(...attachmentFiles);
+  return { removed: ids.length, files, dirs };
 }
 
 /** 覆盖式导入（用于迁移浏览器 localStorage 中的历史数据） */

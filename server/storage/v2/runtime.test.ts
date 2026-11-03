@@ -16,10 +16,20 @@ process.env.MDHUB_DB_V2 = join(workDir, 'test.db');
 process.env.MDHUB_VAULT_DIR = join(workDir, 'vault');
 process.env.MDHUB_SECRET = 'test-secret-for-runtime-cases-0123456789abcdef';
 
-const { db, insertDoc, updateDocRow, deleteSubtree, moveNodesToRepo, recallDocIds, recallAttachmentIds, searchDocs, listAllDocs, repoSlugOf, getDoc, encryptDocRow } = await import('../../db.ts');
+const { db, insertDoc, updateDocRow, detachSubtree, moveNodesToRepo, recallDocIds, recallAttachmentIds, searchDocs, listAllDocs, repoSlugOf, getDoc, encryptDocRow } = await import('../../db.ts');
 const { createRepo, deleteRepo, getRepo } = await import('../../repos.ts');
 const { addAttachment, removeAttachment, listAttachments } = await import('../../attachments.ts');
-const { bodyPath, readFileSafe } = await import('./vault.ts');
+const { bodyPath, readFileSafe, stashFile, purgeStashed, folderDirs } = await import('./vault.ts');
+
+/** 等文件真的被清掉：清道夫在别的线程上干活，得给它一点时间 */
+async function waitGone(paths: string[], timeoutMs = 15000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (paths.every((p) => !existsSync(p))) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`暂存文件没被清掉：${paths.join('、')}`);
+}
 
 const now = Date.now();
 
@@ -130,7 +140,7 @@ test('跨仓库搬家后索引里的仓库归属跟着改', () => {
   assert.equal(fts?.repo_id, to.id, '索引里的仓库归属必须同步，否则按仓库检索会漏');
 });
 
-test('删除文档：正文文件与索引一起清掉，不留残骸', () => {
+test('删除文档：正文文件与索引一起清掉，不留残骸', async () => {
   const repo = createRepo({ name: '删除测试仓库', createdBy: 'admin' });
   const doc = makeDoc('待删除', '这里写的是临时内容', repo.id);
   const row = db.prepare('SELECT path FROM nodes WHERE id = ?').get(doc.id) as { path: string };
@@ -138,9 +148,16 @@ test('删除文档：正文文件与索引一起清掉，不留残骸', () => {
 
   assert.ok(existsSync(bodyFile), '正文应已落到仓库目录里');
 
-  deleteSubtree(doc.id);
+  // 走的正是接口那条路：摘库 → 改名进暂存区 → 清道夫线程去删
+  const { removed, files } = detachSubtree(doc.id);
+  const stashed = files.map(stashFile).filter((p): p is string => !!p);
+  assert.equal(removed, 1, '应摘掉这一篇');
+  assert.ok(!existsSync(bodyFile), '删除后正文文件不该还在原处');
+  assert.ok(stashed.length > 0, '正文应被挪进暂存区');
 
-  assert.ok(!existsSync(bodyFile), '删除后正文文件不该还在');
+  purgeStashed(stashed);
+  await waitGone(stashed);
+
   assert.ok(
     !db.prepare('SELECT 1 FROM node_fts WHERE node_id = ?').get(doc.id),
     '删除后索引里不该还留着条目',
@@ -149,6 +166,44 @@ test('删除文档：正文文件与索引一起清掉，不留残骸', () => {
     !listAllDocs().some((d) => d.id === doc.id),
     '删除后清单里不该还有它',
   );
+});
+
+test('删掉文件夹：文件没了，目录也不留空壳', async () => {
+  const repo = createRepo({ name: '删目录测试仓库', createdBy: 'admin' });
+  const folder = insertDoc({
+    id: 'f-删目录',
+    name: '待删目录',
+    type: 'folder',
+    parentId: null,
+    createdAt: now,
+    updatedAt: now,
+    createdBy: 'u-admin',
+    updatedBy: 'u-admin',
+    repoId: repo.id,
+  });
+  const child = makeDoc('子文档.md', '子文档的正文内容', repo.id, folder.id);
+
+  const childRow = db.prepare('SELECT path FROM nodes WHERE id = ?').get(child.id) as { path: string };
+  const childBody = bodyPath(repo.slug, childRow.path, false);
+  const folderDir = folderDirs(repo.slug, '待删目录')[0];
+  assert.ok(existsSync(childBody), '子文档的正文文件应已落盘');
+  assert.ok(existsSync(folderDir), '目录应已建出来');
+
+  const { removed, files, dirs } = detachSubtree(folder.id);
+  const stashed = files.map(stashFile).filter((p): p is string => !!p);
+  assert.equal(removed, 2, '目录连同子文档应一并摘掉');
+  assert.ok(dirs.length > 0, '该记下要收拾的空目录');
+
+  purgeStashed(stashed, dirs);
+  await waitGone(stashed);
+  // 目录得等文件删干净才摘得掉
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline && existsSync(folderDir)) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  assert.ok(!existsSync(folderDir), '删掉的目录不该在盘上留个空壳');
+  assert.ok(!listAllDocs().some((d) => d.id === child.id), '子文档也不该还在清单里');
 });
 
 test('改名目录后，子文档的正文文件跟着搬家', () => {

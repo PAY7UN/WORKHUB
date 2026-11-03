@@ -36,6 +36,8 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
+import { logger } from '../../logger.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -149,6 +151,22 @@ export function filePath(repoSlug: string, relPath: string): string {
 }
 
 /**
+ * 一个文件夹在盘上占的目录。
+ *
+ * 文件夹本身没有文件，只有它占着的目录：正文目录（docs）与原件目录（files）。
+ * 删掉文件夹后这两个目录会空下来——留着它们等于在盘上留一堆空壳，
+ * 界面上看着已经删干净了，盘上却还摆着同名文件夹。
+ */
+export function folderDirs(repoSlug: string, relPath: string): string[] {
+  const rel = safeRelPath(relPath);
+  if (!rel) return [];
+  return [
+    assertInsideVault(join(VAULT_ROOT, repoSlug, 'docs', rel)),
+    assertInsideVault(join(VAULT_ROOT, repoSlug, 'files', rel)),
+  ];
+}
+
+/**
  * 原子写文件。
  *
  * 先写临时文件再改名：改名在同一文件系统内是原子的，
@@ -209,20 +227,98 @@ export function removeBodyFile(repoSlug: string, relPath: string, encrypted: boo
   }
 }
 
+/** 暂存文件的标记后缀。改名进暂存区 = 文件已经离开正路，只等清掉 */
+export const TRASH_SUFFIX = '.trash-';
+
 /**
- * 删掉一个绝对路径上的文件。
+ * 把待删的文件挪进暂存区。
  *
- * 原件（任意格式）与正文（.md 文本）的落盘位置不同，但删除动作是一样的：
- * 不存在也算成功——幂等，重复删不会报错。
+ * 为什么先改名不直接删：Windows 上 unlink 一个文件要一百多毫秒——杀软要
+ * 逐个扫一遍才肯放手；改个名只要零点几毫秒。先改名等于把文件从正路上
+ * 摘掉：同名文档随后重建也不会被后台的删除误伤，剩下的清理由后台慢慢做。
+ *
+ * 挪不动就返回 null（多半是文件本来就不在），调用方自己决定要不要直接删。
  */
-export function removeFileAt(abs: string): void {
+export function stashFile(abs: string): string | null {
   const target = assertInsideVault(abs);
-  if (!existsSync(target)) return;
+  if (!existsSync(target)) return null;
+  const stashed = `${target}${TRASH_SUFFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    unlinkSync(target);
+    renameSync(target, stashed);
+    return stashed;
   } catch {
-    // 删不掉就交给上层报错：宁可让调用方知道，也不留半吊子状态
-    throw new Error(`删除文件失败：${target}`);
+    return null;
+  }
+}
+
+/**
+ * 清道夫线程：真正把暂存文件删掉的地方。
+ *
+ * 懒启动：用到才建，省得服务一启动就多一个线程。
+ */
+let janitor: Worker | null = null;
+
+function janitorWorker(): Worker | null {
+  if (janitor) return janitor;
+  try {
+    const w = new Worker(new URL('./janitor.ts', import.meta.url), {
+      workerData: { root: VAULT_ROOT, suffix: TRASH_SUFFIX },
+    });
+    w.on('error', (err) => {
+      logger.warn('清道夫线程出错', err);
+      janitor = null;
+    });
+    w.on('exit', () => {
+      janitor = null;
+    });
+    // 清道夫不欠着进程：它没干完的活儿还在暂存区，下次启动会扫
+    w.unref();
+    janitor = w;
+    return w;
+  } catch (err) {
+    logger.warn('清道夫线程起不来', err);
+    return null;
+  }
+}
+
+/**
+ * 把待删的路径丢给清道夫。
+ *
+ * 不等它：删文件在 Windows 上要一百多毫秒一个（杀软逐个扫），几十个文件
+ * 就是好几秒。等它等于让接口陪着一起打转。
+ *
+ * 也不能在主线程上直接删：那几个 unlink 排起队来会把事件循环饿死——定时器
+ * 和 socket 都排不上队，接口看着就像死了。挪进 worker 就没这回事了。
+ *
+ * dirs 是删完文件后要顺带收拾的空目录（文件夹删掉后剩下的壳）。
+ */
+export function purgeStashed(stashed: string[], dirs: string[] = []): void {
+  if (!stashed.length && !dirs.length) return;
+  const w = janitorWorker();
+  if (!w) return;
+  try {
+    w.postMessage({ type: 'paths', paths: stashed, dirs });
+  } catch (err) {
+    logger.warn('清道夫接活失败', err);
+  }
+}
+
+/**
+ * 让清道夫扫掉上次没清完的暂存文件。
+ *
+ * 后台删除是尽力而为的：进程被杀、机器断电都会留下 .trash 文件。它们已经
+ * 不在索引和数据库里了，留着只是占地方——启动时顺手扫掉。
+ *
+ * 扫也在 worker 里做：这一步要是同步删几百个文件，服务要等好几秒才能起来
+ * （杀软逐个扫），期间谁都连不上。
+ */
+export function sweepStashed(): void {
+  const w = janitorWorker();
+  if (!w) return;
+  try {
+    w.postMessage({ type: 'sweep' });
+  } catch (err) {
+    logger.warn('清道夫启动清扫失败', err);
   }
 }
 

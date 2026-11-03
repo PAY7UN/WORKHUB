@@ -34,6 +34,7 @@ import {
   toView,
 } from './polishTasks.ts';
 import { readUpstreamStream, type UpstreamMessage } from './upstream.ts';
+import { purgeStashed, stashFile, sweepStashed } from './storage/v2/vault.ts';
 import {
   bulkApproveAccessRequests,
   bulkInsertAccessGrants,
@@ -44,7 +45,7 @@ import {
   decryptBinaryDocRow,
   defaultRepoId,
   deleteReminder,
-  deleteSubtree,
+  detachSubtree,
   DekUnavailableError,
   encryptBinaryDocRow,
   encryptDocRow,
@@ -792,8 +793,21 @@ app.delete('/api/docs/:id', requireAdmin, (req, res) => {
     res.status(404).json({ error: '文档不存在' });
     return;
   }
-  const removed = deleteSubtree(id);
+  // 库里的痕迹先摘干净，正文和附件挪进暂存区（改名几乎不花钱），
+  // 真正的删除丢给后台。
+  //
+  // 为什么不能同步删：Windows 上 unlink 一个文件要一百多毫秒——杀软要逐个
+  // 扫一遍才肯放手。删一个装着几十个文件的文件夹就是好几秒，这几秒里
+  // 请求线程被占着，整个 API 都在打转，前端干等着收不到响应，界面看着
+  // 像「点了没反应」。
+  //
+  // 为什么后台删也不能放在主线程上：那串 unlink 排队能把事件循环饿死——
+  // 定时器和 socket 都排不上队，删完那一下的下一个请求直接 ECONNRESET。
+  // 所以真正的删除发生在清道夫线程里（见 vault.ts）。
+  const { removed, files, dirs } = detachSubtree(id);
+  const stashed = files.map(stashFile).filter((p): p is string => !!p);
   res.json({ removed });
+  purgeStashed(stashed, dirs);
 });
 
 /* ---- 覆盖式导入浏览器 localStorage 中的历史文档（仅管理员，一次性迁移用） */
@@ -2260,6 +2274,11 @@ process.on('uncaughtException', (err) => {
 // 提醒调度器随服务启动：到点的提醒由服务端自己推送到钉钉，
 // 不依赖浏览器开着——关了页面提醒照样到。
 startReminderScheduler();
+
+// 上次没清完的暂存文件顺手扫掉：删除是尽力而为的后台任务，
+// 进程被杀或机器断电都会留下 .trash 文件，它们已经不在索引里了。
+// 扫在清道夫线程里做，不占着启动不放。
+sweepStashed();
 
 app.listen(PORT, '0.0.0.0', () => {
   const cfg = getAgentConfigPublic();

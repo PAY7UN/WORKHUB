@@ -236,20 +236,23 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
     // 先关弹窗，不等网络：等待期间界面不卡住
     setDeleteTarget(null);
     setDeleteOpen(false);
+    // 选中与目录状态也当场收拾掉，不等服务端回话。
+    // deleteDoc 内部是乐观删除（先把本地子树摘了），这里的清理要跟上，
+    // 否则会有一瞬间的错位：清单里节点没了，选中状态却还指着它。
+    if (selectedId === id) {
+      setSelectedId(null);
+    }
+    if (editingId === id) {
+      setEditingId(null);
+    }
+    // 删除当前所在文件夹时回退到父目录，避免停留在已失效的目录 id 上
+    if (currentFolderId === id) {
+      setCurrentFolderId(parentId);
+    }
     // 删除失败时不弹成功提示：那会把「服务端未启动 / 无权限」伪装成删除成功，
     // 用户刷新后文档原样回来，反而更难定位。失败提示由 deleteDoc 内部统一给出。
     void deleteDoc(id).then((ok) => {
       if (!ok) return;
-      if (selectedId === id) {
-        setSelectedId(null);
-      }
-      if (editingId === id) {
-        setEditingId(null);
-      }
-      // 删除当前所在文件夹时回退到父目录，避免停留在已失效的目录 id 上
-      if (currentFolderId === id) {
-        setCurrentFolderId(parentId);
-      }
       toast.success(`已删除「${name}」`);
     });
   };
@@ -573,7 +576,7 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
                 <button
                   type="button"
                   onClick={() => openUpload(currentFolderId)}
-                  title="上传文件：.md 变成文档，其它格式（含压缩包）原样存为附件"
+                  title="上传文件：.md 变成文档，其它格式（含压缩包）原样存为原件"
                   className="flex h-8 flex-1 cursor-pointer items-center justify-center gap-1 border-l border-slate-200/70 text-[11px] font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 focus-visible:outline-none dark:border-slate-700/50 dark:text-slate-200 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-200"
                 >
                   <Upload className="h-3.5 w-3.5 shrink-0" />

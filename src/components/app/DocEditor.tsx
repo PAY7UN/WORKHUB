@@ -512,6 +512,24 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
     return () => window.removeEventListener('keydown', handler);
   }, [canEdit, handleSave]);
 
+  // Esc 退出全屏
+  //
+  // 全屏把文档提到所有浮层之上，鼠标够得到「退出全屏」那个按钮，
+  // 键盘用户却没有出口——Esc 是这类浮层的通用退出键。
+  //
+  // 有弹窗打开时不抢 Esc：润色对话框、标签输入等自己要用 Esc 关闭，
+  // 顺手把整篇文档退出全屏会让人以为界面出故障。
+  useEffect(() => {
+    if (!fullscreen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      setFullscreen(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [fullscreen]);
+
   // 卸载 / 页面隐藏时兜底落盘
   //
   // 防抖窗口（600ms）内关闭编辑器、切走标签页或关页面，pending 内容会随组件卸载
@@ -785,7 +803,11 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
       <div className="flex-1 min-h-0 flex flex-col p-5 sm:p-8 pb-16">
         <Card
           className={[
-            'glass max-w-[68rem] mx-auto w-full flex-1 min-h-0',
+            'glass mx-auto w-full flex-1 min-h-0',
+            // 全屏时铺满：全屏的意义就是用尽这块屏幕。
+            // 还按 68rem 卡着，大屏上左右就是两大片空白——那不叫全屏，
+            // 只叫「把窗口放大了一点」。
+            fullscreen ? 'max-w-none' : 'max-w-[68rem]',
             // 与编辑面同一张卡片：零内边距、零间隙，
             // 内边距由卡片头、次级行、正文区各段自己管
             'p-0 gap-0 overflow-hidden',
@@ -829,7 +851,20 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
   return (
     <div
       onScrollCapture={hideDockOnScroll}
-      className={`relative flex flex-col h-full ${fullscreen ? 'fixed inset-0 z-50 bg-background/95 backdrop-blur-xl' : ''}`}
+      // 全屏三层讲究：
+      // - z-[60] 高于所有浮层（Agent 面板、对话框都是 z-50）。同层级时
+      //   Agent 面板在 DOM 里更靠后，会直接盖在全屏文档上——那不叫全屏。
+      // - 底色用不透明的 bg-background：半透明加模糊会把下面的界面
+      //   糊成一层鬼影，正文压在鬼影上读不下去。拖拽预览那边早就踩过
+      //   这个坑并换成不透明底，这里跟上。
+      // - 不用 backdrop-blur：全屏尺寸下这一层模糊的开销纯属白付。
+      //
+      // relative 与 fixed 必须二选一，不能同时挂：Tailwind 把 position
+      // 这组工具类按 static → fixed → absolute → relative → sticky 的顺序
+      // 输出，relative 排在 fixed 后面，两者同挂时 relative 生效，
+      // 全屏层压根不会离开原来的位置——于是「全屏」只是正文变宽，
+      // 侧边栏和顶栏照样杵在旁边。
+      className={`flex flex-col h-full ${fullscreen ? 'fixed inset-0 z-[60] bg-background' : 'relative'}`}
     >
       {/* 顶部操作栏
           单行两栏：左侧「标题 + 元信息」可压缩可截断，右侧操作区固定宽度不换行。
@@ -1049,7 +1084,9 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
                   <div className="flex-1 min-h-0 flex flex-col p-5 sm:p-8 pb-16">
                     <Card
                       className={[
-                        'glass max-w-[68rem] mx-auto w-full flex-1 min-h-0',
+                        'glass mx-auto w-full flex-1 min-h-0',
+                        // 与预览面同一条规则：全屏铺满，平时守住舒适行宽
+                        fullscreen ? 'max-w-none' : 'max-w-[68rem]',
                         // Card 自带 py-6 与 gap-6，编辑面要的是零内边距、零间隙：
                         // 内边距由卡片头、工具栏、编辑器各段自己管
                         'p-0 gap-0 overflow-hidden',
@@ -1178,7 +1215,12 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
             目录固定在右侧，编辑面与预览面都一样。早先它会跟着视图形态换边——
             可目录占的是同一块地方，换来换去只会让视线在两个界面之间来回跳：
             正文卡片该在哪、目录该在哪，两边保持一致才是同一篇文档的两种看法。 */}
-        {outlineVisible && (
+        {/* 全屏时目录列一并让路。
+            它平时占的是正文行的右侧一列，全屏下这一列若照旧留着，
+            正文铺满的宽度就要减去它——目录不撤，正文就还是差一截，
+            成了「正文宽了、目录还杵在旁边」的半吊子样子。
+            全屏是沉浸阅读：目录收起，Esc 或操作坞的按钮随时回来。 */}
+        {outlineVisible && !fullscreen && (
           <aside className="hidden w-56 shrink-0 @min-[56rem]:block">
             <DocOutline headings={headings} activeIndex={activeHeading} onSelect={scrollToHeading} />
           </aside>
@@ -1328,10 +1370,15 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
             {/* 目录列的占位块：宽度与目录列一致。
                 有了它，胶囊的居中基准就落在正文列的正中；
                 目录没显示时这块也不在，基准随之回到整列。
-                -ml-6：把这一列与按钮组之间的 gap 抵消掉。
-                gap 留在中间时，居中基准会偏半个 gap（12px），
-                胶囊与正文卡片就对不齐了。 */}
-            {outlineVisible && <div className="hidden w-56 shrink-0 -ml-6 @min-[56rem]:block" />}
+
+                这里不再用 -ml-6 抵消 gap：占位块 224px 加上它与按钮组之间的
+                gap(24px)，正好等于目录列在正文行里占掉的宽度（224 + 24），
+                基准与正文列严格重合。早先用 -ml-6 把 gap 抵掉，右侧实际只占
+                224px，胶囊的居中基准就比正文卡片偏右半个 gap（12px）——
+                看着像「没对齐」，其实就差这 12px。 */}
+            {outlineVisible && !fullscreen && (
+              <div className="hidden w-56 shrink-0 @min-[56rem]:block" />
+            )}
         </div>
         </div>
       </div>
