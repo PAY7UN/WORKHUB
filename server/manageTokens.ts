@@ -100,3 +100,26 @@ export function revokeManageToken(db: V2Database, id: string): boolean {
     .run(Date.now(), id).changes;
   return changed > 0;
 }
+
+/**
+ * 撤销某个标签下「从未被用过」的令牌。
+ *
+ * 用来清理装服务时留下的残骸：每次装服务都会发一把新令牌（明文只给一次，
+ * 没法复用），装完卸掉几次，库里就攒下一堆没人知道的令牌——它们还能重启服务。
+ *
+ * 只动「从未使用过」的：被用过的说明还挂在某台机器上，撤销它属于替用户做决定，
+ * 那种要人来确认。
+ */
+export function revokeUnusedByLabel(db: V2Database, label: string): string[] {
+  const rows = db
+    .prepare(
+      `SELECT id FROM manage_tokens
+       WHERE label = ? AND last_used_at IS NULL AND revoked_at IS NULL`,
+    )
+    .all(label) as Array<{ id: string }>;
+  const revoked: string[] = [];
+  for (const row of rows) {
+    if (revokeManageToken(db, row.id)) revoked.push(row.id);
+  }
+  return revoked;
+}

@@ -19,7 +19,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openV2Db } from './storage/v2/schema.ts';
-import { issueManageToken, listManageTokens, revokeManageToken } from './manageTokens.ts';
+import { issueManageToken, listManageTokens, revokeManageToken, revokeUnusedByLabel } from './manageTokens.ts';
 import { displayPath, logger } from './logger.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +32,7 @@ const USAGE = [
   '  npm run manage:token -- issue [标签]     发放一把新令牌（明文仅打印一次）',
   '  npm run manage:token -- list             列出全部令牌',
   '  npm run manage:token -- revoke <令牌id>  撤销一把令牌',
+  '  npm run manage:token -- cleanup [标签]   撤销该标签下从未使用过的令牌（默认 windows service）',
   '',
   `数据库：${displayPath(DB_PATH)}（可用环境变量 MDHUB_DB_V2 / MDHUB_DB 覆盖）`,
 ].join('\n');
@@ -49,14 +50,27 @@ function formatTime(ms: number | null): string {
 }
 
 function main(): void {
-  const [command, ...rest] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  // --json：只输出 JSON，不掺日志。
+  // 给脚本用——日志行带时间戳和前缀，脚本去正则抠里面的值，
+  // 哪天日志格式一改就悄悄抠错，错了还不报错。
+  const asJson = argv.includes('--json');
+  const [command, ...rest] = argv.filter((item) => item !== '--json');
 
   if (!command || command === '--help' || command === '-h') {
-    logger.notice(USAGE);
+    if (asJson) {
+      console.log(JSON.stringify({ ok: true, usage: USAGE.split('\n') }, null, 2));
+    } else {
+      logger.notice(USAGE);
+    }
     process.exit(0);
   }
 
   if (!existsSync(DB_PATH)) {
+    if (asJson) {
+      console.log(JSON.stringify({ ok: false, error: `找不到数据库文件：${displayPath(DB_PATH)}` }));
+      process.exit(1);
+    }
     fail(`找不到数据库文件：${displayPath(DB_PATH)}`, ['该库尚未创建，请先运行一次 npm run server 完成初始化。']);
   }
 
@@ -65,6 +79,10 @@ function main(): void {
     if (command === 'issue') {
       const label = rest.join(' ').trim() || '未命名';
       const issued = issueManageToken(db, label);
+      if (asJson) {
+        console.log(JSON.stringify({ ok: true, id: issued.id, token: issued.token, label: issued.label }));
+        return;
+      }
       logger.info(`已发放机器令牌（id=${issued.id}，标签：${issued.label}）`);
       // 令牌是这条命令的交付物，不是日志：不随日志级别被静默
       logger.notice(`令牌：${issued.token}`);
@@ -74,6 +92,10 @@ function main(): void {
 
     if (command === 'list') {
       const tokens = listManageTokens(db);
+      if (asJson) {
+        console.log(JSON.stringify({ ok: true, tokens }, null, 2));
+        return;
+      }
       if (tokens.length === 0) {
         logger.notice('还没有发放过任何令牌。');
         return;
@@ -88,15 +110,51 @@ function main(): void {
 
     if (command === 'revoke') {
       const id = rest[0];
-      if (!id) fail('缺少令牌 id', [USAGE]);
+      if (!id) {
+        if (asJson) {
+          console.log(JSON.stringify({ ok: false, error: '缺少令牌 id' }));
+          process.exit(1);
+        }
+        fail('缺少令牌 id', [USAGE]);
+      }
       const changed = revokeManageToken(db, id);
       if (!changed) {
+        if (asJson) {
+          console.log(JSON.stringify({ ok: false, id, error: '令牌不存在或已被撤销' }));
+          process.exit(1);
+        }
         fail(`没能撤销令牌 ${id}`, ['它可能不存在，或已经被撤销过。']);
+      }
+      if (asJson) {
+        console.log(JSON.stringify({ ok: true, id }));
+        return;
       }
       logger.info(`已撤销令牌 ${id}，它即刻失效。`);
       return;
     }
 
+    if (command === 'cleanup') {
+      // 清理装服务时留下的残骸：每次装服务都发一把新令牌，卸了也不回收，
+      // 攒多了就是一堆没人知道却还能重启服务的钥匙。
+      const label = rest.join(' ').trim() || 'windows service';
+      const revoked = revokeUnusedByLabel(db, label);
+      if (asJson) {
+        console.log(JSON.stringify({ ok: true, revoked }));
+        return;
+      }
+      if (revoked.length === 0) {
+        logger.info(`没有找到标签为「${label}」且从未使用过的令牌（用过的要人来确认，不动）。`);
+        return;
+      }
+      logger.info(`已撤销 ${revoked.length} 把标签为「${label}」且从未使用过的令牌：`);
+      for (const id of revoked) logger.info(`  ${id}`);
+      return;
+    }
+
+    if (asJson) {
+      console.log(JSON.stringify({ ok: false, error: `未知命令：${command}` }));
+      process.exit(1);
+    }
     fail(`未知命令：${command}`, [USAGE]);
   } finally {
     db.close();

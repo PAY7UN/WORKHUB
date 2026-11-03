@@ -13,9 +13,8 @@ import { join } from 'node:path';
 const workDir = mkdtempSync(join(tmpdir(), 'mdhub-manage-test-'));
 
 const { openV2Db } = await import('./storage/v2/schema.ts');
-const { issueManageToken, verifyManageToken, listManageTokens, revokeManageToken } = await import(
-  './manageTokens.ts'
-);
+const { issueManageToken, verifyManageToken, listManageTokens, revokeManageToken, revokeUnusedByLabel } =
+  await import('./manageTokens.ts');
 const { planRestart } = await import('./manage.ts');
 
 test.after(() => {
@@ -110,4 +109,27 @@ test('重启策略：显式命令优先，其次守护进程，最后自己拉�
 
   // 3. 都没有 → 自己再起一个
   assert.equal(planRestart({}).strategy, 'self');
+});
+
+test('清理只动从未用过的令牌：用过的要人来确认', () => {
+  const db = freshDb();
+  try {
+    const unused = issueManageToken(db, 'windows service');
+    const used = issueManageToken(db, 'windows service');
+    const other = issueManageToken(db, '别的用途');
+    // 用过的那把：有 last_used_at
+    verifyManageToken(db, used.token);
+
+    const revoked = revokeUnusedByLabel(db, 'windows service');
+    assert.deepEqual(revoked, [unused.id], '只该撤销同标签且从未用过的那把');
+
+    assert.equal(verifyManageToken(db, unused.token), null, '没用过的应被撤销');
+    assert.ok(verifyManageToken(db, used.token), '用过的不能顺手撤销');
+    assert.ok(verifyManageToken(db, other.token), '别的标签不受影响');
+
+    // 重复清理不应重复撤销
+    assert.deepEqual(revokeUnusedByLabel(db, 'windows service'), [], '已撤销的不应再出现');
+  } finally {
+    db.close();
+  }
 });

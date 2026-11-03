@@ -29,13 +29,15 @@ mdhub/
 │  ├─ dingtalk.ts   钉钉接入：加签、工作通知、钉钉待办
 │  ├─ reminderScheduler.ts 提醒调度：30 秒一轮巡检到期的提醒
 │  ├─ guests.ts     访客会话：httpOnly cookie 承载的访客身份
-│  ├─ manage.ts     运维接口：状态 / 最近日志 / 重启（认机器令牌，不认用户会话）
-│  ├─ manageTokens.ts 机器令牌：发放、校验、列出、撤销（库里只存哈希）
-│  ├─ manageToken.ts 机器令牌的命令行入口（npm run manage:token）
+│  ├─ manage.ts     运维接口：状态 / 最近日志 / 重启 / 停机（认机器令牌，不认用户会话）
+│  ├─ manageTokens.ts 机器令牌：发放、校验、列出、撤销、清理（库里只存哈希）
+│  ├─ manageToken.ts 机器令牌的命令行入口（npm run manage:token，支持 --json）
 │  ├─ logger.ts     统一日志出口：分级、脱敏、路径脱敏，兼带最近 500 行的内存缓冲
 │  └─ *.test.ts     node --test 用例（password / loginThrottle / logger / docCrypto / docAccess / accessGrant / dingtalk / manage）
 ├─ scripts/         工具：docs.mjs（文档查看/导出）、verify.mjs（端到端自检）、
-│                   pack-tray.mjs（组装服务 payload + 调 electron-builder 出安装包）
+│                   pack-tray.mjs（组装服务 payload + 调 electron-builder 出安装包）、
+│                   install-service.ps1 / uninstall-service.ps1（装卸 Windows 服务）、
+│                   service/WorkHubService.cs（服务宿主源码，用系统 csc.exe 现场编译）
 ├─ electron-builder.yml 托盘工具的打包配置（应用目录、payload、NSIS 安装项）
 ├─ tray/            Windows 托盘工具（Electron 主进程）
 │  ├─ main.cjs      托盘图标与菜单；local 模式拉起并守护服务进程，remote 模式走 HTTP
@@ -92,6 +94,80 @@ npm run server    # 同一个端口既提供 API 也提供前端页面
 所以生产环境不必再另摆一个 Caddy/nginx 托静态站点——少一个组件就少一处配置、一处证书、
 一处「页面能开但接口 404」的排查点。构建产物不在时只提供 API，并在日志里提示。
 
+## 部署成 Windows 服务（服务器用）
+
+桌面端用托盘就行；服务器上要的是「开机自启、崩了能自己爬起来、没人管也在跑」，
+这一节就是干这个的。
+
+```powershell
+# 管理员身份的 PowerShell
+npm run service:install
+```
+
+装完是个真正的 Windows 服务（`services.msc` 里能看到）：
+
+```powershell
+sc.exe query WorkHub       # 看状态
+sc.exe stop WorkHub        # 停（走优雅停机）
+sc.exe start WorkHub       # 起
+```
+
+### 它到底装了什么
+
+没有引入 nssm / winsw 这类第三方二进制。脚本用**系统自带的 .NET Framework 编译器**
+（`csc.exe`，Win10/11 与 Server 2012+ 都带）现场编一个几十 KB 的小 exe 当服务宿主，
+它负责：
+
+| 活儿 | 怎么做 |
+| --- | --- |
+| 拉起 node | 子进程，工作目录就是代码目录，`.env` 从那儿读 |
+| 收日志 | node 的 stdout/stderr 转到 `logs/service.log`（带时间戳和级别） |
+| 崩溃自愈 | node 崩了自己拉起来，退避 5/10/15… 秒；连续 5 次拉不起来才放弃 |
+| 干净停止 | 收到停止指令先调服务端的停机接口，让它把事务收完；超时才强杀 |
+| 不留孤儿 | 子进程关进 Windows Job Object：宿主被强杀，node 跟着死，不占着端口 |
+
+「崩溃自愈」放在宿主里而不是交给服务管理器，是因为外部的重启策略各有各的脾气——
+任务计划程序就不会重启「被终止」的任务。放在宿主里，两种安装方式的行为才是一套的。
+
+### 没有管理员权限时
+
+```powershell
+npm run service:install -- -Task
+```
+
+改用任务计划程序：不需要管理员权限，开机登录后自动起来，崩了也会被拉起。
+但它有两个边界：用户没登录时不跑，任务计划程序自己被禁用时也不跑。
+真要无人值守，还是用服务模式。
+
+### 常用参数
+
+```powershell
+# 指定代码目录（默认仓库根）、端口、node 路径
+npm run service:install -- -AppDir D:\WorkHub -Port 8787 -Node "C:\Program Files\nodejs\node.exe"
+
+# 只看要做什么，不真改系统
+npm run service:install -- -DryRun
+
+# 端口被占用时强行装（服务多半起不来）
+npm run service:install -- -Force
+```
+
+### 卸载
+
+```powershell
+npm run service:uninstall
+```
+
+停服务、注销注册、清掉残留进程、删安装目录；**数据库、正文、日志一律不动**。
+装服务时发的那把机器令牌也会一并撤销——它能重启服务，留着等于把钥匙留在门上。
+
+### 两个要留心的
+
+- **服务以 LocalSystem 运行，读不到用户环境变量。** 配置请写进代码目录下的 `.env`，
+  别指望设过的用户级环境变量能传进去。
+- **托盘托管和服务托管别同时开。** 两个都想拉起同一个端口，谁后起来谁撞
+  `EADDRINUSE`（服务端会重试 10 秒，然后放弃）。
+
 ## 托盘工具（Windows）
 
 一个托盘图标 + 一个菜单，不做完整界面。一套代码两种模式：
@@ -132,7 +208,12 @@ npm run manage:token -- list
 
 # 撤销
 npm run manage:token -- revoke <令牌 id>
+
+# 清掉某个标签下从未被用过的令牌（装服务反复留下的残骸）
+npm run manage:token -- cleanup "windows service"
 ```
+
+加 `--json` 只输出 JSON，脚本解析用（`issue --json` 会带出 id 和明文）。
 
 把令牌填进托盘配置，或用环境变量 `WORKHUB_MANAGE_TOKEN`：
 
@@ -683,6 +764,7 @@ Agent 配置脱敏、改密后旧令牌立即失效，文档加密全流程
 | `GET` | `/api/manage/status` | 状态快照：版本、运行时长、内存、数据库、各类条数、托管方式 |
 | `GET` | `/api/manage/logs?tail=N` | 最近 N 行日志（默认 200，内存里最多留 500 行） |
 | `POST` | `/api/manage/restart` | 重启服务（按托管方式选择 systemd / pm2 / docker / 自拉起） |
+| `POST` | `/api/manage/shutdown` | 停掉当前进程（不拉新的）。被托盘托管时拒绝——托盘会把它拉回来 |
 
 ## License
 

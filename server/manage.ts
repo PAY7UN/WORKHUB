@@ -171,7 +171,17 @@ function countRows(db: V2Database): Record<string, number> {
 }
 
 /** 建管理路由 */
-export function createManageRouter(db: V2Database, dbPath: string): Router {
+export interface ManageHooks {
+  /**
+   * 优雅停机的回调。
+   *
+   * 由入口注入，manage.ts 自己不碰进程生命周期——它只负责把「该停了」这件事
+   * 告诉外面，具体怎么收摊由入口说了算。
+   */
+  shutdown?: (reason: string) => void;
+}
+
+export function createManageRouter(db: V2Database, dbPath: string, hooks: ManageHooks = {}): Router {
   const router = Router();
   router.use((req, res, next) => requireManageToken(db, req, res, next));
 
@@ -239,6 +249,33 @@ export function createManageRouter(db: V2Database, dbPath: string): Router {
     const plan = planRestart();
     res.json({ ok: true, strategy: plan.strategy, detail: plan.detail });
     executeRestart(plan);
+  });
+
+  /**
+   * 停机（不拉新的起来）。
+   *
+   * 给 Windows 服务宿主用：SCM 说「停」，宿主就调这个接口让服务自己收摊，
+   * 而不是一棍子打死进程——强杀会打断正在写的事务（SQLite 靠 WAL 兜底，
+   * 但正在跑的导入任务会被腰斩）。
+   *
+   * 被托盘托管时同样拒绝：托盘会把服务拉回来，这里停了就等于跟托盘对着干。
+   */
+  router.post('/shutdown', (_req, res) => {
+    if (isSupervisedByTray()) {
+      res.status(409).json({
+        error: '这个服务由托盘托管，请在托盘菜单里停止（这里停了托盘会再拉起来）',
+      });
+      return;
+    }
+    res.json({ ok: true, detail: '正在关闭' });
+    // 响应先发出去，再走关闭流程，否则调用方看到的是连接被掐断
+    setTimeout(() => {
+      if (hooks.shutdown) hooks.shutdown('管理接口请求');
+      else {
+        logger.notice('收到停止请求，进程即将退出');
+        process.exit(0);
+      }
+    }, 200);
   });
 
   return router;

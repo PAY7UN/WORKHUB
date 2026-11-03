@@ -343,7 +343,7 @@ app.get('/api/healthz', (_req, res) => {
  * /api/manage/* 认机器令牌，其余接口认用户会话，两套凭证互不通用。
  * 详细说明见 server/manage.ts。
  */
-app.use('/api/manage', createManageRouter(db, DB_PATH));
+app.use('/api/manage', createManageRouter(db, DB_PATH, { shutdown: gracefulShutdown }));
 
 app.get('/api/auth/me', (req, res) => {
   res.json({
@@ -2326,6 +2326,8 @@ sweepStashed();
  * 比直接报错更难查。重试几秒就能接上。
  */
 let listenAttempts = 0;
+/** 提出来是为了能关掉它：优雅停机要先停止收新请求 */
+let httpServer: ReturnType<typeof app.listen> | null = null;
 function listenForPort(): void {
   const server = app.listen(PORT, '0.0.0.0', () => {
     const cfg = getAgentConfigPublic();
@@ -2356,6 +2358,41 @@ function listenForPort(): void {
     logger.error(`监听端口失败：${err.message}`);
     process.exit(1);
   });
+  httpServer = server;
+}
+
+/**
+ * 优雅停机。
+ *
+ * 被 Windows 服务宿主调用（它收到 SCM 的停止指令时，会先请求这个接口让服务自己收摊）。
+ *
+ * 顺序有讲究：
+ * 1. 先答完 HTTP 响应，再关连接——反过来的话，调用方看到的是连接被掐断，
+ *    分不清是「服务停了」还是「服务挂了」
+ * 2. server.close() 只停收新连接，已经建立的长连接（比如 Agent 的 SSE）还挂着，
+ *    所以要给一个兜底超时，不然永远等不到 close 回调
+ */
+function gracefulShutdown(reason: string): void {
+  logger.notice(`收到停止请求（${reason}），正在关闭`);
+  let done = false;
+  const finish = (): void => {
+    if (done) return;
+    done = true;
+    try {
+      db.close();
+    } catch {
+      // 关库失败没什么可补救的：要退出就退出
+    }
+    logger.notice('服务已停止');
+    process.exit(0);
+  };
+  // 兜底：5 秒后无论如何都退，长连接不该拖住整个停机
+  setTimeout(finish, 5000).unref();
+  if (!httpServer) {
+    finish();
+    return;
+  }
+  httpServer.close(() => finish());
 }
 
 listenForPort();
