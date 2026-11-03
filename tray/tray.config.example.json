@@ -1,0 +1,7 @@
+{
+  "mode": "local",
+  "target": "",
+  "appDir": "",
+  "entry": "server/index.ts",
+  "token": ""
+}

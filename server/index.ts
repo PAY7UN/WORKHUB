@@ -6,7 +6,9 @@
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import type {
   AccessCapability,
   AgentSettings,
@@ -2192,6 +2194,30 @@ app.post('/api/reminders/:id/fire', requireAdmin, async (req, res) => {
     res.status(400).json({ message });
   }
 });
+
+/* ------------------------------ 前端静态资源 ------------------------------ */
+
+/**
+ * 一个进程 = 完整应用：同一个端口既提供 API 也提供前端页面。
+ *
+ * 以前得另摆一个 Caddy/nginx 托 dist/，于是多出一个组件——多一处配置、多一张证书、
+ * 多一个「页面能开但接口 404」的排查点。现在构建产物直接由 Express 托管，
+ * `npm run build` 之后 `npm run server` 就是完整可用的 WorkHub，
+ * 托盘工具点「打开网页」指向的也正是这个端口。
+ *
+ * 放在所有 API 路由之后注册：Express 按注册顺序匹配，
+ * 这样 `/api/xxx` 永远先落到 API 上，不会被静态中间件截走。
+ *
+ * 前端不用 history 路由（只有查询参数），所以不需要 SPA 兜底路由：
+ * 访问根路径时静态中间件的 index 选项会直接命中 index.html。
+ */
+const DIST_DIR = fileURLToPath(new URL('../dist', import.meta.url));
+if (existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
+  logger.info(`前端静态资源: ${displayPath(DIST_DIR)}`);
+} else {
+  logger.warn('未找到 dist/，本次只提供 API（前端请跑 npm run dev，或先执行 npm run build）');
+}
 
 /* ------------------------------ 启动 ------------------------------ */
 

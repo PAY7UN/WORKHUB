@@ -27,6 +27,7 @@
   "scripts": {
     "dev": "vite",
     "server": "node --env-file-if-exists=.env server/index.ts",
+    "tray": "electron tray",
     "dev:all": "concurrently -n api,web -c magenta,cyan \"npm run server\" \"npm run dev\"",
     "admin:password": "node --env-file-if-exists=.env server/resetAdminPassword.ts",
     "docs:list": "node scripts/docs.mjs --list",
@@ -81,6 +82,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "concurrently": "^10.0.6",
+    "electron": "^45.2.1",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",

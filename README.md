@@ -32,6 +32,11 @@ mdhub/
 │  ├─ logger.ts     统一日志出口：分级、脱敏、路径脱敏
 │  └─ *.test.ts     node --test 用例（password / loginThrottle / logger / docCrypto / docAccess / accessGrant / dingtalk）
 ├─ scripts/         工具：docs.mjs（文档查看/导出）、verify.mjs（端到端自检）
+├─ tray/            Windows 托盘工具（Electron 主进程）
+│  ├─ main.cjs      托盘图标与菜单；local 模式拉起并守护服务进程，remote 模式走 HTTP
+│  ├─ run-server.cjs 服务进程的包装：父进程（托盘）没了就自己退出，不留孤儿占端口
+│  ├─ icon.cjs      用代码画托盘图标 PNG（不往仓库里塞二进制资源）
+│  └─ package.json  Electron 应用入口声明
 ├─ data/            SQLite 索引 + 仓库目录里的正文（运行期生成，git 忽略）
 │  ├─ mdhub-v2.db   现役索引库
 │  └─ vault/        正文文件：<仓库 slug>/docs/…、<仓库 slug>/assets/…
@@ -69,6 +74,36 @@ npm run dev:all
 
 首次启动会在 `data/mdhub-v2.db` 自动建库。示例文档**仅在显式设置 `MDHUB_SEED_DEMO=1` 时**灌入，
 正式部署默认是空库（详见 `.env.example`）。
+
+### 生产模式：一个进程就是完整应用
+
+```bash
+npm run build     # 产出 dist/
+npm run server    # 同一个端口既提供 API 也提供前端页面
+```
+
+服务端会直接托管 `dist/`（`server/index.ts` 末尾的静态中间件），
+所以生产环境不必再另摆一个 Caddy/nginx 托静态站点——少一个组件就少一处配置、一处证书、
+一处「页面能开但接口 404」的排查点。构建产物不在时只提供 API，并在日志里提示。
+
+## 托盘工具（Windows）
+
+一个托盘图标 + 一个菜单，不做完整界面。一套代码两种模式：
+
+| 模式 | 用途 | 行为 |
+| --- | --- | --- |
+| `local` | 使用者本地版 | 托盘自己拉起并守护本机的 WorkHub 服务进程（菜单可启停） |
+| `remote` | 运维管理面板 | 托盘只通过 HTTP 跟远端服务器说话 |
+
+```bash
+npm run tray      # 开发态启动（Electron 自带运行时）
+```
+
+- **使用者机器上不需要另外装 Node**：托盘用 `ELECTRON_RUN_AS_NODE=1` 让自带的运行时当纯 Node 用。
+- **托盘被强杀不会留下孤儿服务**：服务进程盯着父进程 PID，父进程没了就自己退出、释放端口
+  （Windows 不像 Unix 会自动收拾孤儿进程）。
+- 配置放在 `tray/tray.config.json`（按机器而异，不进版本库；样例见 `tray/tray.config.example.json`）：
+  `mode` / `target` / `appDir` / `entry` / `token`。
 
 ## 局域网访问
 

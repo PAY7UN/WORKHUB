@@ -40,6 +40,13 @@ logs/
 # 冒烟测试的一次性目录（临时库 + 临时仓库目录，跑完就该删）
 /.smoke/
 
+# 托盘工具的机器相关配置：端口、代码目录、令牌都随机器而异，不该进版本库
+# （样例见 tray/tray.config.example.json）
+tray/tray.config.json
+
+# 发布包产物目录（out/payload、out/release.json 之类）
+/out/
+
 # 编辑器
 .vscode/*
 !.vscode/extensions.json
