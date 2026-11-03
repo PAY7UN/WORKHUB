@@ -118,4 +118,32 @@ function makeTrayImages() {
   };
 }
 
-module.exports = { makeTrayImages };
+/**
+ * 生成 exe 的图标（.ico）。
+ *
+ * 结构和托盘图标一样，只是换成 ICO 容器：ICO 允许直接内嵌 PNG（Vista 以后都认），
+ * 所以只要一个 256×256 的条目，Windows 会按需缩放。
+ *
+ * 不装图标的话，安装包和桌面快捷方式都是 Electron 的默认图标——
+ * 使用者一眼就看出「这是个 Electron 壳子」，而不是自己的产品。
+ */
+function makeIconIco() {
+  const size = 256;
+  const png = encodePng(size, drawIcon(size));
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // 保留字段
+  header.writeUInt16LE(1, 2); // 类型：1 = 图标
+  header.writeUInt16LE(1, 4); // 条目数
+  const entry = Buffer.alloc(16);
+  entry[0] = 0; // 宽（0 表示 256）
+  entry[1] = 0; // 高（0 表示 256）
+  entry[2] = 0; // 调色板颜色数
+  entry[3] = 0; // 保留字段
+  entry.writeUInt16LE(1, 4); // 颜色平面数
+  entry.writeUInt16LE(32, 6); // 每像素位数
+  entry.writeUInt32LE(png.length, 8); // 图像数据长度
+  entry.writeUInt32LE(header.length + entry.length, 12); // 图像数据偏移
+  return Buffer.concat([header, entry, png]);
+}
+
+module.exports = { makeTrayImages, makeIconIco };

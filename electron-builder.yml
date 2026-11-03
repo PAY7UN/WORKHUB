@@ -1,0 +1,49 @@
+# electron-builder 配置：Windows 托盘工具
+#
+# 产物：release/WorkHub-Setup-<版本>.exe（安装程序）
+# 另有 release/win-unpacked/ 是免安装目录，可直接运行验证。
+appId: com.workhub.tray
+productName: WorkHub
+copyright: WorkHub
+
+directories:
+  app: tray
+  # 输出目录不能用 dist/——那是前端构建产物的地盘
+  # （打包脚本会把它改到临时目录，避开 IDE 的目录改名钩子，最后再把安装包拷回 release/）
+  output: release
+  buildResources: build
+
+# 托盘应用目录里的全部文件（main.cjs / icon.cjs / run-server.cjs / package.json）
+files:
+  - '**/*'
+  # 托盘本体零第三方依赖。不排除的话，electron-builder 会按仓库根的 package.json
+  # 把前端依赖（react、codemirror…）连同原生模块一起拖进安装包——白多几十兆。
+  - '!node_modules/**/*'
+  - '!**/node_modules/**/*'
+  # 机器相关的配置不进包
+  - '!tray.config.json'
+
+asar: true
+
+# 服务 payload：托盘要拉起的服务进程需要的一切（代码 + 前端产物 + 运行时依赖）
+# 放在 asar 外面——服务进程是纯 Node 模式跑的，读不了 asar 里的文件
+extraResources:
+  - from: release/.payload
+    to: payload
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: WorkHub-Setup-${version}.${ext}
+
+nsis:
+  # 一键安装：使用者双击就完事，不用研究装哪
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  shortcutName: WorkHub
+  # 卸载时保留用户数据（.env / 数据库），重装不丢东西
+  deleteAppDataOnUninstall: false

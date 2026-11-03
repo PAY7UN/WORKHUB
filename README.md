@@ -31,11 +31,13 @@ mdhub/
 │  ├─ guests.ts     访客会话：httpOnly cookie 承载的访客身份
 │  ├─ logger.ts     统一日志出口：分级、脱敏、路径脱敏
 │  └─ *.test.ts     node --test 用例（password / loginThrottle / logger / docCrypto / docAccess / accessGrant / dingtalk）
-├─ scripts/         工具：docs.mjs（文档查看/导出）、verify.mjs（端到端自检）
+├─ scripts/         工具：docs.mjs（文档查看/导出）、verify.mjs（端到端自检）、
+│                   pack-tray.mjs（组装服务 payload + 调 electron-builder 出安装包）
+├─ electron-builder.yml 托盘工具的打包配置（应用目录、payload、NSIS 安装项）
 ├─ tray/            Windows 托盘工具（Electron 主进程）
 │  ├─ main.cjs      托盘图标与菜单；local 模式拉起并守护服务进程，remote 模式走 HTTP
 │  ├─ run-server.cjs 服务进程的包装：父进程（托盘）没了就自己退出，不留孤儿占端口
-│  ├─ icon.cjs      用代码画托盘图标 PNG（不往仓库里塞二进制资源）
+│  ├─ icon.cjs      用代码画托盘图标 PNG 与 exe 图标 ICO（不往仓库里塞二进制资源）
 │  └─ package.json  Electron 应用入口声明
 ├─ data/            SQLite 索引 + 仓库目录里的正文（运行期生成，git 忽略）
 │  ├─ mdhub-v2.db   现役索引库
@@ -104,6 +106,42 @@ npm run tray      # 开发态启动（Electron 自带运行时）
   （Windows 不像 Unix 会自动收拾孤儿进程）。
 - 配置放在 `tray/tray.config.json`（按机器而异，不进版本库；样例见 `tray/tray.config.example.json`）：
   `mode` / `target` / `appDir` / `entry` / `token`。
+
+### 打包成 exe
+
+```bash
+npm run pack:tray
+```
+
+产物：`release/WorkHub-Setup-<版本>.exe`（一键安装包，约 118MB——大头是 Electron 本身）。
+
+安装包里装的是两样东西，**目录分工是打包版的关键**：
+
+| 位置 | 内容 | 权限 |
+| --- | --- | --- |
+| 安装目录 `resources/payload` | 服务端代码 + 前端产物 + 服务端运行时依赖 | 只读 |
+| `%LOCALAPPDATA%\WorkHub` | `.env`、数据库、vault、日志 | 可写 |
+
+之所以要分开：服务端是**按代码目录**定位数据库和 vault 的（`server/storage/v2/db.ts`），
+打包后代码在安装目录里，数据库要是跟着落在那儿，普通用户根本写不进去——
+服务一起来就报错。所以打包态用 `MDHUB_DB_V2` / `MDHUB_VAULT_DIR` 把它们掰到用户目录。
+
+首次运行的行为：
+
+1. 托盘在用户目录生成 `.env`：随机密钥 + 随机管理员密码 + 一个没被占用的端口；
+2. 弹窗把**初始密码当面告诉使用者**（只显示这一次）；
+3. 拉起服务进程（从安装目录的 payload 里跑），页面地址 `http://127.0.0.1:<端口>`。
+
+打包相关的几个坑（都在 `scripts/pack-tray.mjs` 里绕掉了）：
+
+- **payload 里的 `node_modules` 要单独一条 `extraResources`**：electron-builder 的文件过滤器
+  硬编码排除「复制源根部的 node_modules」，把源目录设成 `node_modules` 本身才拷得进去。
+- **托盘应用要明确排除 `node_modules`**：否则 electron-builder 会按仓库根的 `package.json`
+  把前端依赖（react、codemirror…）连同原生模块拖进安装包，白多四十兆。
+- **打包的中间产物放临时目录**：electron-builder 解压 electron 发行包的最后一步是目录改名，
+  在 IDE 打开的仓库里做目录改名会被安全删除钩子拦掉（EPERM），打包会挂在最后一步。
+- **better-sqlite3 只留 `prebuilds/win32-x64.node`**：它自带 10MB 的 sqlite3 C 源码和 6 个
+  别的平台的预编译二进制，运行时都用不上。
 
 ## 局域网访问
 

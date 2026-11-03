@@ -13,9 +13,11 @@
  * 于是使用者机器上**不需要另外装 Node**——这是托盘工具能不能给非技术用户用的关键。
  * 代价是安装包大（带一个 chromium），本地版可以接受，服务器上则不必装托盘。
  */
-const { app, Tray, Menu, nativeImage, shell, screen } = require('electron');
+const { app, Tray, Menu, nativeImage, shell, screen, dialog } = require('electron');
 const { spawn } = require('node:child_process');
+const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
+const net = require('node:net');
 const path = require('node:path');
 const { makeTrayImages } = require('./icon.cjs');
 
@@ -28,12 +30,14 @@ const RESTART_DELAY_MS = 2000;
 const DEFAULTS = {
   mode: 'local', // 'local' | 'remote'
   target: '', // 留空则本地模式按 .env 的 MDHUB_PORT 推 127.0.0.1
-  appDir: '', // 本地模式的服务代码目录，留空则取托盘所在仓库的根目录
-  entry: 'server/index.ts', // 服务入口（相对 appDir）
+  appDir: '', // 工作目录（.env / 数据库 / 日志）；留空则按运行形态取默认
+  entry: 'server/index.ts', // 服务入口（相对代码目录）
   token: '', // remote 模式的机器令牌
 };
 
 let config = null;
+/** 运行路径：开发态与打包态的差别全在这里 */
+let paths = null;
 let tray = null;
 /** 当前拉起的服务进程（remote 模式恒为 null） */
 let child = null;
@@ -44,15 +48,54 @@ let restarts = 0;
 /** 'running' | 'stopped' */
 let status = 'stopped';
 
+/* --------------------------------- 路径 --------------------------------- */
+
+/**
+ * 算出这次运行各处路径。
+ *
+ * 打包态最要紧的一条：**代码在安装目录（只读），数据与密钥在用户目录（可写）**。
+ * 服务端是按代码目录定位数据库和 vault 的（`DB_V2_PATH` 相对代码目录算），
+ * 所以打包态必须把这两个路径用环境变量掰到用户目录去——
+ * 否则数据库会被写进 Program Files，普通用户写不进去，服务一起来就报错。
+ */
+function resolvePaths() {
+  if (app.isPackaged) {
+    // 安装目录：代码 + 前端产物 + 依赖，只读
+    const codeDir = path.join(process.resourcesPath, 'payload');
+    // 用户目录：.env / 数据库 / vault / 日志，可写
+    const dataDir = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'WorkHub');
+    return {
+      codeDir,
+      dataDir,
+      entry: path.join(codeDir, 'server', 'index.ts'),
+      runner: path.join(codeDir, 'run-server.cjs'),
+      envFile: path.join(dataDir, '.env'),
+      logsDir: path.join(dataDir, 'logs'),
+      packaged: true,
+    };
+  }
+  // 开发态：仓库根既是代码目录也是工作目录
+  const repoRoot = path.resolve(app.getAppPath(), '..');
+  return {
+    codeDir: repoRoot,
+    dataDir: repoRoot,
+    entry: path.join(repoRoot, 'server', 'index.ts'),
+    runner: path.join(__dirname, 'run-server.cjs'),
+    envFile: path.join(repoRoot, '.env'),
+    logsDir: path.join(repoRoot, 'logs'),
+    packaged: false,
+  };
+}
+
 /* --------------------------------- 配置 --------------------------------- */
 
 function log(message) {
   const line = `[${new Date().toISOString()}] ${message}\n`;
   process.stdout.write(line);
+  if (!paths) return;
   try {
-    const dir = path.join(config.appDir, 'logs');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(path.join(dir, 'tray.log'), line);
+    fs.mkdirSync(paths.logsDir, { recursive: true });
+    fs.appendFileSync(path.join(paths.logsDir, 'tray.log'), line);
   } catch {
     // 日志写不进去也不能影响主流程
   }
@@ -90,13 +133,13 @@ function loadConfig() {
  * 听的就是那个端口，托盘也得跟着它走，否则托盘指向的地址和服务实际监听的地址对不上，
  * 表现是「菜单显示已停止，可服务明明在跑」。
  */
-function readPortFromEnv(appDir) {
+function readPortFromEnv(envFile) {
   if (process.env.MDHUB_PORT) {
     const fromEnv = Number(process.env.MDHUB_PORT);
     if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
   }
   try {
-    const raw = fs.readFileSync(path.join(appDir, '.env'), 'utf8');
+    const raw = fs.readFileSync(envFile, 'utf8');
     const match = raw.match(/^\s*MDHUB_PORT\s*=\s*(\d+)/m);
     return match ? Number(match[1]) : DEFAULT_PORT;
   } catch {
@@ -104,15 +147,62 @@ function readPortFromEnv(appDir) {
   }
 }
 
-/** 本地模式下服务代码目录：默认是托盘目录的上一级（仓库根） */
-function resolveAppDir(cfg) {
-  if (cfg.appDir) return path.resolve(cfg.appDir);
-  return path.resolve(app.getAppPath(), '..');
+/* ------------------------------ 首次运行初始化 ------------------------------ */
+
+/**
+ * 打包态首次运行时生成 .env。
+ *
+ * 服务端在生产模式下没有 MDHUB_SECRET / MDHUB_ADMIN_PASSWORD 就拒绝启动
+ * （这是故意的：密钥缺失等于全站权限失守，不能悄悄降级成默认弱口令）。
+ * 使用者装完即用，就意味着这两个值得由托盘替他们准备好：
+ * 随机密钥 + 随机密码，密码当面告诉他一次。
+ */
+async function ensureEnvFile() {
+  if (!paths.packaged) return { password: null };
+  if (fs.existsSync(paths.envFile)) return { password: null };
+
+  const secret = randomBytes(32).toString('hex');
+  const password = randomBytes(9).toString('base64url');
+  const port = await pickFreePort(DEFAULT_PORT);
+  fs.mkdirSync(path.dirname(paths.envFile), { recursive: true });
+  fs.writeFileSync(
+    paths.envFile,
+    [
+      '# WorkHub 本地版配置（首次启动自动生成）',
+      '# 主密钥：用于 JWT 签名与 API Key 加密，切勿泄露或分享',
+      `MDHUB_SECRET=${secret}`,
+      '# 管理员初始密码：仅首次建库时写入账号，之后改这里不会改密码',
+      `MDHUB_ADMIN_PASSWORD=${password}`,
+      '# 监听端口（托盘按它拼出「打开网页」的地址）',
+      `MDHUB_PORT=${port}`,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return { password, port };
 }
 
-/** 服务入口的绝对路径 */
-function resolveEntry(cfg) {
-  return path.isAbsolute(cfg.entry) ? cfg.entry : path.join(cfg.appDir, cfg.entry);
+/** 端口有没有被占着 */
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => srv.close(() => resolve(true)));
+    srv.listen(port, '127.0.0.1');
+  });
+}
+
+/**
+ * 找一个没人用的端口。
+ *
+ * 默认端口被别的程序占了的话，服务起来就崩，使用者看到的却是「托盘转圈」——
+ * 这种问题没人查得出来，所以第一次生成配置时就避让掉。
+ */
+async function pickFreePort(preferred) {
+  for (let port = preferred; port < preferred + 20; port += 1) {
+    if (await isPortFree(port)) return port;
+  }
+  return preferred;
 }
 
 /* -------------------------------- 状态探测 -------------------------------- */
@@ -136,38 +226,66 @@ async function probe() {
  * Electron 自带的 Node 版本不一定够，所以先看版本再决定用哪个参数：
  * 够就用 if-exists（没有 .env 也不报错），不够就退回 --env-file（仅在文件存在时传）。
  */
-function envFileArgs(appDir) {
+function envFileArgs() {
+  if (paths.packaged) {
+    // 打包态的 .env 由 ensureEnvFile 保证存在
+    return [`--env-file=${paths.envFile}`];
+  }
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major > 22 || (major === 22 && minor >= 9)) return ['--env-file-if-exists=.env'];
-  return fs.existsSync(path.join(appDir, '.env')) ? ['--env-file=.env'] : [];
+  return fs.existsSync(paths.envFile) ? [`--env-file=${paths.envFile}`] : [];
 }
 
-function startService() {
+/**
+ * 子进程的环境变量。
+ *
+ * 打包态要显式把数据库和 vault 掰到用户目录：服务端默认是按代码目录定位它们的，
+ * 而打包后代码在安装目录里（只读），普通用户写不进去。
+ */
+function childEnv() {
+  const env = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: '1',
+    WORKHUB_PARENT_PID: String(process.pid),
+  };
+  if (paths.packaged) {
+    env.NODE_ENV = 'production';
+    env.MDHUB_DB_V2 = path.join(paths.dataDir, 'data', 'mdhub-v2.db');
+    env.MDHUB_VAULT_DIR = path.join(paths.dataDir, 'data', 'vault');
+  }
+  return env;
+}
+
+async function startService() {
   if (child) return;
   stoppingByUser = false;
 
-  const entry = resolveEntry(config);
+  // 端口被占着就别硬拉了：多半是已经有一个 WorkHub 在跑（或别的程序占了端口）。
+  // 不探这一下的话，服务会反复 EADDRINUSE 崩掉，日志里只剩一堆看不懂的堆栈。
+  const port = Number(new URL(config.target).port || DEFAULT_PORT);
+  if (!(await isPortFree(port))) {
+    log(`端口 ${port} 已被占用，不再拉起服务（可能已经有一个 WorkHub 在运行）`);
+    refreshMenu();
+    return;
+  }
+
+  const entry = paths.entry;
   if (!fs.existsSync(entry)) {
     log(`服务入口不存在：${entry}（检查配置里的 appDir / entry）`);
     return;
   }
 
-  const logDir = path.join(config.appDir, 'logs');
-  fs.mkdirSync(logDir, { recursive: true });
-  const logStream = fs.createWriteStream(path.join(logDir, 'service.log'), { flags: 'a' });
+  fs.mkdirSync(paths.logsDir, { recursive: true });
+  const logStream = fs.createWriteStream(path.join(paths.logsDir, 'service.log'), { flags: 'a' });
 
   // ELECTRON_RUN_AS_NODE=1 让 electron.exe 以纯 Node 模式运行：
   // 使用者机器上不用装 Node，托盘自带运行时就够了。
   // 入口前面套一层 run-server.cjs：托盘被强杀时，服务进程会跟着退出（见该文件注释）。
-  child = spawn(
-    process.execPath,
-    [...envFileArgs(config.appDir), path.join(__dirname, 'run-server.cjs'), entry],
-    {
-      cwd: config.appDir,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', WORKHUB_PARENT_PID: String(process.pid) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+  child = spawn(process.execPath, [...envFileArgs(), paths.runner, entry], {
+    cwd: paths.dataDir,
+    env: childEnv(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   child.stdout.pipe(logStream);
   child.stderr.pipe(logStream);
 
@@ -252,9 +370,32 @@ function quit() {
 
 app.setAppUserModelId('com.workhub.tray');
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  paths = resolvePaths();
   config = loadConfig();
-  config.appDir = resolveAppDir(config);
+  // 工作目录可配（便携运行、测试都可能用到），默认按运行形态取
+  if (config.appDir) paths.dataDir = path.resolve(config.appDir);
+  // 服务入口：相对路径按代码目录拼，绝对路径直接用
+  paths.entry = path.isAbsolute(config.entry)
+    ? config.entry
+    : path.join(paths.codeDir, config.entry);
+
+  // 首次运行：生成 .env（打包态），并把初始密码当面告诉使用者。
+  // 放在算 target 前面——端口是刚写进 .env 的，得按它来拼地址。
+  const { password } = await ensureEnvFile();
+  if (password) {
+    log('首次运行：已生成 .env');
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'WorkHub 首次启动',
+      message: '管理员账号：admin',
+      detail:
+        `初始密码：${password}\n\n` +
+        '这个密码只显示这一次，请抄进密码管理器。\n' +
+        '之后要改密码，请到「设置 → 账号」里改。',
+      buttons: ['我记下了'],
+    });
+  }
 
   if (config.mode === 'remote') {
     if (!config.target) {
@@ -263,9 +404,10 @@ app.whenReady().then(() => {
       return;
     }
   } else if (!config.target) {
-    config.target = `http://127.0.0.1:${readPortFromEnv(config.appDir)}`;
+    config.target = `http://127.0.0.1:${readPortFromEnv(paths.envFile)}`;
   }
-  log(`模式=${config.mode} target=${config.target} appDir=${config.appDir}`);
+  log(`模式=${config.mode} target=${config.target}`);
+  log(`代码目录=${paths.codeDir} 工作目录=${paths.dataDir}`);
   if (config.configFile) log(`配置文件=${config.configFile}`);
 
   const images = makeTrayImages();
@@ -302,7 +444,11 @@ app.whenReady().then(() => {
     probe().then((alive) => {
       status = alive ? 'running' : 'stopped';
       refreshMenu();
-      if (!alive) startService();
+      if (alive) {
+        log('服务已经在运行，托盘只做监控（不再拉起第二个）');
+        return;
+      }
+      startService();
     });
   }
 });

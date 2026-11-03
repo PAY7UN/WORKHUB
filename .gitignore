@@ -47,6 +47,9 @@ tray/tray.config.json
 # 发布包产物目录（out/payload、out/release.json 之类）
 /out/
 
+# 托盘工具的打包产物（安装包、免安装目录、组装出来的 payload）
+/release/
+
 # 编辑器
 .vscode/*
 !.vscode/extensions.json
