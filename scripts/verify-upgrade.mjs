@@ -38,6 +38,10 @@ const NEW_VERSION = '9.9.9';
 /** 本次验证用的端口。运行时才定，见 findFreePort。 */
 let PORT = 0;
 
+/** 部署目录与机器令牌：诊断时要用（服务日志在哪、能不能查版本） */
+let appDirRef = '';
+let tokenRef = '';
+
 /**
  * 找一个空闲端口。
  *
@@ -141,6 +145,40 @@ function issueToken(dbPath) {
   return JSON.parse(output).token;
 }
 
+/**
+ * 进程快照：谁还活着。
+ *
+ * 排查「服务怎么没了」时，光看日志不够——日志只说「它停了」，
+ * 不说「它是被谁弄停的」。这里把还活着的 node 进程连同命令行一起打出来，
+ * 端口被谁占着也一并说明。
+ */
+function processSnapshot() {
+  try {
+    const out = execFileSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ForEach-Object { "$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)" }`,
+      ],
+      { encoding: 'utf8' },
+    );
+    const rows = String(out)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!rows.length) return '（一个 node 进程都没有了）';
+    return rows
+      .map((row) => {
+        const [pid, ppid, ...rest] = row.split('|');
+        return `  pid=${pid} ppid=${ppid} ${rest.join('|').slice(0, 160)}`;
+      })
+      .join('\n');
+  } catch (err) {
+    return `（取不到进程快照：${err.message}）`;
+  }
+}
+
 /** 更新器进程还在不在 */
 function updaterAlive(work) {
   try {
@@ -159,13 +197,37 @@ function updaterAlive(work) {
   }
 }
 
+/**
+ * 发起一次请求，网络层失败时重试。
+ *
+ * 为什么要重试：升级会让服务换进程，本地连接池里那条 keep-alive 连接
+ * 可能还连着一个已经死掉的进程。undici 把它再递出来时，POST 会直接报
+ * "fetch failed"（GET 有时会自动重试，POST 不会）。第一次失败后连接池会把
+ * 那条废连接丢掉，下一次就落在一条全新的连接上。
+ */
+async function request(url, options = {}, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetch(url, options);
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw lastError;
+}
+
 /** 问服务现在是什么版本 */
 async function status(token) {
   try {
-    const response = await fetch(`http://127.0.0.1:${PORT}/api/manage/status`, {
-      headers: { 'x-workhub-token': token },
-      signal: AbortSignal.timeout(3000),
-    });
+    const response = await request(
+      `http://127.0.0.1:${PORT}/api/manage/status`,
+      {
+        headers: { 'x-workhub-token': token },
+        signal: AbortSignal.timeout(3000),
+      },
+    );
     if (!response.ok) return null;
     return await response.json();
   } catch {
@@ -173,9 +235,80 @@ async function status(token) {
   }
 }
 
+/**
+ * 发起升级请求。
+ *
+ * 两件事得在这儿说清楚：
+ *
+ * 1. 为什么要重试：上一次升级时服务换过进程，本地连接池里那条 keep-alive
+ *    连接已经连着一个死掉的进程了。undici 把它再递出来时，POST 会直接报
+ *    "fetch failed"（GET 会被自动重试，POST 不会）。第一次失败后连接池会把
+ *    那条废连接丢掉，重试就落在一条全新的连接上。
+ * 2. 为什么要打现场：请求打过去对面直接没了，客户端只看到一句没头没尾的
+ *    "fetch failed"。不把「服务还在不在、还有哪些进程、服务最后说了什么」
+ *    打出来，就只能靠猜。
+ */
+async function postUpdate(attempts = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await request(
+        `http://127.0.0.1:${PORT}/api/manage/update`,
+        {
+          method: 'POST',
+          headers: { 'x-workhub-token': tokenRef },
+        },
+        attempts,
+      );
+      return { ok: response.ok, status: response.status, body: await response.json() };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  console.log(`    （升级请求没打通：${lastError?.message}）`);
+  console.log(`    健康检查：${(await health()) ? '通' : '不通'}`);
+  console.log(`    当前版本：${(await status(tokenRef))?.version ?? '查不到'}`);
+  console.log('    还活着的 node 进程：');
+  console.log(processSnapshot());
+  for (const [label, path] of [
+    ['服务重启日志', join(appDirRef, 'logs', 'service-restart.log')],
+    ['升级日志', join(appDirRef, 'logs', 'upgrade.log')],
+  ]) {
+    try {
+      const text = readFileSync(path, 'utf8');
+      console.log(`    ${label}（尾部）：\n${text.split(/\r?\n/).slice(-25).join('\n')}`);
+    } catch {
+      console.log(`    ${label}：没有`);
+    }
+  }
+  return { ok: false, status: 0, body: { error: lastError?.message ?? '未知错误' } };
+}
+
+/** 读文本，读不到就返回空串（文件可能已经不在了） */
+function readTextSafe(path) {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 服务入口约定（真源在 scripts/lib/service-entry.mjs）：
+ * 编译产物 server/index.js 优先，其次源码 server/index.ts。
+ */
+function resolveEntry(appDir) {
+  const compiled = join(appDir, 'server', 'index.js');
+  if (existsSync(compiled)) return 'server/index.js';
+  return 'server/index.ts';
+}
+
 /** 起一个服务进程 */
 function startService(appDir, env) {
-  const proc = spawn(process.execPath, ['--env-file-if-exists=.env', 'server/index.ts'], {
+  // 跟真实部署一致：优先用目录里自带的运行时
+  const bundled = join(appDir, 'runtime', 'node.exe');
+  const nodeBin = existsSync(bundled) ? bundled : process.execPath;
+  const proc = spawn(nodeBin, ['--env-file-if-exists=.env', resolveEntry(appDir)], {
     cwd: appDir,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -194,6 +327,7 @@ async function main() {
   const newAppDir = join(work, 'new');
   const pkgDir = join(work, 'pkg');
   const dbPath = join(work, 'verify.db');
+  appDirRef = appDir;
   mkdirSync(appDir, { recursive: true });
   mkdirSync(newAppDir, { recursive: true });
   mkdirSync(pkgDir, { recursive: true });
@@ -220,6 +354,15 @@ async function main() {
       });
     }
   }
+
+  // 目标机上的「自带运行时」：复制一份 node.exe 过去。
+  // 这不是装饰：服务就从它启动，它在运行期间被 Windows 锁着，
+  // 升级时任何想拷贝/替换它的动作都会 EPERM。
+  // 生产上「升级时备份自带运行时」踩的就是这个坑，验证里必须复现。
+  const runtimeDir = join(appDir, 'runtime');
+  mkdirSync(runtimeDir, { recursive: true });
+  cpSync(process.execPath, join(runtimeDir, 'node.exe'));
+  writeFileSync(join(runtimeDir, 'marker.txt'), '机器上的运行时\n');
 
   // 部署目录是老版本（0.0.1），新版本在另一个目录里。
   // 分开放是必须的：升级就是拿新目录的内容盖掉部署目录，
@@ -264,12 +407,20 @@ async function main() {
   // ---- 3. 发令牌 + 打升级包 ----
   console.log('\n[2] 准备升级包');
   const token = issueToken(dbPath);
+  tokenRef = token;
 
   // 打包脚本要跑「新版本目录里那份」：它按自己所在位置找根目录，
-  // 跑部署目录里那份的话打出来的是老版本，升了等于没升
-  execFileSync(process.execPath, [join(newAppDir, 'scripts', 'pack-server.mjs'), '--out', pkgDir], {
+  // 跑部署目录里那份的话打出来的是老版本，升了等于没升。
+  // --skip-build：这里模拟的是服务器上的部署目录，没有前端源码也没有
+  // 构建工具，dist/ 本来就是现成的产物。真实场景里升级包是在开发机或
+  // CI 上打的（那里会重新构建前端），这一步验的是升级流程本身。
+  // 这个包**带自带运行时**：目标机什么都不装的那套才是主场景，
+  // 自带运行时的替换与备份规则得跟着它一起验。
+  // MDHUB_NODE_DIR 指向本机的 Node 目录：离线打包，不用联网下载几十兆。
+  execFileSync(process.execPath, [join(newAppDir, 'scripts', 'pack-server.mjs'), '--out', pkgDir, '--skip-build'], {
     cwd: newAppDir,
     stdio: 'inherit',
+    env: { ...process.env, MDHUB_NODE_DIR: dirname(process.execPath) },
   });
   const zipName = `workhub-server-${NEW_VERSION}.zip`;
   check(`升级包打出来了（${zipName}）`, existsSync(join(pkgDir, zipName)));
@@ -298,7 +449,7 @@ async function main() {
 
   // ---- 5. 查更新 ----
   console.log('\n[4] 查更新');
-  const checkBody = await fetch(`http://127.0.0.1:${PORT}/api/manage/update`, {
+  const checkBody = await request(`http://127.0.0.1:${PORT}/api/manage/update`, {
     headers: { 'x-workhub-token': token },
   }).then((r) => r.json());
   check('查到了新版本', checkBody.updateAvailable === true, JSON.stringify(checkBody).slice(0, 200));
@@ -307,12 +458,9 @@ async function main() {
 
   // ---- 6. 执行升级 ----
   console.log('\n[5] 执行升级');
-  const upgradeRes = await fetch(`http://127.0.0.1:${PORT}/api/manage/update`, {
-    method: 'POST',
-    headers: { 'x-workhub-token': token },
-  });
-  const upgradeBody = await upgradeRes.json();
-  check('升级接口返回成功', upgradeRes.ok && upgradeBody.ok === true, JSON.stringify(upgradeBody).slice(0, 200));
+  const upgradeRes = await postUpdate();
+  const upgradeBody = upgradeRes?.body ?? {};
+  check('升级接口返回成功', upgradeRes?.ok === true, JSON.stringify(upgradeBody).slice(0, 200));
 
   // 服务会退出，更新器接手换代码，再把服务拉起来。
   // 等的是「版本变成新版本」，不是「端口有应答」——升级期间旧服务还活着，
@@ -326,6 +474,14 @@ async function main() {
   if (upgraded) {
     check('跑起来的是新代码', existsSync(join(appDir, 'server', 'upgrade-marker.txt')));
     check('升级标记已撤销', !existsSync(join(appDir, '.upgrade-in-progress')));
+    // 自带运行时不该被升级换掉：它正跑着服务（被 Windows 锁着），
+    // 换它既换不动，也不该换——那台机器上只有这一份 Node，
+    // 换了就等于把服务的后路断了。
+    check(
+      '自带运行时没被换掉',
+      readTextSafe(join(appDir, 'runtime', 'marker.txt')) === '机器上的运行时\n',
+      '升级把目标机上的自带运行时覆盖了',
+    );
     // 更新器自己跑完了：它中途崩了的话，代码虽然换了，但健康检查和回滚都没人做。
     // 「跑完」有两种形态：正常退出（写完日志就退），或者还在跑（服务起得慢还没轮完）。
     // 只有「日志里没有下文、进程也不在了」才是真没了。
@@ -377,16 +533,23 @@ async function main() {
   // ---- 7. 坏包：起不来要能回滚 ----
   console.log('\n[6] 喂一个坏包，看能不能自动回滚');
   // 坏的是「新版本目录」：坏包要打成新内容，部署目录不能动
+  //
+  // 坏法要说清楚：升级前有预检（拿新代码在隔离目录起一个实例），
+  // 预检都过不了的包压根换不上去，回滚也就无从谈起——那正是预检立功了。
+  // 所以这里注入的坏，是「正式实例才犯」的坏：预检实例带着
+  // MDHUB_PREFLIGHT 标记，正式实例没有。正式实例起不来 → 健康检查不过 → 回滚。
+  const badEntry = resolveEntry(newAppDir);
+  const badEntryPath = join(newAppDir, badEntry);
   writeFileSync(
-    join(newAppDir, 'server', 'index.ts'),
-    `${readFileSync(join(newAppDir, 'server', 'index.ts'), 'utf8')}\nthrow new Error('故意的：这版起不来');\n`,
+    badEntryPath,
+    `${readFileSync(badEntryPath, 'utf8')}\n// 验证用：预检实例放过，正式实例直接起不来\nif (!process.env.MDHUB_PREFLIGHT) { throw new Error('故意的：这版起不来'); }\n`,
   );
   // 坏包专属的记号：回滚后它应该消失（说明真的换回去了，不是残留）
   writeFileSync(join(newAppDir, 'server', 'broken-marker.txt'), 'broken\n');
   const badPkg = JSON.parse(readFileSync(newPkgPath, 'utf8'));
   badPkg.version = '9.9.10';
   writeFileSync(newPkgPath, JSON.stringify(badPkg, null, 2));
-  execFileSync(process.execPath, [join(newAppDir, 'scripts', 'pack-server.mjs'), '--out', pkgDir], {
+  execFileSync(process.execPath, [join(newAppDir, 'scripts', 'pack-server.mjs'), '--out', pkgDir, '--skip-build', '--no-runtime'], {
     cwd: newAppDir,
     stdio: 'inherit',
   });
@@ -401,12 +564,15 @@ async function main() {
     }),
   );
 
-  const badRes = await fetch(`http://127.0.0.1:${PORT}/api/manage/update`, {
-    method: 'POST',
-    headers: { 'x-workhub-token': token },
-  });
-  const badBody = await badRes.json();
-  check('坏包也接受了升级请求', badRes.ok && badBody.ok === true, JSON.stringify(badBody).slice(0, 200));
+  // 模拟「上一版包带过自带运行时」：旧清单里记着 runtime/marker.txt，
+  // 而这个坏包没带 → 清理旧文件时也不该把目标机上的运行时删掉。
+  // 那台机器上只有这一份 Node，删了它服务就再也起不来了。
+  const appManifest = join(appDir, '.workhub-files.txt');
+  writeFileSync(appManifest, `${readTextSafe(appManifest)}runtime/marker.txt\n`);
+
+  const badRes = await postUpdate();
+  const badBody = badRes?.body ?? {};
+  check('坏包也接受了升级请求', badRes?.ok === true, JSON.stringify(badBody).slice(0, 200));
 
   // 升级 → 坏版本起不来 → 回滚 → 上一个可用版本回来。
   // 分两步等：先等坏代码真的放上去（否则「回滚成功」是假的——
@@ -440,6 +606,87 @@ async function main() {
     const upgradeLog = readFileSync(join(appDir, 'logs', 'upgrade.log'), 'utf8');
     check('日志里记着回滚了', upgradeLog.includes('回滚'));
   }
+  // 清理旧文件时也不该碰自带运行时：新包没带运行时，不代表目标机上那份就该删。
+  check(
+    '自带运行时没被清理掉',
+    readTextSafe(join(appDir, 'runtime', 'marker.txt')) === '机器上的运行时\n',
+    '清理旧文件时把目标机上的自带运行时删了——那台机器上只有这一份 Node',
+  );
+  // 回滚之后跑着的已经不是原来那个服务进程了（是更新器重新拉起来的）。
+  // 记一笔现在是谁在跑：后面服务要是又没了，得知道该找谁。
+  console.log('    回滚后还活着的 node 进程：');
+  console.log(processSnapshot());
+
+  // ---- 8. 连预检都过不了的包：不该碰生产 ----
+  console.log('\n[7] 喂一个连预检都过不了的包');
+  // 这一版连「隔离目录里起一个实例」都起不来（语法就是坏的）。
+  // 升级前预检就该把它挡下来：服务一秒都不用停，代码一秒都不用换。
+  const brokenAppDir = join(work, 'broken');
+  mkdirSync(brokenAppDir, { recursive: true });
+  for (const item of ['server', 'shared', 'scripts', 'package.json', '.env.example', 'README.md']) {
+    cpSync(join(ROOT, item), join(brokenAppDir, item), { recursive: true });
+  }
+  mkdirSync(join(brokenAppDir, 'dist'), { recursive: true });
+  writeFileSync(join(brokenAppDir, 'dist', 'index.html'), '<!doctype html><title>verify</title>');
+  if (existsSync(originalModules)) {
+    execFileSync('cmd', ['/c', 'mklink', '/J', join(brokenAppDir, 'node_modules'), originalModules], {
+      stdio: 'ignore',
+    });
+  }
+  const brokenEntry = resolveEntry(brokenAppDir);
+  writeFileSync(join(brokenAppDir, brokenEntry), '这不是合法的 JavaScript ((((\n');
+  writeFileSync(join(brokenAppDir, 'server', 'preflight-marker.txt'), 'broken\n');
+  const brokenPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+  brokenPkg.version = '9.9.11';
+  writeFileSync(join(brokenAppDir, 'package.json'), JSON.stringify(brokenPkg, null, 2));
+  execFileSync(process.execPath, [join(brokenAppDir, 'scripts', 'pack-server.mjs'), '--out', pkgDir, '--skip-build', '--no-runtime'], {
+    cwd: brokenAppDir,
+    stdio: 'inherit',
+  });
+  const brokenZipName = 'workhub-server-9.9.11.zip';
+  writeFileSync(
+    join(pkgDir, 'manifest.json'),
+    JSON.stringify({
+      version: '9.9.11',
+      url: `http://127.0.0.1:${fileServer.port}/${brokenZipName}`,
+      sha256: '',
+      notes: '这版连预检都过不了',
+    }),
+  );
+
+  const brokenRes = await postUpdate();
+  const brokenBody = brokenRes?.body ?? {};
+  check('坏到极点的包也接受了升级请求', brokenRes?.ok === true, JSON.stringify(brokenBody).slice(0, 200));
+  console.log('    发起升级请求后还活着的 node 进程：');
+  console.log(processSnapshot());
+
+  // 预检失败 → 更新器放弃 → 代码没换，但服务得被拉回来
+  // （更新器是在服务退场前被拉起来的，放弃升级时它负责把服务叫醒）
+  const stillAlive = await waitFor(async () => (await health()) === true, 60000, '服务回来');
+  check('预检拦下后服务被拉回来了', stillAlive);
+  check('版本没被换掉', (await status(token))?.version === NEW_VERSION, `实际：${(await status(token))?.version}`);
+  check('坏代码没就位', !existsSync(join(appDir, 'server', 'preflight-marker.txt')));
+  const rejected = await waitFor(
+    () => {
+      try {
+        const record = JSON.parse(readFileSync(join(appDir, 'logs', '.last-upgrade.json'), 'utf8'));
+        return record.status === 'failed';
+      } catch {
+        return false;
+      }
+    },
+    60000,
+    '更新器记下失败',
+  );
+  check('升级结果记为失败（不是成功）', rejected);
+  const preflightLog = (() => {
+    try {
+      return readFileSync(join(appDir, 'logs', 'upgrade.log'), 'utf8');
+    } catch {
+      return '';
+    }
+  })();
+  check('日志里写着预检没过', preflightLog.includes('预检'), preflightLog.slice(-500));
 
   console.log(`\n结果：${checks - failures}/${checks} 通过`);
   if (failures > 0) {
@@ -471,16 +718,25 @@ async function cleanup() {
   killPort(PORT);
   await sleep(300);
   if (workRef) {
-    // 留一份升级日志在临时目录：临时目录会被删，日志删了就没了
-    try {
-      const logFile = join(workRef, 'app', 'logs', 'upgrade.log');
-      if (existsSync(logFile)) {
-        copyFileSync(logFile, join(tmpdir(), 'workhub-upgrade-last.log'));
+    // 留一份日志在临时目录：临时目录会被删，日志删了就没了。
+    // 更新器日志看的是「升级流程」，服务重启日志看的是「服务自己怎么说」，
+    // 两份都要：服务起不来的时候，线索只在后者里。
+    for (const [from, to] of [
+      [join(workRef, 'app', 'logs', 'upgrade.log'), 'workhub-upgrade-last.log'],
+      [join(workRef, 'app', 'logs', 'service-restart.log'), 'workhub-service-restart-last.log'],
+    ]) {
+      try {
+        if (existsSync(from)) copyFileSync(from, join(tmpdir(), to));
+      } catch {
+        // 留不下就算了
       }
-    } catch {
-      // 留不下就算了
     }
-    rmSync(workRef, { recursive: true, force: true });
+    if (failures > 0) {
+      // 有检查没过就别急着删现场：现场比猜测有用
+      console.log(`\n临时目录保留着（有问题要看现场）：${workRef}`);
+    } else {
+      rmSync(workRef, { recursive: true, force: true });
+    }
   }
 }
 

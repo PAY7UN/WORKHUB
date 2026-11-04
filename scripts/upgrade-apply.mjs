@@ -18,9 +18,11 @@
  * 万一新代码有 bug，靠的是新代码之外的自己把它救回来。
  */
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -28,6 +30,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -71,7 +74,52 @@ const FILES_MANIFEST = '.workhub-files.txt';
 const FALLBACK_LOG = join(tmpdir(), 'workhub-upgrade-fallback.log');
 
 /** 这些目录/文件是数据，不是代码：升级时绝不能碰 */
-const PROTECTED = new Set(['data', 'logs', 'node_modules', '.env', '.git']);
+const PROTECTED = new Set(['data', 'logs', '.env', '.git']);
+
+/**
+ * 自带的 Node 运行时：升级时不换。
+ *
+ * 不是懒，是换不了：正在跑的服务就是 runtime/node.exe 起的，
+ * Windows 上这个文件被占着，覆盖必然失败（EPERM）。
+ * 而且运行时大版本升级该由人工安排重启窗口，不该夹在一次普通更新里。
+ */
+const RUNTIME_DIR = 'runtime';
+
+/**
+ * 服务入口约定（真源在 scripts/lib/service-entry.mjs，规则改动要同步）。
+ *
+ *   1. .workhub-entry 里写的相对路径（可选）
+ *   2. server/index.js —— 编译产物，发布包里用这一份
+ *   3. server/index.ts —— 源码直跑，仓库形态用这一份
+ *
+ * 这里内联一份而不 import：更新器只依赖 Node 内置模块，
+ * 万一新代码坏了，靠的是新代码之外的自己把它救回来。
+ */
+const ENTRY_MANIFEST = '.workhub-entry';
+const ENTRY_CANDIDATES = ['server/index.js', 'server/index.ts'];
+
+/** 解析服务入口（相对 dir），找不到返回 null */
+function resolveEntry(dir) {
+  try {
+    const manifest = join(dir, ENTRY_MANIFEST);
+    if (existsSync(manifest)) {
+      const line = readFileSync(manifest, 'utf8')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .find(Boolean);
+      if (line) {
+        const rel = line.replace(/\\/g, '/');
+        if (existsSync(join(dir, rel))) return rel;
+      }
+    }
+  } catch {
+    // 清单读不了就按约定往下找
+  }
+  for (const rel of ENTRY_CANDIDATES) {
+    if (existsSync(join(dir, rel))) return rel;
+  }
+  return null;
+}
 
 mkdirSync(dirname(LOG_PATH), { recursive: true });
 
@@ -160,31 +208,147 @@ async function waitForServiceExit(timeoutMs = 60000) {
   return false;
 }
 
+/** 探一次健康检查 */
+async function probeHealth(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/healthz`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    return { ok: response.ok, error: `HTTP ${response.status}` };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 /** 健康检查：服务活着没有 */
-async function waitHealthy(port, timeoutMs) {
+async function waitHealthy(port, timeoutMs, label = '健康检查') {
   const deadline = Date.now() + timeoutMs;
   let lastError = '无响应';
   let lastBeat = Date.now();
   while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/healthz`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (response.ok) return true;
-      lastError = `HTTP ${response.status}`;
-    } catch (err) {
-      lastError = err.message;
-    }
+    const probe = await probeHealth(port);
+    if (probe.ok) return true;
+    lastError = probe.error;
     // 心跳：卡住和死掉在日志里长得一样（都没下文），
     // 有了心跳就能分清——有心跳是等不着，没心跳是压根没活到这儿
     if (Date.now() - lastBeat >= 10000) {
       lastBeat = Date.now();
-      log('info', `等健康检查通过中…（端口 ${port}，${lastError}）`);
+      log('info', `等${label}通过中…（端口 ${port}，${lastError}）`);
     }
     await sleep(1000);
   }
-  log('error', `健康检查没通过：${lastError}`);
+  log('error', `${label}没通过：${lastError}`);
   return false;
+}
+
+/** 找一个空闲端口：预检实例要另起一个，不能跟生产服务抢 */
+function findFreePort() {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close(() => resolvePort(port));
+    });
+  });
+}
+
+/** 连根拔掉一个进程树：预检实例可能自己拉了子进程 */
+function killTree(pid) {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', shell: true });
+    } else {
+      process.kill(-pid, 'SIGKILL');
+    }
+  } catch {
+    // 杀不掉就算了，它自己也会退出
+  }
+}
+
+/**
+ * 升级前预检：拿新代码单独起一个实例，确认它能起来。
+ *
+ * 为什么值得多花这几十秒：
+ * 原来的升级是「换上去才知道起不来」，一失败就回滚——停机两次，最长三分钟，
+ * 而失败的原因往往在换之前就已经写在代码里了。
+ * 预检放在动代码之前：这时生产服务还在跑，一个字节都没改，
+ * 预检不过就直接放弃升级，停机时间是零。
+ *
+ * 预检实例用临时数据库和临时 vault，不碰生产数据；
+ * 但数据库迁移会在临时库上真跑一遍——这正是想验的东西。
+ */
+async function preflight() {
+  const entry = resolveEntry(PAYLOAD);
+  if (!entry) {
+    log('error', '新包里找不到服务入口，预检不通过');
+    return false;
+  }
+  const runtimeNode = join(PAYLOAD, RUNTIME_DIR, 'node.exe');
+  const nodeBin = existsSync(runtimeNode) ? runtimeNode : process.execPath;
+
+  const work = join(STAGING, 'preflight');
+  try {
+    rmSync(work, { recursive: true, force: true });
+    mkdirSync(work, { recursive: true });
+  } catch {
+    // 清不掉就往下走，临时目录而已
+  }
+
+  const port = await findFreePort();
+  const env = {
+    ...process.env,
+    MDHUB_PORT: String(port),
+    MDHUB_DB_V2: join(work, 'preflight.db'),
+    MDHUB_VAULT_DIR: join(work, 'vault'),
+    MDHUB_ADMIN_PASSWORD: randomBytes(12).toString('base64url'),
+    MDHUB_LOG_LEVEL: 'warn',
+    // 标记：这是隔离的预检实例，别碰生产资源。
+    // 服务端代码可以据此分辨「预检」和「正式运行」。
+    MDHUB_PREFLIGHT: '1',
+  };
+
+  log('info', `开始预检：在隔离目录里起一个 ${entry} 实例（端口 ${port}）`);
+  const child = spawn(nodeBin, [entry], {
+    cwd: PAYLOAD,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+  });
+  let output = '';
+  child.stdout?.on('data', (chunk) => {
+    output += String(chunk);
+  });
+  child.stderr?.on('data', (chunk) => {
+    output += String(chunk);
+  });
+
+  let exited = false;
+  child.on('exit', (code) => {
+    exited = true;
+    log('error', `预检实例提前退出（退出码 ${code}）`);
+  });
+
+  try {
+    const ok = await waitHealthy(port, 45000, '预检');
+    if (!ok) {
+      log('error', `预检输出：${output.slice(-800)}`);
+      return false;
+    }
+    log('info', '预检通过：新版本能起来');
+    return true;
+  } finally {
+    killTree(child.pid);
+    if (!exited) {
+      try {
+        child.kill();
+      } catch {
+        // 已经没了
+      }
+    }
+  }
 }
 
 /**
@@ -217,6 +381,10 @@ function resolvePort() {
     }
   }
 
+  // 兜底：默认端口。这里故意写死，不从 shared/constants.ts 取——
+  // 升级器只依赖 Node 内置模块，必须独立于被替换的代码：
+  // 万一新代码坏了，更新器也得还能跑，否则就没人能救场了。
+  // 真源在 shared/constants.ts 的 DEFAULT_API_PORT，改端口时这里一起改。
   return 8787;
 }
 
@@ -231,15 +399,33 @@ function topLevelNames(dir) {
   }
 }
 
+/** 是不是链接（junction / 软链）。链接不能照着实体备份 */
+function isLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 /** 备份将被覆盖的顶层项 */
 function backupPayload() {
   mkdirSync(BACKUP, { recursive: true });
-  const names = topLevelNames(PAYLOAD).filter((name) => !PROTECTED.has(name));
+  const names = topLevelNames(PAYLOAD).filter(
+    (name) => !PROTECTED.has(name) && name !== RUNTIME_DIR,
+  );
+  const skipped = [];
   for (const name of names) {
     const existing = join(ROOT, name);
-    if (existsSync(existing)) {
-      cpSync(existing, join(BACKUP, name), { recursive: true });
+    if (!existsSync(existing)) continue;
+    // 依赖目录如果是链接（junction / 软链），备份它等于去复制一个链接：
+    // Windows 上没权限建链接就直接 EPERM，而且链接指向的多半是别处的共享目录，
+    // 不该被抄一遍。跳过即可——依赖会随新包整块换上。
+    if (isLink(existing)) {
+      skipped.push(name);
+      continue;
     }
+    cpSync(existing, join(BACKUP, name), { recursive: true });
   }
   // 旧版的文件清单也要留着：算「删哪些旧文件」时要用
   const oldManifest = join(ROOT, FILES_MANIFEST);
@@ -247,6 +433,9 @@ function backupPayload() {
     cpSync(oldManifest, join(BACKUP, FILES_MANIFEST));
   }
   log('info', `已备份：${names.join('、') || '（无）'}`);
+  if (skipped.length) {
+    log('info', `跳过备份（是链接，抄不动也不该抄）：${skipped.join('、')}`);
+  }
 }
 
 /** 读文件清单（相对路径，一行一个） */
@@ -276,6 +465,13 @@ function removeStaleFiles() {
   for (const file of stale) {
     const segments = file.split('/');
     if (segments.some((segment) => PROTECTED.has(segment))) continue;
+    // 依赖目录是整块替换的，不做逐文件清理：
+    // 万一它是个链接，逐文件删会顺着链接把别处的文件删掉
+    if (segments[0] === 'node_modules') continue;
+    // 自带运行时也不逐文件清理：升级本来就刻意不换它（换不掉）。
+    // 新包如果没带运行时（--no-runtime），照着清单删就会把目标机上
+    // 唯一的 Node 删掉——那台机器上再没有第二个 Node 能起服务了。
+    if (segments[0] === RUNTIME_DIR) continue;
     const target = join(ROOT, file);
     if (!existsSync(target)) continue;
     try {
@@ -293,6 +489,11 @@ function applyPayload() {
   const names = topLevelNames(PAYLOAD);
   for (const name of names) {
     if (PROTECTED.has(name)) continue;
+    // 自带运行时不动：跑着的服务正占着它（见 RUNTIME_DIR 的说明）
+    if (name === RUNTIME_DIR) {
+      log('info', '保留现有的自带 Node 运行时（运行中的文件换不掉）');
+      continue;
+    }
     const from = join(PAYLOAD, name);
     const to = join(ROOT, name);
     try {
@@ -305,8 +506,18 @@ function applyPayload() {
   log('info', '新代码已就位');
 }
 
-/** 依赖变了就装依赖 */
+/**
+ * 依赖变了就装依赖。
+ *
+ * 新包自带运行时依赖时直接跳过：新包里的 node_modules 就是装好的那一份，
+ * 目标机不需要 npm、不需要联网——这也是「升级失败的最大来源」被掐掉的地方。
+ * 老包不带依赖时才退回 npm install（兼容老部署）。
+ */
 function installDependenciesIfNeeded() {
+  if (existsSync(join(PAYLOAD, 'node_modules'))) {
+    log('info', '新包自带运行时依赖，跳过依赖安装');
+    return Promise.resolve(true);
+  }
   let before;
   let after;
   try {
@@ -370,41 +581,87 @@ function startSelf() {
   } catch {
     out = 'ignore';
   }
-  const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'server/index.ts'], {
+  // 入口按约定探测：包里有编译产物就跑它（不需要高版本 Node 的类型剥离）
+  const entry = resolveEntry(ROOT) ?? 'server/index.ts';
+  // 有自带运行时就用它，目标机连 Node 都不用装
+  const runtimeNode = join(ROOT, RUNTIME_DIR, 'node.exe');
+  const nodeBin = existsSync(runtimeNode) ? runtimeNode : process.execPath;
+  const child = spawn(nodeBin, ['--env-file-if-exists=.env', entry], {
     cwd: ROOT,
     detached: true,
     stdio: ['ignore', out, out],
   });
   child.unref();
-  log('info', `已拉起新服务进程（pid=${child.pid}）`);
+  log('info', `已拉起新服务进程（pid=${child.pid}，入口 ${entry}，node ${nodeBin}）`);
+  return child.pid;
 }
 
-/** 按托管方式把服务弄起来 */
+/**
+ * 稳定期观察：健康检查通过 ≠ 服务活着。
+ *
+ * 服务可能起来几秒就挂（配置不对、迁移冲突、依赖缺失…）。
+ * 健康检查那一刻它还活着，于是被判成「升级成功」，
+ * 然后它自己退出了——这时候更新器已经收工，回滚也就没人做了。
+ *
+ * 所以通过之后再盯一会儿：进程还在、健康检查还在，才算真稳。
+ * 这多花的十几秒，换的是「升级后服务悄悄挂掉」这种最难查的问题。
+ */
+async function watchStability(port, pid, ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    if (pid && !isAlive(pid)) {
+      log('error', `新服务进程 ${pid} 已经退出，升级不算成功`);
+      return false;
+    }
+    const probe = await probeHealth(port);
+    if (!probe.ok) {
+      log('error', `稳定期内健康检查不通（${probe.error}），升级不算成功`);
+      return false;
+    }
+  }
+  return true;
+}
+
+/** 进程还在不在 */
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 按托管方式把服务弄起来。
+ *
+ * 返回新服务的 pid（拿得到时）：稳定期观察要靠它判断服务是不是又挂了。
+ */
 function triggerRestart() {
   if (RESTART_MODE === 'host') {
     log('info', '等 Windows 服务宿主把服务拉起来');
-    return;
+    return null;
   }
   if (RESTART_MODE === 'tray') {
     log('info', '等托盘把服务拉起来');
-    return;
+    return null;
   }
   if (RESTART_MODE === 'supervisor') {
     log('info', `等 ${RESTART_DETAIL} 把服务拉起来`);
-    return;
+    return null;
   }
   if (RESTART_MODE === 'command') {
     const parts = RESTART_DETAIL.split(/\s+/).filter(Boolean);
     if (parts.length === 0) {
-      startSelf();
-      return;
+      return startSelf();
     }
     const child = spawn(parts[0], parts.slice(1), { detached: true, stdio: 'ignore' });
     child.unref();
     log('info', `已执行重启命令：${RESTART_DETAIL}`);
-    return;
+    return null;
   }
-  startSelf();
+  return startSelf();
 }
 
 /** 回滚：把备份恢复回去 */
@@ -449,6 +706,20 @@ function writeResult(status, message) {
 async function main() {
   log('info', `更新器启动：升级到 ${VERSION}，托管方式 ${RESTART_MODE}`);
 
+  // 预检放在最前面：拿新代码在隔离目录起一个实例，确认它能起来。
+  // 过不了就不用往下走了——省掉的是「换上去才发现起不来，再回滚」这一整轮折腾。
+  const pre = await preflight();
+  if (!pre) {
+    // 服务进程这时可能正在退场（更新器是被服务退场前拉起来的），
+    // 得等它确实退干净了再拉新的，否则两个实例抢同一个端口。
+    await waitForServiceExit(60000);
+    releaseFlag();
+    triggerRestart();
+    writeResult('failed', '新版本预检没通过，升级已放弃（代码未替换）');
+    log('error', '预检没通过，放弃升级（代码没换过，服务已重新拉起）');
+    process.exit(1);
+  }
+
   const exited = await waitForServiceExit(60000);
   if (!exited) {
     log('error', `服务进程 ${SERVICE_PID} 一直没退出，不敢动它的文件，升级中止`);
@@ -473,7 +744,7 @@ async function main() {
 
   // 撤标记 → 宿主/托盘/守护进程把服务拉起来
   releaseFlag();
-  triggerRestart();
+  const newPid = triggerRestart();
 
   const port = resolvePort();
   log('info', `开始健康检查（端口 ${port}）`);
@@ -487,6 +758,25 @@ async function main() {
     writeResult('rolled-back', recovered ? '升级后服务起不来，已自动回滚' : '升级后服务起不来，回滚后也没起来，需要人工看看');
     log('error', recovered ? '已回滚，服务恢复正常' : '回滚后服务仍不可用，需要人工介入');
     process.exit(recovered ? 1 : 2);
+  }
+
+  // 健康检查过了不等于稳：再盯一会儿，
+  // 确认它没有「起来几秒就自己退出」——那种情况一旦放过去，
+  // 更新器就收工了，谁也不会再管它，坏版本会一直留在生产上。
+  const stabilizeMs = Number(process.env.MDHUB_UPGRADE_STABILIZE_MS ?? 15000);
+  if (stabilizeMs > 0) {
+    log('info', `进入稳定期观察（${Math.round(stabilizeMs / 1000)} 秒）`);
+    const stable = await watchStability(port, newPid, stabilizeMs);
+    if (!stable) {
+      log('warn', '新版本没能稳住，回滚');
+      rollback();
+      releaseFlag();
+      triggerRestart();
+      const recovered = await waitHealthy(port, 60000);
+      writeResult('rolled-back', recovered ? '新版本没能稳住，已自动回滚' : '新版本没能稳住，回滚后也没起来，需要人工看看');
+      log('error', recovered ? '已回滚，服务恢复正常' : '回滚后服务仍不可用，需要人工介入');
+      process.exit(recovered ? 1 : 2);
+    }
   }
 
   writeResult('success', `已升级到 ${VERSION}`);
