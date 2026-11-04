@@ -1,0 +1,77 @@
+name: Release
+
+# 发版：把服务端升级包打出来挂到 GitHub Release 上。
+#
+# 自动升级认的是资产名 workhub-server-<版本>.zip —— 名字对不上就等于没发，
+# 而且用户那边看不出任何异常：界面只说「没有新版本」，因为压根没找到包。
+# 所以打包、上传、版本号三件事必须成对出现。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布到哪个 tag（如 v0.2.0）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    # 必须在 Windows 上打包：包里那份自带运行时是 Windows 的 node.exe，
+    # 别的平台打不出目标机能用的运行时（依赖里的原生二进制也得跟运行时对得上）。
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: 版本对得上吗
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = $env:TAG
+          if (-not $tag) { throw '不知道要发到哪个 tag' }
+          if ($pkg -ne ($tag -replace '^v', '')) {
+            throw "tag 是 $tag，但 package.json 里是 $pkg；对不上就别发——自动升级是按包名里的版本号认版本的"
+          }
+          Write-Host "版本一致：$pkg"
+
+      - name: 打服务端升级包（自带 Node 运行时）
+        shell: pwsh
+        run: |
+          $env:MDHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
+          npm run pack:server -- --out release
+
+      - name: 打托盘包（安装程序 + 免安装版）
+        shell: pwsh
+        run: |
+          $env:MDHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
+          npm run pack:tray
+
+      - name: 包合格吗
+        run: npm run pack:check
+
+      - name: 挂到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          # 资产名是自动升级的约定：服务端认 workhub-server-<版本>.zip，
+          # 托盘认 workhub-tray-<版本>.zip。名字对不上就等于没发，
+          # 而且用户那边看不出任何异常：界面只说「没有新版本」。
+          files: |
+            release/workhub-server-*.zip
+            release/workhub-server-*.zip.sha256
+            release/workhub-tray-*.zip
+            release/workhub-tray-*.zip.sha256
+            release/WorkHub-Setup-*.exe

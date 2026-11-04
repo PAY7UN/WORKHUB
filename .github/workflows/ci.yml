@@ -33,6 +33,9 @@ jobs:
       - name: 单元测试
         run: npm test
 
+      - name: 编译服务端（发布态入口）
+        run: npm run build:server
+
       - name: 准备示例库与仓库目录
         shell: bash
         run: |
@@ -46,3 +49,51 @@ jobs:
 
       - name: 端到端自检
         run: npm run verify
+
+  upgrade:
+    # 升级链路只能在 Windows 上验：更新器要 taskkill 杀进程树、要 PowerShell
+    # 解压、要建目录链接才能复现目标机上的目录形态。这些在 Linux 上没有对应物，
+    # 硬凑只会验出一套假的环境。
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: 类型检查
+        run: npx tsc -b --pretty false
+
+      # 发布态真正被执行的是编译产物，升级链路得拿它来验，
+      # 否则验的是「仓库形态」而不是「用户机器上的形态」
+      - name: 编译服务端（发布态入口）
+        run: npm run build:server
+
+      - name: 升级链路自检
+        run: npm run verify:upgrade
+
+      # 打包这件事也得在 CI 里过一遍：发布包是「目标机零环境」的唯一保证，
+      # 打包脚本坏了不能等到发版那天才发现。
+      - name: 打服务端升级包并自检
+        shell: pwsh
+        run: |
+          # 自带运行时直接用 CI 自己的 Node：版本跟依赖里的原生二进制对得上，
+          # 也不用联网下载几十兆
+          $env:MDHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
+          npm run pack:server -- --out release
+          npm run pack:check
+
+      # 托盘也要打一遍：托盘包既是「免安装版」的交付物，
+      # 也是托盘自更新的原料（更新器按名字认这个包）。
+      # 脚本坏在这里没人发现的话，要等到发版当天使用者才更新不了。
+      - name: 打托盘包并自检
+        shell: pwsh
+        run: |
+          $env:MDHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
+          npm run pack:tray
+          npm run pack:check

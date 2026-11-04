@@ -15,10 +15,11 @@
   转发日志、收到停止指令时让服务优雅退出。
 
 .PARAMETER AppDir
-  服务端代码所在目录（里面有 server/index.ts）。默认取仓库根。
+  服务端代码所在目录（里面有 server/index.js 或 server/index.ts）。默认取仓库根。
 
 .PARAMETER Node
-  node.exe 的路径。不填就从 PATH 和常见安装位置里找。
+  node.exe 的路径。不填就优先用目录里自带的 runtime\node.exe，
+  再从 PATH 和常见安装位置里找。
 
 .PARAMETER Port
   服务端口。不填就读 .env 里的 MDHUB_PORT，再不行用 8787。
@@ -42,7 +43,7 @@ param(
     [string]$DisplayName = 'WorkHub 文档服务',
     [string]$AppDir = '',
     [string]$Node = '',
-    [string]$Arguments = '--env-file-if-exists=.env server/index.ts',
+    [string]$Arguments = '--env-file-if-exists=.env',
     [string]$Log = '',
     [int]$Port = 0,
     [string]$Token = '',
@@ -66,12 +67,17 @@ function Test-Admin {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-# 找出 node.exe：先看参数，再看 PATH，最后看常见安装位置
+# 找出 node.exe：先看参数，再看目录里自带的运行时，然后是 PATH，最后是常见安装位置
 function Find-Node {
-    param([string]$Explicit)
+    param([string]$Explicit, [string]$AppDir)
     if ($Explicit) {
         if (-not (Test-Path $Explicit)) { throw "指定的 node 不存在：$Explicit" }
         return (Resolve-Path $Explicit).Path
+    }
+    # 发布包自带运行时：目标机因此不需要装 Node
+    if ($AppDir) {
+        $bundled = Join-Path $AppDir 'runtime\node.exe'
+        if (Test-Path $bundled) { return (Resolve-Path $bundled).Path }
     }
     $cmd = Get-Command node -ErrorAction SilentlyContinue
     if ($cmd -and $cmd.Source) { return $cmd.Source }
@@ -83,7 +89,28 @@ function Find-Node {
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path $candidate)) { return $candidate }
     }
-    throw '找不到 node.exe，请用 -Node 指定路径'
+    throw '找不到 node.exe。请用 -Node 指定路径，或把带 runtime\node.exe 的发布包解压后再装。'
+}
+
+# 服务入口约定（真源在 scripts/lib/service-entry.mjs，规则改动要同步）：
+#   1. .workhub-entry 里写的相对路径（可选）
+#   2. server/index.js —— 编译产物，发布包里用这一份
+#   3. server/index.ts —— 源码直跑，仓库形态用这一份
+function Resolve-Entry {
+    param([string]$Dir)
+    if (-not $Dir) { return '' }
+    $manifest = Join-Path $Dir '.workhub-entry'
+    if (Test-Path $manifest) {
+        $line = Get-Content $manifest -ErrorAction SilentlyContinue |
+            Where-Object { $_.Trim() } | Select-Object -First 1
+        if ($line) {
+            $rel = $line.Trim().Replace('\', '/')
+            if (Test-Path (Join-Path $Dir $rel)) { return $rel }
+        }
+    }
+    if (Test-Path (Join-Path $Dir 'server\index.js')) { return 'server/index.js' }
+    if (Test-Path (Join-Path $Dir 'server\index.ts')) { return 'server/index.ts' }
+    return ''
 }
 
 # 找 C# 编译器：系统自带的 .NET Framework 编译器，Win10/11 与 Server 2012+ 都带
@@ -152,12 +179,19 @@ function Test-PortInUse {
 
 # 发放一把机器令牌：停机时要靠它走优雅关闭
 function Issue-ManageToken {
-    param([string]$Dir)
+    param([string]$Dir, [string]$NodePath)
+    $entry = ''
+    if (Test-Path (Join-Path $Dir 'server\manageToken.js')) { $entry = 'server/manageToken.js' }
+    elseif (Test-Path (Join-Path $Dir 'server\manageToken.ts')) { $entry = 'server/manageToken.ts' }
+    if (-not $entry) {
+        Write-Warn '目录里没有 manageToken，跳过发令牌（停止时会改为强杀进程）。'
+        return @{ Token = ''; Id = '' }
+    }
     Push-Location $Dir
     try {
         # 用 --json 拿结果：日志行带时间戳和前缀，正则抠出来的值
         # 哪天日志格式一改就会悄悄抠错，错了还不报错
-        $raw = & node --env-file-if-exists=.env server/manageToken.ts issue 'windows service' --json 2>$null | Out-String
+        $raw = & $NodePath --env-file-if-exists=.env $entry issue 'windows service' --json 2>$null | Out-String
         $parsed = $raw | ConvertFrom-Json
         if ($parsed.ok -and $parsed.token) {
             return @{ Token = $parsed.token; Id = $parsed.id }
@@ -178,9 +212,11 @@ Write-Step "安装 WorkHub 服务（$DisplayName）"
 if (-not $AppDir) { $AppDir = $RepoRoot }
 if (-not (Test-Path $AppDir)) { throw "目录不存在：$AppDir" }
 $AppDir = (Resolve-Path $AppDir).Path
-if (-not (Test-Path (Join-Path $AppDir 'server\index.ts'))) {
-    throw "这个目录里没有 server/index.ts，不像服务端代码目录：$AppDir"
+$Entry = Resolve-Entry -Dir $AppDir
+if (-not $Entry) {
+    throw "这个目录里没有 server/index.js 或 server/index.ts，不像服务端代码目录：$AppDir"
 }
+Write-Info "服务入口：$Entry"
 
 if ($Task) {
     Write-Info '安装方式：任务计划程序（开机登录后自动启动，崩了自动拉起）'
@@ -195,7 +231,7 @@ if ($Task) {
     Write-Info '安装方式：Windows 服务（开机自启，崩了由服务管理器拉起）'
 }
 
-$NodePath = Find-Node -Explicit $Node
+$NodePath = Find-Node -Explicit $Node -AppDir $AppDir
 Write-Info "node：$NodePath"
 
 $installDir = if ($Task) {
@@ -208,7 +244,7 @@ $confPath = Join-Path $installDir 'service.conf'
 
 if (-not $Log) { $Log = Join-Path $AppDir 'logs\service.log' }
 if (-not $Port) { $Port = Get-PortFromEnv -Dir $AppDir }
-if (-not $Port) { $Port = 8787 }
+if (-not $Port) { $Port = 8787 }  # 镜像值：真源在 shared/constants.ts 的 DEFAULT_API_PORT
 
 # ---- 端口检查 ----
 # 端口上杵着别的东西时，硬装上去只会多一个抢不到端口的进程，
@@ -224,7 +260,10 @@ if ((Test-PortInUse -ServicePort $Port) -and -not $Force -and -not $DryRun) {
 Write-Step '编译服务宿主'
 $csc = Find-Csc
 Write-Info "编译器：$csc"
-$source = Join-Path $RepoRoot 'scripts\service\WorkHubService.cs'
+# 宿主源码优先从部署目录里找：发布包自带 scripts\service\WorkHubService.cs，
+# 目标机没有仓库也能装服务
+$source = Join-Path $AppDir 'scripts\service\WorkHubService.cs'
+if (-not (Test-Path $source)) { $source = Join-Path $RepoRoot 'scripts\service\WorkHubService.cs' }
 if (-not (Test-Path $source)) { throw "找不到宿主源码：$source" }
 
 if (-not (Test-Path $installDir)) {
@@ -249,7 +288,7 @@ if (-not $Token) {
         Write-Info '[DryRun] 将会发放一把令牌（仅用于停机时优雅关闭）'
         $Token = 'DRY-RUN-TOKEN'
     } else {
-        $issued = Issue-ManageToken -Dir $AppDir
+        $issued = Issue-ManageToken -Dir $AppDir -NodePath $NodePath
         $Token = $issued.Token
         $TokenId = $issued.Id
         if ($Token) { Write-Info '已发放一把令牌（仅用于停机时优雅关闭）' }
@@ -263,6 +302,7 @@ $conf = @(
     "node=$NodePath"
     "dir=$AppDir"
     "args=$Arguments"
+    "entry=$Entry"
     "log=$Log"
     "port=$Port"
     "token=$Token"

@@ -36,6 +36,10 @@ namespace WorkHub
         public string Dir = "";
         public string Args = "";
         public string Log = "";
+        // 服务入口（相对 dir）。留空则按约定自动探测，见 EntryResolver。
+        public string Entry = "";
+        // 镜像值：真源在 shared/constants.ts 的 DEFAULT_API_PORT。
+        // .NET Framework 4 没有 JSON 解析器，读不了那份常量，只能各写一份。
         public int Port = 8787;
         public string Token = "";
         public string Name = "WorkHub";
@@ -63,6 +67,7 @@ namespace WorkHub
             cfg.Dir = Get(kv, "dir", cfg.Dir);
             cfg.Args = Get(kv, "args", cfg.Args);
             cfg.Log = Get(kv, "log", cfg.Log);
+            cfg.Entry = Get(kv, "entry", cfg.Entry);
             cfg.Token = Get(kv, "token", cfg.Token);
             cfg.Name = Get(kv, "name", cfg.Name);
             cfg.DisplayName = Get(kv, "displayName", cfg.DisplayName);
@@ -86,6 +91,76 @@ namespace WorkHub
                 return parsed;
             }
             return fallback;
+        }
+    }
+
+    /// <summary>
+    /// 服务入口的约定（真源在 scripts/lib/service-entry.mjs，规则改动要同步）。
+    ///
+    ///   1. dir/.workhub-entry 里写的相对路径（可选）
+    ///   2. dir/server/index.js —— 编译产物，发布包里用这一份
+    ///   3. dir/server/index.ts —— 源码直跑，仓库形态用这一份
+    ///
+    /// 为什么要在这儿探一次：服务端既能被「node server/index.ts」直跑，
+    /// 也能被编译成「node server/index.js」发布。老配置里写死的是 .ts，
+    /// 升级到带编译产物的新包后入口必须跟着换，否则服务起不来。
+    /// </summary>
+    internal static class EntryResolver
+    {
+        public static string Detect(string dir)
+        {
+            if (string.IsNullOrEmpty(dir)) return null;
+            try
+            {
+                string manifest = Path.Combine(dir, ".workhub-entry");
+                if (File.Exists(manifest))
+                {
+                    string[] lines = File.ReadAllLines(manifest);
+                    foreach (string raw in lines)
+                    {
+                        string line = raw.Trim();
+                        if (line.Length == 0) continue;
+                        string rel = line.Replace('\\', '/');
+                        if (File.Exists(Path.Combine(dir, rel))) return rel;
+                    }
+                }
+            }
+            catch { }
+
+            if (File.Exists(Path.Combine(dir, "server", "index.js"))) return "server/index.js";
+            if (File.Exists(Path.Combine(dir, "server", "index.ts"))) return "server/index.ts";
+            return null;
+        }
+
+        /// <summary>
+        /// 拼出启动参数：前置参数照旧，入口按约定换。
+        ///
+        /// 老配置把入口混在 args 里（"--env-file-if-exists=.env server/index.ts"），
+        /// 这里把那个入口 token 换成探测出来的；新配置里入口单独放在 entry 字段。
+        /// </summary>
+        public static string ResolveArguments(ServiceConfig cfg)
+        {
+            string entry = !string.IsNullOrEmpty(cfg.Entry) ? cfg.Entry : Detect(cfg.Dir);
+            if (string.IsNullOrEmpty(entry)) return cfg.Args;
+
+            string[] parts = cfg.Args.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            List<string> kept = new List<string>();
+            bool replaced = false;
+            foreach (string part in parts)
+            {
+                string normalized = part.Replace('\\', '/');
+                bool looksLikeEntry = normalized.EndsWith("/index.ts") || normalized.EndsWith("/index.js")
+                    || normalized == "index.ts" || normalized == "index.js";
+                if (looksLikeEntry && !replaced)
+                {
+                    kept.Add(entry);
+                    replaced = true;
+                    continue;
+                }
+                kept.Add(part);
+            }
+            if (!replaced) kept.Add(entry);
+            return string.Join(" ", kept.ToArray());
         }
     }
 
@@ -190,7 +265,7 @@ namespace WorkHub
 
             ProcessStartInfo psi = new ProcessStartInfo();
             psi.FileName = cfg.Node;
-            psi.Arguments = cfg.Args;
+            psi.Arguments = EntryResolver.ResolveArguments(cfg);
             psi.WorkingDirectory = string.IsNullOrEmpty(cfg.Dir) ? Environment.CurrentDirectory : cfg.Dir;
             psi.UseShellExecute = false;
             psi.CreateNoWindow = true;
