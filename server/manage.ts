@@ -18,6 +18,10 @@ import { fileURLToPath } from 'node:url';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { logger, displayPath, recentLogLines } from './logger.ts';
 import { verifyManageToken } from './manageTokens.ts';
+import {
+  checkForUpdate,
+  startUpgrade,
+} from './updater.ts';
 import type { V2Database } from './storage/v2/schema.ts';
 
 /** 令牌放在这个头里，而不是 Authorization */
@@ -276,6 +280,40 @@ export function createManageRouter(db: V2Database, dbPath: string, hooks: Manage
         process.exit(0);
       }
     }, 200);
+  });
+
+  /**
+   * 查更新。
+   *
+   * 查不到不算失败——没网、GitHub 限流、压根没发 Release，这些都会发生。
+   * 所以这里返回 200，把错误放在 error 字段里：调用方（托盘、前端）
+   * 能区分「没有新版本」和「查不到」，这两种在界面上该说的话不一样。
+   */
+  router.get('/update', async (_req, res) => {
+    res.json(await checkForUpdate());
+  });
+
+  /**
+   * 执行升级。
+   *
+   * 真正的活儿在 startUpgrade 里：下载校验解包 → 起更新器 → 写标记 → 退出。
+   * 这里只负责把结果翻译成 HTTP 响应。
+   */
+  router.post('/update', async (_req, res) => {
+    const result = await startUpgrade({
+      onReady: () => {
+        // 响应先发出去，再退出，否则调用方看到的是连接被掐断
+        setTimeout(() => {
+          if (hooks.shutdown) hooks.shutdown('自动升级');
+          else process.exit(0);
+        }, 300);
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status ?? 500).json({ error: result.error ?? '升级失败' });
+      return;
+    }
+    res.json(result);
   });
 
   return router;

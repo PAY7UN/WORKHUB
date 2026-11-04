@@ -199,6 +199,11 @@ namespace WorkHub
             psi.StandardOutputEncoding = Encoding.UTF8;
             psi.StandardErrorEncoding = Encoding.UTF8;
 
+            // 告诉服务端「外面有宿主在管着你」。
+            // 自动升级要靠它判断升级后该由谁把服务拉起来：宿主有看门狗，
+            // 升级器就不用自己拉，两个都拉会抢同一个端口。
+            psi.EnvironmentVariables["WORKHUB_SERVICE_HOST"] = "1";
+
             log.Write("info", "拉起服务：" + psi.FileName + " " + psi.Arguments + "（工作目录 " + psi.WorkingDirectory + "）");
 
             Process proc = new Process();
@@ -262,6 +267,26 @@ namespace WorkHub
                 try { exited = current.HasExited; } catch { exited = true; }
                 if (!exited) continue;
 
+                // 正在升级：先别拉。
+                // 升级器要换掉代码目录里的文件，这时候拉起来的是旧代码，
+                // 等它换完再启动新代码就会撞端口。而升级器换完会撤掉标记，
+                // 那时我们再拉。
+                if (WaitForUpgradeToFinish())
+                {
+                    if (stopping) return;
+                    try
+                    {
+                        lock (gate) { child = null; }
+                        Start();
+                        log.Write("info", "升级完成，已拉起新版本服务进程");
+                    }
+                    catch (Exception ex)
+                    {
+                        log.Write("error", "升级后拉起失败：" + ex.Message);
+                    }
+                    continue;
+                }
+
                 // 这次跑够久了，说明上一轮是正常的，计数重新开始
                 if ((DateTime.Now - startedAt).TotalSeconds > StableSeconds)
                 {
@@ -293,6 +318,52 @@ namespace WorkHub
                     log.Write("error", "重新拉起失败：" + ex.Message);
                 }
             }
+        }
+
+        /// <summary>
+        /// 升级标记文件的位置。
+        ///
+        /// 放在代码目录（node 的工作目录）下：服务端换代码时也在那儿，
+        /// 双方看到的是同一个文件。
+        /// </summary>
+        private string UpgradeFlagPath
+        {
+            get
+            {
+                string dir = string.IsNullOrEmpty(cfg.Dir) ? Environment.CurrentDirectory : cfg.Dir;
+                return Path.Combine(dir, ".upgrade-in-progress");
+            }
+        }
+
+        /// <summary>
+        /// 正在升级的话就等它换完。
+        ///
+        /// 升级器要替换代码目录里的文件，这时候我们拉起来的还是旧代码——
+        /// 等它换完，新旧两个进程抢同一个端口，升级反而搞砸了。
+        /// 升级器换完会撤掉标记，那时再拉。
+        ///
+        /// 返回 true 表示「刚才是升级，现在可以拉了」。
+        /// </summary>
+        private bool WaitForUpgradeToFinish()
+        {
+            string flag = UpgradeFlagPath;
+            if (!File.Exists(flag)) return false;
+
+            log.Write("info", "检测到升级标记，等升级完成后再拉起服务");
+            int waited = 0;
+            while (File.Exists(flag) && !stopping && waited < 600)
+            {
+                Thread.Sleep(1000);
+                waited += 1;
+            }
+            if (stopping) return false;
+            if (File.Exists(flag))
+            {
+                log.Write("warn", "升级标记 10 分钟没消失（升级多半失败了），自己拉起来");
+                return false;
+            }
+            log.Write("info", "升级标记已撤销，可以拉起新版本");
+            return true;
         }
 
         /// <summary>子进程输出泵。必须持续读，否则管道写满会把子进程卡死。</summary>

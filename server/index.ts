@@ -139,6 +139,7 @@ import {
 } from './repos.ts';
 import { ensureGuestSession } from './guests.ts';
 import { createManageRouter } from './manage.ts';
+import { checkForUpdate, startUpgrade } from './updater.ts';
 import {
   hashPassword,
   needsUpgrade,
@@ -346,6 +347,29 @@ app.get('/api/healthz', (_req, res) => {
  * 详细说明见 server/manage.ts。
  */
 app.use('/api/manage', createManageRouter(db, DB_PATH, { shutdown: gracefulShutdown }));
+
+// 管理员会话版的升级接口。
+//
+// /api/manage/* 只认机器令牌，而浏览器里的管理后台带的是用户会话——
+// 两套凭据互不通用，所以升级这件事得开两扇门。
+app.get('/api/admin/update', requireAdmin, async (_req, res) => {
+  res.json(await checkForUpdate());
+});
+
+app.post('/api/admin/update', requireAdmin, async (_req, res) => {
+  const result = await startUpgrade({
+    onReady: () => {
+      // 响应先发出去再退出，否则前端看到的是连接被掐断，
+      // 分不清是「升级失败」还是「服务正在重启」
+      setTimeout(() => gracefulShutdown('自动升级'), 300);
+    },
+  });
+  if (!result.ok) {
+    res.status(result.status ?? 500).json({ error: result.error ?? '升级失败' });
+    return;
+  }
+  res.json(result);
+});
 
 app.get('/api/auth/me', (req, res) => {
   res.json({

@@ -306,6 +306,15 @@ async function startService() {
       log('是用户主动停的，不自动拉起');
       return;
     }
+    // 正在升级：先别拉。
+    // 升级器要替换代码目录里的文件，这时候拉起来的是旧代码，
+    // 等它换完再启动新代码就会撞端口。升级器换完会撤掉标记。
+    const upgradeFlag = path.join(paths.codeDir, '.upgrade-in-progress');
+    if (fs.existsSync(upgradeFlag)) {
+      log('检测到升级标记，等升级完成后再拉起服务');
+      waitUpgradeThenStart(upgradeFlag);
+      return;
+    }
     if (restarts >= MAX_RESTARTS) {
       log(`已连续崩溃 ${restarts} 次，不再自动重启。请看 logs/service.log`);
       return;
@@ -314,6 +323,30 @@ async function startService() {
     log(`${RESTART_DELAY_MS / 1000} 秒后第 ${restarts} 次尝试拉起`);
     setTimeout(startService, RESTART_DELAY_MS);
   });
+}
+
+/**
+ * 等升级换完代码，再把服务拉起来。
+ *
+ * 升级器换完代码会撤掉标记。撤掉之后拉起来的才是新版本——
+ * 提前拉起来的话，拉的是旧代码，还会占着端口跟升级器抢。
+ */
+function waitUpgradeThenStart(flag) {
+  const deadline = Date.now() + 10 * 60 * 1000;
+  const timer = setInterval(() => {
+    if (!fs.existsSync(flag)) {
+      clearInterval(timer);
+      log('升级完成，拉起新版本服务');
+      restarts = 0;
+      startService();
+      return;
+    }
+    if (Date.now() > deadline) {
+      clearInterval(timer);
+      log('升级标记 10 分钟没消失（升级多半失败了），自己拉起来');
+      startService();
+    }
+  }, 1000);
 }
 
 /**
