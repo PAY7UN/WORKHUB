@@ -1,19 +1,34 @@
 /**
  * 打服务端升级包：workhub-server-<版本>.zip
  *
- * 这个包是「自动升级」的原料——更新器下载它、解开、替换掉正在跑的代码。
+ * 这个包是「自动升级」的原料——更新器下载它、解开、替换掉正在跑的代码；
+ * 同时它也是「首次部署」的原料——解压、起服务，不用装任何环境。
  * 所以打包时要守住几条：
  *
- * - 代码进包，数据不进包：data/、logs/、node_modules/、.env 一律不带。
+ * - 代码进包，数据不进包：data/、logs/、.env 一律不带。
  *   把数据打进包里，等于每次升级都拿旧数据盖掉新数据（或者反过来）。
+ * - 依赖进包：node_modules 只带服务端运行时真正需要的那几个包（见
+ *   scripts/lib/runtime-deps.mjs）。这样目标机不需要 npm、不需要联网，
+ *   升级时也不用在生产机上跑 npm install。
+ * - 运行时进包：runtime/node.exe 是一份自带 Node，目标机连 Node 都不用装。
  * - 带一份文件清单（.workhub-files.txt）：升级时靠它算出「新版里已经
  *   没有的旧文件」并删掉。不删的话，改名加版本号的老文件会永远留在
  *   目录里，那种 bug 极难查。
  * - 附带 sha256：更新器下载后要核对，传输损坏或半截文件不能直接用。
  *
- * 用法：node scripts/pack-server.mjs [--out <目录>]
+ * 打包前会自动重建前端产物（dist/）并编译服务端（server/*.js）：
+ * dist 是拷贝进包的，不是现场构建的，漏构建一次就会把上一版的前端发出去，
+ * 而这种错没有任何机制能发现；服务端同理，漏编译就会退回去直跑 .ts。
+ * 已经构建好的流水线可以用 --skip-build 跳过。
+ *
+ * 用法：node scripts/pack-server.mjs [--out <目录>] [--skip-build]
+ *                                 [--no-runtime] [--no-deps]
  */
 import { spawn } from 'node:child_process';
+import { ensureFrontendBuilt } from './lib/frontend-build.mjs';
+import { buildServer } from './lib/server-build.mjs';
+import { copyRuntimeDeps, pruneNativeDeps } from './lib/runtime-deps.mjs';
+import { ensureNodeRuntime } from './lib/node-runtime.mjs';
 import {
   copyFileSync,
   existsSync,
@@ -45,11 +60,17 @@ const EXCLUDE_DIRS = new Set(['node_modules', 'data', 'logs', '.git', 'release',
 const EXCLUDE_FILES = new Set(['.env', '.workhub-files.txt']);
 
 function parseArgs(argv) {
-  const args = {};
+  const args = { skipBuild: false, runtime: true, deps: true };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--out') {
       args.out = argv[i + 1];
       i += 1;
+    } else if (argv[i] === '--skip-build') {
+      args.skipBuild = true;
+    } else if (argv[i] === '--no-runtime') {
+      args.runtime = false;
+    } else if (argv[i] === '--no-deps') {
+      args.deps = false;
     }
   }
   return args;
@@ -113,17 +134,35 @@ async function main() {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
   const version = pkg.version ?? '0.0.0';
 
+  // 先重建前端。dist/ 是拷贝进包的，不在这里重建就可能把上一版的前端发出去。
+  await ensureFrontendBuilt({
+    root: ROOT,
+    skip: args.skipBuild,
+    log: (msg) => console.log(msg),
+  });
+
+  // 再编译服务端。server/*.js 是发布态真正被执行的入口，
+  // 不编译就等于把「需要高版本 Node 的 .ts 直跑」又带回了目标机。
+  if (!args.skipBuild) {
+    console.log('编译服务端…');
+    await buildServer({ root: ROOT, log: (msg) => console.log(`  ${msg}`) });
+  }
+
   const missing = INCLUDE.filter((name) => !existsSync(join(ROOT, name)));
   if (missing.length > 0) {
     console.error(`以下内容不存在，打不了包：${missing.join('、')}`);
-    if (missing.includes('dist')) {
-      console.error('dist/ 是前端构建产物，先跑 npm run build。');
-    }
     process.exit(1);
   }
 
-  const staging = join(outDir, `.pack-staging-${version}`);
-  rmSync(staging, { recursive: true, force: true });
+  let staging = join(outDir, `.pack-staging-${version}`);
+  // 上一次没清干净的暂存目录：清不掉就换个名字重来，
+  // 不能因为一个残留目录就打不成包。
+  try {
+    rmSync(staging, { recursive: true, force: true });
+  } catch {
+    staging = join(outDir, `.pack-staging-${version}-${Date.now()}`);
+    console.log('  （上次的暂存目录清不掉，换个名字重来）');
+  }
   mkdirSync(staging, { recursive: true });
 
   const files = [];
@@ -149,6 +188,40 @@ async function main() {
     }
   }
 
+  // 运行时依赖：服务端跑起来真正需要的那几个包，跟着包走。
+  // 目标机因此不需要 npm、不需要联网，升级时也不必在生产机上装依赖。
+  if (args.deps) {
+    console.log('收集运行时依赖…');
+    copyRuntimeDeps({
+      root: ROOT,
+      target: staging,
+      log: (msg) => console.log(`  ${msg}`),
+    });
+    pruneNativeDeps(join(staging, 'node_modules'));
+    for (const rel of listFiles(join(staging, 'node_modules'))) {
+      files.push(`node_modules/${rel}`);
+    }
+  } else {
+    console.log('  按要求不带依赖（目标机需要自行 npm install）');
+  }
+
+  // 自带 Node 运行时：目标机连 Node 都不用装。
+  // 升级时不会覆盖它（跑着的 exe 换不掉），它只在首次部署时派上用场。
+  if (args.runtime) {
+    console.log('准备自带 Node 运行时…');
+    const exe = await ensureNodeRuntime({
+      target: join(staging, 'runtime'),
+      log: (msg) => console.log(`  ${msg}`),
+    });
+    if (exe) {
+      for (const rel of listFiles(join(staging, 'runtime'))) {
+        files.push(`runtime/${rel}`);
+      }
+    }
+  } else {
+    console.log('  按要求不带自带运行时（目标机需要自行安装 Node）');
+  }
+
   // 文件清单：升级时靠它清理新版里已经没有的旧文件
   const manifest = [...files].sort().join('\n');
   writeFileSync(join(staging, '.workhub-files.txt'), `${manifest}\n`, 'utf8');
@@ -163,7 +236,14 @@ async function main() {
   const sha256 = hash.digest('hex');
   writeFileSync(`${zipPath}.sha256`, `${sha256}  workhub-server-${version}.zip\n`, 'utf8');
 
-  rmSync(staging, { recursive: true, force: true });
+  // 暂存目录清不掉也不能算打包失败：包已经打出来了。
+  // 真实原因通常是 Windows 上有杀毒软件正拿着某个文件，或者权限不足——
+  // 这时候留个暂存目录，远比把一次成功的打包报成失败强。
+  try {
+    rmSync(staging, { recursive: true, force: true });
+  } catch (err) {
+    console.log(`  （暂存目录没清掉，留着了：${err?.message ?? err}）`);
+  }
 
   const sizeMb = (readFileSync(zipPath).length / 1024 / 1024).toFixed(1);
   console.log(`已打出升级包：${zipPath}`);

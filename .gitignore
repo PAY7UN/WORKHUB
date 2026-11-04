@@ -17,6 +17,14 @@ dist-ssr
 *.db-shm
 *.db-wal
 
+# 服务端编译产物（scripts/build-server.mjs 生成）
+# 产物与源码同目录同名：import.meta.url 推导出的 APP_ROOT 才不会跑偏。
+# 规则逐个列举，不写 /server/*.js：那样会把将来手写的 .js 也一起忽略掉。
+/server/index.js
+/server/manageToken.js
+/server/resetAdminPassword.js
+/server/janitor.js
+
 # 导出的文档正文（node scripts/docs.mjs --export 产出）
 # 默认不上传：里面是数据库里的真实内容，进公开仓库等于公开文档。
 # 确认要一起上传，就删掉下面这行。
