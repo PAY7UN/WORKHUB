@@ -20,12 +20,12 @@ if (!existsSync(ENV_PATH)) {
   process.exit(1);
 }
 /**
- * 要验证的库必须是现役那个：v2 起服务端用的是 data/mdhub-v2.db。
+ * 要验证的库必须是现役那个：v2 起服务端用的是 data/workhub-v2.db。
  *
- * 原先这里写死 data/mdhub.db——那是旧库，拿它当验证对象等于验证一个
+ * 原先这里写死 data/workhub-v1.db——那是旧库，拿它当验证对象等于验证一个
  * 早就不用的世界，脚本通过也不代表线上这套是好的。
  */
-const SOURCE_DB = envValue('DB_V2') || join(ROOT, 'data/mdhub-v2.db');
+const SOURCE_DB = envValue('DB_V2') || join(ROOT, 'data/workhub-v2.db');
 if (!existsSync(SOURCE_DB)) {
   console.error(`找不到 ${SOURCE_DB}`);
   console.error('先运行一次 npm run server（示例文档需设 WORKHUB_SEED_DEMO=1），再运行本脚本。');
@@ -46,7 +46,7 @@ for (const line of readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)) {
   if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
 }
 
-const tmp = mkdtempSync(join(tmpdir(), 'mdhub-rt-'));
+const tmp = mkdtempSync(join(tmpdir(), 'workhub-rt-'));
 const dbPath = join(tmp, 'rt.db');
 copyFileSync(SOURCE_DB, dbPath);
 

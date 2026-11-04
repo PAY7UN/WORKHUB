@@ -330,6 +330,9 @@ export async function createDingTalkTodo(
     method: 'POST',
     accessToken: token,
     body: JSON.stringify({
+      // sourceId 是**钉钉侧的幂等标识**，不是本地命名：钉钉拿它连同创建人一起
+      // 判断「这条待办是不是已经建过」。改名会让新待办跟历史待办对不上号，
+      // 同一条待办被建两遍——所以这个值保持原样，与品牌无关。
       sourceId: 'mdhub',
       subject: payload.subject,
       creatorId: unionId,

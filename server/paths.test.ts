@@ -7,9 +7,15 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  DB_FILENAME,
   DEFAULT_DB_PATH,
   DEFAULT_VAULT_DIR,
+  LEGACY_DB_FILENAME,
+  planDbMigration,
   resolveDbPath,
   resolveVaultDir,
 } from './paths.ts';
@@ -56,4 +62,41 @@ test('新旧变量名同时存在时以新名为准', () => {
   // 两个都配时选新的：照着新文档改的人，和忘了改的人，都得到正确结果
   assert.equal(resolveDbPath({ WORKHUB_DB_V2: '/new.db', MDHUB_DB_V2: '/old.db' }), '/new.db');
   assert.equal(resolveDbPath({ WORKHUB_DB_V2: '/new.db', MDHUB_DB: '/old.db' }), '/new.db');
+});
+
+test('默认库名用 workhub 前缀', () => {
+  assert.equal(DB_FILENAME, 'workhub-v2.db');
+  assert.ok(DEFAULT_DB_PATH.endsWith(join('data', 'workhub-v2.db')));
+});
+
+test('库改名迁移：旧文件在、新文件不在时，该搬', () => {
+  // 不搬的后果：升级过的用户会发现「自己的库不见了」——服务建了个空库，
+  // 旧库还躺在 data/ 里没人管，从外面看像是数据被清了
+  const dir = mkdtempSync(join(tmpdir(), 'workhub-migrate-'));
+  const legacy = join(dir, LEGACY_DB_FILENAME);
+  writeFileSync(legacy, 'x');
+  const plan = planDbMigration(join(dir, DB_FILENAME));
+  assert.ok(plan);
+  assert.equal(plan?.from, legacy);
+  assert.equal(plan?.to, join(dir, DB_FILENAME));
+});
+
+test('库改名迁移：新文件已经在了就不搬', () => {
+  // 已经迁过了，或者本来就是新库——再搬一次会把新库覆盖成旧的
+  const dir = mkdtempSync(join(tmpdir(), 'workhub-migrate-'));
+  writeFileSync(join(dir, LEGACY_DB_FILENAME), 'old');
+  writeFileSync(join(dir, DB_FILENAME), 'new');
+  assert.equal(planDbMigration(join(dir, DB_FILENAME)), null);
+});
+
+test('库改名迁移：旧文件不在就不搬', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'workhub-migrate-'));
+  assert.equal(planDbMigration(join(dir, DB_FILENAME)), null);
+});
+
+test('库改名迁移：用户自定义的库名不受牵连', () => {
+  // WORKHUB_DB_V2=/data/my.db 的人，库旁边就算有个 mdhub-v2.db 也不该被搬走
+  const dir = mkdtempSync(join(tmpdir(), 'workhub-migrate-'));
+  writeFileSync(join(dir, LEGACY_DB_FILENAME), 'x');
+  assert.equal(planDbMigration(join(dir, 'my.db')), null);
 });

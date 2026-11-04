@@ -303,7 +303,7 @@ function childEnv() {
   };
   if (paths.packaged) {
     env.NODE_ENV = 'production';
-    env.WORKHUB_DB_V2 = path.join(paths.dataDir, 'data', 'mdhub-v2.db');
+    env.WORKHUB_DB_V2 = path.join(paths.dataDir, 'data', 'workhub-v2.db');
     env.WORKHUB_VAULT_DIR = path.join(paths.dataDir, 'data', 'vault');
   }
   return env;

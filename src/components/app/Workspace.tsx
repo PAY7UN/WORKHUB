@@ -32,6 +32,7 @@ import {
   type UploadProgress,
 } from './Modal';
 import { api } from '@/lib/api';
+import { readStore, removeStore } from '@/lib/storage';
 import { extOf } from '../../../shared/attachments';
 import type { DocNode } from '@/types';
 import { ROLE_LABELS, ROLE_DESCRIPTIONS } from '@/types';
@@ -87,15 +88,10 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
    */
   useEffect(() => {
     if (handledFocusRef.current) return;
-    let requestId = '';
-    try {
-      requestId = sessionStorage.getItem('mdhub.focusRequest') ?? '';
-    } catch {
-      return;
-    }
+    const requestId = readStore(sessionStorage, 'workhub.focusRequest') ?? '';
     if (!requestId || !isAdmin) return;
     handledFocusRef.current = true;
-    sessionStorage.removeItem('mdhub.focusRequest');
+    removeStore(sessionStorage, 'workhub.focusRequest');
     openAdminConsole('access', undefined, requestId);
   }, [isAdmin, openAdminConsole]);
 

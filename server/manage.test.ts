@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const workDir = mkdtempSync(join(tmpdir(), 'mdhub-manage-test-'));
+const workDir = mkdtempSync(join(tmpdir(), 'workhub-manage-test-'));
 
 const { openV2Db } = await import('./storage/v2/schema.ts');
 const { issueManageToken, verifyManageToken, listManageTokens, revokeManageToken, revokeUnusedByLabel } =

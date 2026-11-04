@@ -3,6 +3,7 @@ import { Toaster } from 'sonner';
 import { AppProvider } from '@/context/AppContext';
 import { HomePage } from '@/components/app/HomePage';
 import { Workspace } from '@/components/app/Workspace';
+import { readStore, removeStore, writeStore } from '@/lib/storage';
 
 /**
  * 深链带过来的申请单号（?access=<申请单号>）。
@@ -13,13 +14,14 @@ import { Workspace } from '@/components/app/Workspace';
  * - 存下来是因为中间还隔着「进入工作区」这一步，参数得活过这一跳；
  * - 洗地址栏是因为它是一次性的导航参数，留着会让刷新后反复跳转。
  */
-const FOCUS_REQUEST_KEY = 'mdhub.focusRequest';
+const FOCUS_REQUEST_KEY = 'workhub.focusRequest';
+const ENTERED_KEY = 'workhub.entered';
 
 function captureFocusRequest(): void {
   try {
     const id = new URLSearchParams(window.location.search).get('access');
     if (!id) return;
-    sessionStorage.setItem(FOCUS_REQUEST_KEY, id);
+    writeStore(sessionStorage, FOCUS_REQUEST_KEY, id);
     const url = new URL(window.location.href);
     url.searchParams.delete('access');
     window.history.replaceState({}, '', url.toString());
@@ -34,16 +36,16 @@ function App() {
     // 深链参数必须在首次渲染前抓住：Workspace 挂载后会立刻去读它，
     // 放进 useEffect 就晚了——子组件的副作用先于父组件的副作用跑。
     captureFocusRequest();
-    return sessionStorage.getItem('mdhub.entered') === '1';
+    return readStore(sessionStorage, ENTERED_KEY) === '1';
   });
 
   const handleEnter = () => {
-    sessionStorage.setItem('mdhub.entered', '1');
+    writeStore(sessionStorage, ENTERED_KEY, '1');
     setEntered(true);
   };
 
   const handleExit = () => {
-    sessionStorage.removeItem('mdhub.entered');
+    removeStore(sessionStorage, ENTERED_KEY);
     setEntered(false);
   };
 

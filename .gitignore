@@ -7,7 +7,7 @@ dist-ssr
 !.env.example
 
 # 服务端运行产物
-# 注意：数据库目录是项目根的 data/（server/db.ts 用 resolve(HERE, '../data/mdhub.db')，
+# 注意：数据库目录是项目根的 data/（server/paths.ts 的 DEFAULT_DB_PATH，
 # HERE 即 server/，所以落在项目根而非 server/data）。
 # 规则要写成 /data/：不带前导斜杠的 data/ 匹配任意层级，
 # 会连带把 src/data/seed.ts（种子数据，该上传）一起忽略掉。

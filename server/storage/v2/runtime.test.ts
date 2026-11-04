@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, existsSync, openSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const workDir = mkdtempSync(join(tmpdir(), 'mdhub-rt-'));
+const workDir = mkdtempSync(join(tmpdir(), 'workhub-rt-'));
 process.env.WORKHUB_DB_V2 = join(workDir, 'test.db');
 process.env.WORKHUB_VAULT_DIR = join(workDir, 'vault');
 process.env.WORKHUB_SECRET = 'test-secret-for-runtime-cases-0123456789abcdef';

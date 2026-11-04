@@ -137,7 +137,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * 绝对路径会带出操作系统用户名目录（Windows 上是 C:\Users\xxx），
  * 而启动日志往往被原样贴进 issue 或公开仓库，等于顺带公开了本机目录结构。
  * 仓库内的路径给相对形式；仓库外的路径把家目录替换成 ~，其余原样保留
- * （用户显式指定了 WORKHUB_DB=/data/mdhub.db 这种路径时，他需要看到它才能找得到）。
+ * （用户显式指定了 WORKHUB_DB=/data/workhub-v2.db 这种路径时，他需要看到它才能找得到）。
  */
 export function displayPath(target: string): string {
   const rel = relative(ROOT, target);

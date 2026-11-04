@@ -3,14 +3,14 @@
  * API Key 以 AES-256-GCM 加密落库，主密钥来自 config.ts 中已校验的 WORKHUB_SECRET。
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ADMIN_PASSWORD, SECRET } from './config.ts';
 import { envFlag } from './env.ts';
 import { logger } from './logger.ts';
 import { hashPassword, verifyPassword } from './password.ts';
 import { openV2Db } from './storage/v2/schema.ts';
-import { resolveDbPath } from './paths.ts';
+import { planDbMigration, resolveDbPath } from './paths.ts';
 import {
   VAULT_ROOT,
   bodyPath,
@@ -65,17 +65,57 @@ import { SEED_DOCS } from '../shared/seed.ts';
  *
  * v2 起只有一个库：表结构统一由 server/storage/v2/schema.ts 定义，
  * 文档正文落在 vault 的仓库目录里，库里只留索引行。
- * 旧库 data/mdhub.db 原样保留着，作为回退的底牌。
+ * 旧库 data/workhub-v1.db 原样保留着，作为回退的底牌。
  */
 export const DB_PATH = resolveDbPath();
 
 mkdirSync(dirname(DB_PATH), { recursive: true });
 
+/**
+ * 库文件改名后的迁移：把旧文件名下的库搬到新名字下。
+ *
+ * 必须在开库之前搬。SQLite 在 WAL 模式下，`.db` 旁边还跟着 `-wal` 与 `-shm`
+ * 两个伴生文件：`-wal` 里攒着已提交但还没落回主库的事务页。只搬 `.db` 的话，
+ * 新库开起来会看不见旧 WAL 里的那些页，表现为「少了几条记录」。
+ *
+ * **搬不动就拒绝启动，绝不拿空库顶上。**
+ * 搬不动的原因是文件正被另一个进程占着（Windows 上会报 EBUSY）——多半是
+ * 上一版的 WorkHub 还开着。这时候如果硬着头皮建一个新库，用户看到的现象是
+ * 「我的文档全没了」，而真相是数据好好地躺在旧文件里。那是比启动失败
+ * 严重得多的事故：人会以为该删什么、该重装什么。
+ * 所以宁可起不来，并且把「先关掉正在运行的 WorkHub」这句话说清楚。
+ */
+const dbMigration = planDbMigration(DB_PATH);
+if (dbMigration) {
+  try {
+    renameSync(dbMigration.from, dbMigration.to);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? '未知错误';
+    throw new Error(
+      `数据库改名迁移失败：${dbMigration.from} → ${dbMigration.to}（${code}）。` +
+        `多半是还有 WorkHub 进程在用这个库——请先关掉正在运行的 WorkHub（含托盘），再启动一次。` +
+        `你的数据仍在原处，没有丢。`,
+    );
+  }
+  // WAL 与 SHM 是伴生文件：主库搬过来后它们也得跟上，否则 SQLite 找不到
+  // 未落盘的事务页。搬不动只丢最近的事务，不至于开不了库 —— 警告即可。
+  for (const suffix of ['-wal', '-shm']) {
+    const from = dbMigration.from + suffix;
+    if (!existsSync(from)) continue;
+    try {
+      renameSync(from, dbMigration.to + suffix);
+    } catch {
+      logger.warn(`数据库改名迁移：${from} 挪不动，最近的事务可能没带上（库本身不受影响）`);
+    }
+  }
+  logger.notice(`数据库已改名迁移：${dbMigration.from} → ${dbMigration.to}`);
+}
+
 export const db = openV2Db(DB_PATH);
 /**
  * WAL 里攒的是已提交但还没落回主库的事务页。SQLite 默认攒到 1000 页（约 4MB）
  * 才自动 checkpoint，而 checkpoint 只把页拷回主库、不回收 WAL 文件本身，
- * 于是「mdhub-v2.db-wal」能一路涨到几 MB，攒出一堆看着像缓存的大文件。
+ * 于是「workhub-v2.db-wal」能一路涨到几 MB，攒出一堆看着像缓存的大文件。
  *
  * 两个 pragma 一起治：
  *   - wal_autocheckpoint 压到 256 页（约 1MB），让运行期及时把页拷回主库；

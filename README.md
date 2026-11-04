@@ -70,7 +70,7 @@ workhub/
 │  ├─ icon.cjs      用代码画托盘图标 PNG 与 exe 图标 ICO（不往仓库里塞二进制资源）
 │  └─ package.json  Electron 应用入口声明
 ├─ data/            SQLite 索引 + 仓库目录里的正文（运行期生成，git 忽略）
-│  ├─ mdhub-v2.db   现役索引库
+│  ├─ workhub-v2.db 现役索引库
 │  └─ vault/        正文文件：<仓库 slug>/docs/…、<仓库 slug>/assets/…
 ├─ content/         导出的文档正文（git 默认忽略，用 npm run docs:export 生成）
 └─ src/             React 前端
@@ -81,11 +81,11 @@ workhub/
 ```
 
 > 数据库落在**项目根的 `data/`**，而不是 `server/data/`——`server/paths.ts` 以自身目录为基准
-> 解析出项目根，默认写到 `<项目根>/data/mdhub-v2.db`。用 `WORKHUB_DB_V2` 可改到别处。
+> 解析出项目根，默认写到 `<项目根>/data/workhub-v2.db`。用 `WORKHUB_DB_V2` 可改到别处。
 > 路径优先级（`WORKHUB_DB_V2` → `WORKHUB_DB` → 默认）只在这一个文件里定义，别处不再各写一份。
 >
 > 正文不在库里，在 `data/vault/` 的仓库目录里；库里只留索引（路径、哈希、大小）。
-> 老库 `data/mdhub.db` 是 v1 时代的遗留，作为回退底牌保留，不参与运行。
+> 老库 `data/workhub-v1.db` 是 v1 时代的遗留，作为回退底牌保留，不参与运行（改名前叫 `data/mdhub.db`，迁移脚本两个名字都认）。
 
 ## 启动
 
@@ -105,7 +105,7 @@ npm run dev
 npm run dev:all
 ```
 
-首次启动会在 `data/mdhub-v2.db` 自动建库。示例文档**仅在显式设置 `WORKHUB_SEED_DEMO=1` 时**灌入，
+首次启动会在 `data/workhub-v2.db` 自动建库。示例文档**仅在显式设置 `WORKHUB_SEED_DEMO=1` 时**灌入，
 正式部署默认是空库（详见 `.env.example`）。
 
 ### 生产模式：一个进程就是完整应用
@@ -535,8 +535,16 @@ npm run admin:password -- --generate
 > 这么做是因为这些变量不是随手配的开关，而是运行时契约：`SECRET` 改名会让
 > 已加密的文档永久无法解密，`PORT` 改名会让托盘与服务端指向不同的端口。
 >
-> 下面几个名字**保持原样**，因为它们存着旧数据，改了等于让既有部署「找不到自己的东西」：
-> 数据库文件名（`mdhub-v2.db`）、Cookie（`mdhub_sid`）、前端存储键（`mdhub.*`）。
+> 库文件名、Cookie、前端存储键也都换成了 `workhub` 前缀，但**旧名读得到**：
+>
+> - **库**：磁盘上还叫 `mdhub-v2.db` 的，启动时自动搬到 `workhub-v2.db`
+>   （连 WAL 伴生文件一起搬，不会丢记录）。搬不动说明还有 WorkHub 进程占着
+>   那个库——这时服务端**拒绝启动**并提示先关掉旧进程，绝不拿空库顶上
+>   （宁可起不来，也不能让人以为文档没了）；
+> - **Cookie**：浏览器里还揣着 `mdhub_sid` 的访客会话照样认，顺手换成新 cookie；
+> - **前端存储键**：新键没有时才回退旧键，读到旧的会顺手搬到新的。
+>
+> 一律**只读旧、只写新**——升级一次之后，磁盘与浏览器里就只剩新名字了。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -544,7 +552,7 @@ npm run admin:password -- --generate
 | `WORKHUB_ADMIN_PASSWORD` | 本地随机生成 | 管理员**初始**密码，仅首次建库时写入；已有库请用 `npm run admin:password` 或侧边栏修改，改动此变量对已有库无效 |
 | `WORKHUB_PORT` | `8787` | 服务端端口。默认值来自 `shared/constants.ts` 的 `DEFAULT_API_PORT`；改端口时记得连 `tray/main.cjs`、`scripts/install-service.ps1`、`scripts/service/WorkHubService.cs` 这三处镜像一起改（它们读不到 TS，各留了注释指回真源） |
 | `WORKHUB_WEB_PORT` | `8080` | 前端 dev server 端口（监听 `0.0.0.0`，供局域网访问） |
-| `WORKHUB_DB_V2` | `data/mdhub-v2.db` | 数据库路径（索引库）。`WORKHUB_DB` 是 v1 时代的旧变量，仅作兼容兜底；改名前的 `MDHUB_DB_V2` / `MDHUB_DB` 同样认 |
+| `WORKHUB_DB_V2` | `data/workhub-v2.db` | 数据库路径（索引库）。`WORKHUB_DB` 是 v1 时代的旧变量，仅作兼容兜底；改名前的 `MDHUB_DB_V2` / `MDHUB_DB` 同样认 |
 | `WORKHUB_VAULT_DIR` | `data/vault` | 仓库目录：正文文件实际存放的位置 |
 | `WORKHUB_LOG_LEVEL` | `info` | 服务端日志级别：`silent` / `error` / `warn` / `info` / `debug` |
 | `WORKHUB_SEED_DEMO` | 关闭 | 置 `1` 时首次建库灌入示例文档（`shared/seed.ts`）；正式部署保持关闭 |
@@ -832,7 +840,7 @@ npm run admin:password -- --generate
 ## 文档存在哪：仓库目录里的文件
 
 v2 起文档正文是**真的文件**：放在 `data/vault/<仓库 slug>/docs/` 下的 `.md`，
-数据库（`data/mdhub-v2.db`）只留索引——路径、哈希、大小。
+数据库（`data/workhub-v2.db`）只留索引——路径、哈希、大小。
 这决定了两件事：
 
 - 把项目传到 GitHub，**只会带走代码**，带不走任何文档内容（`data/` 被 `.gitignore` 忽略）
@@ -1015,7 +1023,7 @@ Agent 配置脱敏、改密后旧令牌立即失效，文档加密全流程
 它不碰正在运行的实例，也不修改生产库与生产仓库目录——库和目录都只在副本上操作，
 改密码那一步同样只在副本上执行。
 
-> 前置条件：先跑过一次 `npm run server` 建好 `data/mdhub-v2.db` 与 `data/vault/`
+> 前置条件：先跑过一次 `npm run server` 建好 `data/workhub-v2.db` 与 `data/vault/`
 > （示例文档需 `WORKHUB_SEED_DEMO=1`），脚本会复制这两份做隔离验证；
 > 没有库时它会直接告诉你缺什么，而不是抛一堆无关错误。
 

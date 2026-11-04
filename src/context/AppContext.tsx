@@ -27,6 +27,7 @@ import {
 } from '@/lib/api';
 import { SEED_DOCS, SEED_REPO, SEED_REPO_ID, SEED_USERS, seedDocsForRepo } from '../../shared/seed';
 import { log } from '@/lib/logger';
+import { readStore, removeStore, writeStore } from '@/lib/storage';
 import { toast } from 'sonner';
 
 /**
@@ -320,8 +321,8 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue | null>(null);
 
 /** 离线兜底缓存：仅在后端不可达时展示，后端恢复后立即以服务端为准 */
-const STORAGE_KEY_DOCS = 'mdhub.docs';
-const STORAGE_KEY_IMPORTED = 'mdhub.importedToServer';
+const STORAGE_KEY_DOCS = 'workhub.docs';
+const STORAGE_KEY_IMPORTED = 'workhub.importedToServer';
 
 const DEFAULT_AGENT_CONFIG: AgentConfigView = {
   baseUrl: 'https://api.minimaxi.com/v1',
@@ -337,7 +338,7 @@ const DEFAULT_AGENT_CONFIG: AgentConfigView = {
 
 function loadCachedDocs(): DocNode[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_DOCS);
+    const raw = readStore(localStorage, STORAGE_KEY_DOCS);
     if (!raw) return seedDocsForRepo(SEED_REPO_ID);
     const parsed = JSON.parse(raw) as DocNode[];
     return Array.isArray(parsed) && parsed.length ? parsed : seedDocsForRepo(SEED_REPO_ID);
@@ -443,7 +444,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setDocs(serverDocs);
     if (opts?.persist) {
       try {
-        localStorage.setItem(STORAGE_KEY_DOCS, JSON.stringify(serverDocs));
+        writeStore(localStorage, STORAGE_KEY_DOCS, JSON.stringify(serverDocs));
       } catch {
         /* 隐私模式忽略 */
       }
@@ -469,9 +470,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const migrateLocalDocsOnce = useCallback(async () => {
     let done = false;
     try {
-      // 清理旧版本遗留在浏览器中的明文 API Key
-      localStorage.removeItem('mdhub.agentSettings');
-      done = localStorage.getItem(STORAGE_KEY_IMPORTED) === '1';
+      // 清理旧版本遗留在浏览器中的明文 API Key（新旧两个键名都清）
+      removeStore(localStorage, 'workhub.agentSettings');
+      done = readStore(localStorage, STORAGE_KEY_IMPORTED) === '1';
     } catch {
       return;
     }
@@ -485,7 +486,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return; // 服务端不可达时不做任何写入
     }
     if (serverDocs.length > 0) {
-      localStorage.setItem(STORAGE_KEY_IMPORTED, '1');
+      writeStore(localStorage, STORAGE_KEY_IMPORTED, '1');
       return;
     }
 
@@ -494,12 +495,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const isSeed =
       cached.length === SEED_DOCS.length && cached.every((d, i) => d.id === SEED_DOCS[i]?.id);
     if (isSeed) {
-      localStorage.setItem(STORAGE_KEY_IMPORTED, '1');
+      writeStore(localStorage, STORAGE_KEY_IMPORTED, '1');
       return;
     }
     try {
       await api.importDocs(cached);
-      localStorage.setItem(STORAGE_KEY_IMPORTED, '1');
+      writeStore(localStorage, STORAGE_KEY_IMPORTED, '1');
       await refreshDocs({ persist: true });
       log.info('已将本地历史文档导入服务端数据库');
     } catch {

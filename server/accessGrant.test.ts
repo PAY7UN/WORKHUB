@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 // 必须在 import db.ts 之前设好：db.ts 在模块顶层就打开数据库并建表
 process.env.WORKHUB_SECRET ??= 'grant-test-secret-not-for-production';
-const workDir = mkdtempSync(join(tmpdir(), 'mdhub-grant-'));
+const workDir = mkdtempSync(join(tmpdir(), 'workhub-grant-'));
 process.env.WORKHUB_DB = join(workDir, 'grant.db');
 // 正文落在 vault 里，测试必须指到临时目录，否则会污染真实的 data/vault
 process.env.WORKHUB_VAULT_DIR = join(workDir, 'vault');

@@ -24,25 +24,18 @@ import type {
   User,
 } from '../../shared/types';
 import { saveBlob } from '../utils';
+import { readStore, removeStore, writeStore } from './storage';
 
-const TOKEN_KEY = 'mdhub.token';
+const TOKEN_KEY = 'workhub.token';
 const BASE = '/api';
 
 export function getToken(): string {
-  try {
-    return localStorage.getItem(TOKEN_KEY) ?? '';
-  } catch {
-    return '';
-  }
+  return readStore(localStorage, TOKEN_KEY) ?? '';
 }
 
 export function setToken(token: string): void {
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* 隐私模式下忽略 */
-  }
+  if (token) writeStore(localStorage, TOKEN_KEY, token);
+  else removeStore(localStorage, TOKEN_KEY);
 }
 
 type UnauthorizedHandler = () => void;

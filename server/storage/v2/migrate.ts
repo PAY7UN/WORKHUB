@@ -462,7 +462,13 @@ export function verify(oldDbPath: string, newDbPath?: string): {
 
 // 直接运行本文件时执行迁移
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const oldPath = process.argv[2] ?? resolve('data/mdhub.db');
+  // v1 旧库也跟着改了名。老库还在磁盘上的话照样能迁——两个名字都找一遍，
+  // 先找到哪个用哪个，免得「改名之后不知道怎么把旧库迁过来」。
+  const oldPath =
+    process.argv[2] ??
+    (existsSync(resolve('data/workhub-v1.db'))
+      ? resolve('data/workhub-v1.db')
+      : resolve('data/mdhub.db'));
   const report = migrate(oldPath);
   console.log('迁移完成：', report);
   const v = verify(oldPath);

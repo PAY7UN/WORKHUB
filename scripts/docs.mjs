@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * mdhub 文档库工具：查看 / 导出仓库里的文档。
+ * workhub 文档库工具：查看 / 导出仓库里的文档。
  *
  * v2 之后正文不在库里，而在仓库目录里（data/vault/<仓库 slug>/docs/…），
  * 库里只有索引（路径、哈希、大小）。所以这个工具现在是「把仓库目录整理成
@@ -13,7 +13,7 @@
  *   node scripts/docs.mjs --export --no-clean     导出但不清理目标目录里的旧文件
  *
  * 环境变量：
- *   WORKHUB_DB_V2 / WORKHUB_DB  数据库路径，默认 <项目根>/data/mdhub-v2.db
+ *   WORKHUB_DB_V2 / WORKHUB_DB  数据库路径，默认 <项目根>/data/workhub-v2.db
  *   WORKHUB_VAULT_DIR         仓库目录，默认 <项目根>/data/vault
  */
 
@@ -302,7 +302,7 @@ if (doExport) {
     if (doc.type !== 'folder') writeDoc(doc);
   }
 
-  // 清单：记录 id ↔ 路径的对应关系，将来要导回 mdhub 时靠它对号入座
+  // 清单：记录 id ↔ 路径的对应关系，将来要导回 workhub 时靠它对号入座
   writeFileSync(
     join(outDir, 'manifest.json'),
     JSON.stringify({ exportedAt: new Date().toISOString(), docs: manifest }, null, 2),

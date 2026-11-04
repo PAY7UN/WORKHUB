@@ -684,11 +684,11 @@
  * 目录跳转的落点提示。滚动是平滑动画，停稳时必须告诉用户落在了哪一节，
  * 否则长文档里很容易误判位置。class 由 DocEditor 挂上、1.2s 后摘除。
  */
-@keyframes mdhub-outline-flash {
+@keyframes workhub-outline-flash {
   0%, 100% { background-color: transparent; }
   25%, 55% { background-color: rgba(99, 102, 241, 0.25); }
 }
 .markdown-body .outline-flash {
-  animation: mdhub-outline-flash 1.2s ease-out;
+  animation: workhub-outline-flash 1.2s ease-out;
   border-radius: 4px;
 }

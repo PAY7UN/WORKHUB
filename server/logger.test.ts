@@ -64,5 +64,5 @@ test('对象入参序列化后同样脱敏', () => {
 });
 
 test('仓库内路径给相对形式，不带本机用户名目录', () => {
-  assert.equal(displayPath(resolve(import.meta.dirname, '../data/mdhub.db')), 'data/mdhub.db');
+  assert.equal(displayPath(resolve(import.meta.dirname, '../data/workhub-v2.db')), 'data/workhub-v2.db');
 });

@@ -16,7 +16,7 @@ type DatabaseInstance = Database.Database;
 
 // vault 的根目录在模块加载时就定死了，
 // 所以必须先设好环境变量再动态 import——静态 import 会提前求值。
-const workDir = mkdtempSync(join(tmpdir(), 'mdhub-v2-test-'));
+const workDir = mkdtempSync(join(tmpdir(), 'workhub-v2-test-'));
 process.env.WORKHUB_VAULT_DIR = join(workDir, 'vault');
 
 const { bodyFileName, safeRelPath, slugify } = await import('./vault.ts');
