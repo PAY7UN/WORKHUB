@@ -22,14 +22,26 @@ files:
   - '!**/node_modules/**/*'
   # 机器相关的配置不进包
   - '!tray.config.json'
+  # 更新器脚本要放在 asar 外面（见 extraFiles），包里留一份就够了
+  - '!apply-update.cjs'
 
 asar: true
 
 # 服务 payload：托盘要拉起的服务进程需要的一切（代码 + 前端产物 + 运行时依赖）
 # 放在 asar 外面——服务进程是纯 Node 模式跑的，读不了 asar 里的文件
+# （打包脚本会用实际组装的 payload 目录覆盖这一条，这里的写法只为看得懂）
 extraResources:
   - from: release/.payload
     to: payload
+
+# 托盘自更新的更新器脚本：放在 exe 旁边（不在 asar 里）。
+#
+# 为什么不能塞进 asar：更新器是用纯 Node 跑的（payload 自带的 node.exe），
+# 它要读自己的脚本、还要在托盘退出后覆盖这个目录里的文件。
+# asar 里的文件是虚拟的，Node 之外的工具（以及覆盖操作）都够不着。
+extraFiles:
+  - from: tray/apply-update.cjs
+    to: apply-update.cjs
 
 win:
   target:

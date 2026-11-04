@@ -80,4 +80,42 @@ function restartServer(config) {
   return callManageApi(config, '/restart', { method: 'POST' });
 }
 
-module.exports = { manageToken, callManageApi, fetchStatus, fetchLogs, restartServer };
+/**
+ * 查服务器有没有新版本。
+ *
+ * 服务器那边把「查不到」也当 200 返回（错误放在 error 字段里），
+ * 所以这里拿到 200 就说明请求本身是通的。
+ */
+function fetchUpdate(config) {
+  return callManageApi(config, '/update');
+}
+
+/**
+ * 让服务器升级。
+ *
+ * 服务器收下请求后会自己退出（换完代码再起来），
+ * 所以连接多半会在响应回来之前就被掐断——那是升级成功，不是失败。
+ * 这里把「连接断开」也当成成功返回，交给调用方按成功处理。
+ */
+async function startUpdate(config) {
+  try {
+    return await callManageApi(config, '/update', { method: 'POST', timeout: 60000 });
+  } catch (err) {
+    const message = String(err?.message ?? err);
+    // 服务器升级中途退出，连接被重置属于正常
+    if (/ECONNRESET|socket hang up|连接被重置|terminated/i.test(message)) {
+      return { ok: true, detail: '服务器已收到升级请求，正在换代码' };
+    }
+    throw err;
+  }
+}
+
+module.exports = {
+  manageToken,
+  callManageApi,
+  fetchStatus,
+  fetchLogs,
+  fetchUpdate,
+  restartServer,
+  startUpdate,
+};

@@ -10,13 +10,21 @@
  *   安装目录（只读）：托盘 + payload
  *   用户目录（可写）：.env、数据库、vault、日志
  *
- * 用法：npm run pack:tray
+ * 用法：npm run pack:tray [-- --skip-build]
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { ensureFrontendBuilt } from './lib/frontend-build.mjs';
+import { buildServer } from './lib/server-build.mjs';
+import { ensureNodeRuntime } from './lib/node-runtime.mjs';
+import { zipDirectory, writeSha256 } from './lib/zip.mjs';
+import {
+  copyRuntimeDeps,
+  pruneNativeDeps,
+} from './lib/runtime-deps.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 /**
@@ -38,41 +46,8 @@ const OUT = join(STAGE, 'out');
  */
 const SERVER_RUNTIME_DEPS = ['express', 'better-sqlite3'];
 
-/** 按 Node 的解析规则找包：先当前目录的 node_modules，再逐级往上 */
-function resolvePackageDir(name, fromDir) {
-  let dir = fromDir;
-  for (;;) {
-    const candidate = join(dir, 'node_modules', name);
-    if (existsSync(join(candidate, 'package.json'))) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/** 算依赖闭包：服务端直接依赖 + 它们的传递依赖 */
-function collectRuntimeDeps() {
-  const found = new Set();
-  const queue = SERVER_RUNTIME_DEPS.map((name) => ({ name, from: ROOT }));
-  while (queue.length > 0) {
-    const { name, from } = queue.shift();
-    const dir = resolvePackageDir(name, from);
-    if (!dir) {
-      console.warn(`  ! 找不到依赖 ${name}，跳过（服务起来会报缺模块）`);
-      continue;
-    }
-    if (found.has(dir)) continue;
-    found.add(dir);
-    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-    for (const dep of Object.keys(pkg.dependencies ?? {})) {
-      queue.push({ name: dep, from: dir });
-    }
-  }
-  return [...found];
-}
-
 /** 组装 payload：托盘要拉起的服务进程需要的一切 */
-function buildPayload() {
+async function buildPayload() {
   rmSync(PAYLOAD, { recursive: true, force: true });
   mkdirSync(PAYLOAD, { recursive: true });
 
@@ -88,9 +63,21 @@ function buildPayload() {
 
   // 前端构建产物：服务端要托管它，页面才能打开
   if (!existsSync(join(ROOT, 'dist', 'index.html'))) {
-    throw new Error('没有 dist/，先执行 npm run build 再打包');
+    throw new Error('没有 dist/，前端构建没成功');
   }
   cpSync(join(ROOT, 'dist'), join(PAYLOAD, 'dist'), { recursive: true });
+
+  // 升级器脚本：打包态要能自我升级。
+  // server/updater.ts 的 launchUpdater 找的是 <root>/scripts/upgrade-apply.mjs，
+  // 少了它，打包态从网页点「升级」会直接报「找不到更新器脚本」。
+  // 只带这一个文件，不带整个 scripts/：verify.mjs 之类的开发工具不该进安装包。
+  const upgradeScript = join(ROOT, 'scripts', 'upgrade-apply.mjs');
+  if (existsSync(upgradeScript)) {
+    mkdirSync(join(PAYLOAD, 'scripts'), { recursive: true });
+    cpSync(upgradeScript, join(PAYLOAD, 'scripts', 'upgrade-apply.mjs'));
+  } else {
+    console.warn('  ! 没有 scripts/upgrade-apply.mjs，打包态将无法自我升级');
+  }
 
   // 服务进程的包装脚本（父进程没了就自己退出）
   cpSync(join(ROOT, 'tray', 'run-server.cjs'), join(PAYLOAD, 'run-server.cjs'));
@@ -101,16 +88,29 @@ function buildPayload() {
   }
 
   // 运行时依赖：连 better-sqlite3 的原生二进制一起带上
-  const deps = collectRuntimeDeps();
-  const nodeModules = join(PAYLOAD, 'node_modules');
-  mkdirSync(nodeModules, { recursive: true });
-  for (const dir of deps) {
-    const rel = relative(join(ROOT, 'node_modules'), dir);
-    const dest = join(nodeModules, rel);
-    mkdirSync(dirname(dest), { recursive: true });
-    cpSync(dir, dest, { recursive: true });
-  }
+  const deps = copyRuntimeDeps({
+    root: ROOT,
+    target: PAYLOAD,
+    deps: SERVER_RUNTIME_DEPS,
+    log: (msg) => console.log(`  ${msg}`),
+  });
   console.log(`  运行时依赖 ${deps.length} 个`);
+
+  // 自带一份 Node 运行时：托盘自更新的更新器要用它。
+  //
+  // 更新器必须跑在托盘目录之外——它一跑起来就把那个目录里的文件锁住了，
+  // 覆盖自己就变成了不可能。而托盘自己的 exe 不能单独复制出去用：
+  // Electron 的 exe 旁边还散着一堆运行时文件（快照、ICU 数据、各类 dll），
+  // 少一个都起不来。纯 node.exe 复制过去就能跑，还不用改打包结构。
+  //
+  // 服务本身不用它（服务跑在 Electron 的 node 模式里），但缺了它托盘就没法自更新。
+  const runtimeExe = await ensureNodeRuntime({
+    target: join(PAYLOAD, 'runtime'),
+    log: (msg) => console.log(`  ${msg}`),
+  });
+  if (!runtimeExe) {
+    console.warn('  ! 没有自带运行时，托盘将无法自动更新（可用 MDHUB_NODE_DIR 指定本机 Node）');
+  }
 }
 
 /**
@@ -120,17 +120,6 @@ function buildPayload() {
  * 而运行时只加载 `prebuilds/win32-x64.node`（见它的 lib/database.js）。
  * 白带 24MB 进安装包，使用者还得为它下载安装包。
  */
-function pruneNativeDeps() {
-  const pkgDir = join(PAYLOAD, 'node_modules', 'better-sqlite3');
-  if (!existsSync(pkgDir)) return;
-  rmSync(join(pkgDir, 'deps'), { recursive: true, force: true });
-  rmSync(join(pkgDir, 'src'), { recursive: true, force: true });
-  const prebuilds = join(pkgDir, 'prebuilds');
-  if (!existsSync(prebuilds)) return;
-  for (const file of readdirSync(prebuilds)) {
-    if (file !== 'win32-x64.node') rmSync(join(prebuilds, file), { force: true });
-  }
-}
 
 /**
  * 调 electron-builder 出安装包。
@@ -144,6 +133,11 @@ async function runBuilder() {
   const yaml = require('js-yaml');
   const config = yaml.load(readFileSync(join(ROOT, 'electron-builder.yml'), 'utf8'));
   config.directories = { ...config.directories, output: OUT, buildResources: join(STAGE, 'build') };
+  // 版本号以仓库根 package.json 为准。
+  // 托盘应用自己的 package.json 里的版本号是手写的，改根版本时经常忘了改它——
+  // 而托盘要靠版本号判断「有没有新版本」，版本号对不上就永远不会提示升级。
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+  config.extraMetadata = { ...(config.extraMetadata ?? {}), version: pkg.version ?? '0.0.0' };
   // 生成 exe 图标（256×256），免得安装包和快捷方式都顶着 Electron 的默认图标
   const { makeIconIco } = require('../tray/icon.cjs');
   mkdirSync(join(STAGE, 'build'), { recursive: true });
@@ -181,15 +175,102 @@ function collectArtifacts() {
   return copied;
 }
 
-console.log('[1/3] 组装服务 payload');
-buildPayload();
-pruneNativeDeps();
-console.log('[2/3] 调用 electron-builder 打包（首次会下载 electron 发行包与打包工具）');
+/**
+ * 打印 payload 摘要：装进去的东西对不对，一眼能看出来。
+ *
+ * 重点是那几个「缺了就跑不起来」的：
+ * - dist/index.html：服务端要托管它，页面才打得开；
+ * - scripts/upgrade-apply.mjs：缺了它，打包态点「升级」会报找不到更新器；
+ * - runtime/node.exe：缺了它，托盘没法自动更新；
+ * - node_modules：服务端的运行时依赖（express、better-sqlite3 等）。
+ */
+function printPayloadSummary() {
+  const entries = readdirSync(PAYLOAD);
+  const mustHave = [
+    ['dist/index.html', '前端构建产物'],
+    ['scripts/upgrade-apply.mjs', '升级器脚本'],
+    ['server/index.js', '服务端入口（编译产物）'],
+    ['shared', '共享层'],
+    ['package.json', '版本号来源'],
+  ];
+  console.log('\npayload 内容：');
+  for (const [rel, why] of mustHave) {
+    const ok = existsSync(join(PAYLOAD, rel));
+    console.log(`  ${ok ? 'OK  ' : '缺失'} ${rel}  （${why}）`);
+  }
+  const runtimeOk = existsSync(join(PAYLOAD, 'runtime', 'node.exe'));
+  console.log(
+    `  ${runtimeOk ? 'OK  ' : '缺失'} runtime/node.exe  （托盘自动更新用的更新器运行时）`,
+  );
+  const deps = join(PAYLOAD, 'node_modules');
+  const depCount = existsSync(deps) ? readdirSync(deps).length : 0;
+  console.log(`  顶层目录：${entries.join('、')}`);
+  console.log(`  运行时依赖：${depCount} 个`);
+}
+
+/**
+ * 打托盘的免安装包：workhub-tray-<版本>.zip
+ *
+ * 这就是「托盘更新」的原料：发布时把它挂到 tag 上，
+ * 托盘的更新器按这个名字找到它、下载、解压、覆盖自己。
+ *
+ * 内容是 electron-builder 打出来的免安装目录（win-unpacked）：
+ * 解压出来就是一个 WorkHub.exe，双击就能跑——像可执行程序一样用，
+ * 不用装、不写注册表。想放到 U 盘里带走也行。
+ */
+async function packPortableZip() {
+  const portableDir = join(OUT, 'win-unpacked');
+  if (!existsSync(portableDir)) {
+    throw new Error(`免安装目录不存在：${portableDir}`);
+  }
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+  const version = pkg.version ?? '0.0.0';
+  const fileName = `workhub-tray-${version}.zip`;
+  const dest = join(ROOT, 'release');
+  mkdirSync(dest, { recursive: true });
+  const zipPath = join(dest, fileName);
+  rmSync(zipPath, { force: true });
+  await zipDirectory(portableDir, zipPath);
+  const sha256 = writeSha256(zipPath, fileName);
+  const sizeMb = (readFileSync(zipPath).length / 1024 / 1024).toFixed(1);
+  return { fileName, zipPath, sha256, sizeMb };
+}
+
+console.log('[1/6] 构建前端产物');
+await ensureFrontendBuilt({
+  root: ROOT,
+  skip: process.argv.includes('--skip-build'),
+  log: (msg) => console.log(msg),
+});
+console.log('[1.5/6] 编译服务端');
+await buildServer({
+  root: ROOT,
+  log: (msg) => console.log(`  ${msg}`),
+});
+console.log('[2/6] 组装服务 payload');
+await buildPayload();
+pruneNativeDeps(join(PAYLOAD, 'node_modules'));
+
+// --payload-only：只组装 payload，不跑 electron-builder。
+// 用来快速核对 payload 内容（CI 里断言「升级器在不在」这类事），
+// 也省得为了看一眼目录去下载几百兆的 electron 发行包。
+if (process.argv.includes('--payload-only')) {
+  console.log(`\npayload 已就绪：${PAYLOAD}`);
+  printPayloadSummary();
+  process.exit(0);
+}
+
+console.log('[3/6] 调用 electron-builder 打包（首次会下载 electron 发行包与打包工具）');
 await runBuilder();
-console.log('[3/3] 把安装包拷回 release/');
+console.log('[4/6] 把安装包拷回 release/');
 const artifacts = collectArtifacts();
+console.log('[5/6] 打托盘免安装包（workhub-tray-<版本>.zip）');
+const portable = await packPortableZip();
 
 console.log('\n打包完成：');
 for (const file of artifacts) console.log(`  - release/${file}`);
+console.log(`  - release/${portable.fileName}（免安装，${portable.sizeMb} MB，解压即用）`);
 console.log(`  - 免安装目录：${join(OUT, 'win-unpacked')}`);
+console.log(`\n免安装包校验（sha256）：${portable.sha256}`);
+console.log('把它挂到 GitHub Release（资产名保持 workhub-tray-<版本>.zip）就能被托盘自动更新认到。');
 

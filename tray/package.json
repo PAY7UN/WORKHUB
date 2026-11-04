@@ -4,5 +4,6 @@
   "private": true,
   "description": "WorkHub 托盘工具：图标 + 菜单，本地守护服务进程，远程管服务器",
   "main": "main.cjs",
-  "dependencies": {}
+  "dependencies": {},
+  "_版本说明": "这里的版本号只是占位：打包时会被仓库根 package.json 的版本覆盖（scripts/pack-tray.mjs 里的 extraMetadata）。托盘判断「有没有新版本」用的是根版本号，两边不一致就永远不会提示升级"
 }
