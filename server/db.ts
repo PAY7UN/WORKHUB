@@ -8,7 +8,8 @@ import { dirname, join } from 'node:path';
 import { ADMIN_PASSWORD, SECRET } from './config.ts';
 import { logger } from './logger.ts';
 import { hashPassword, verifyPassword } from './password.ts';
-import { DB_V2_PATH, openV2Db } from './storage/v2/schema.ts';
+import { openV2Db } from './storage/v2/schema.ts';
+import { resolveDbPath } from './paths.ts';
 import {
   VAULT_ROOT,
   bodyPath,
@@ -65,7 +66,7 @@ import { SEED_DOCS } from '../shared/seed.ts';
  * 文档正文落在 vault 的仓库目录里，库里只留索引行。
  * 旧库 data/mdhub.db 原样保留着，作为回退的底牌。
  */
-export const DB_PATH = process.env.MDHUB_DB_V2 ?? process.env.MDHUB_DB ?? DB_V2_PATH;
+export const DB_PATH = resolveDbPath();
 
 mkdirSync(dirname(DB_PATH), { recursive: true });
 

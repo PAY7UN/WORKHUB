@@ -28,20 +28,18 @@ import {
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { resolveDbPath, resolveVaultDir } from '../server/paths.ts';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
-const DB_PATH = process.env.MDHUB_DB_V2
-  ? resolve(process.env.MDHUB_DB_V2)
-  : process.env.MDHUB_DB
-    ? resolve(process.env.MDHUB_DB)
-    : resolve(ROOT, 'data/mdhub-v2.db');
-const VAULT_DIR = process.env.MDHUB_VAULT_DIR
-  ? resolve(process.env.MDHUB_VAULT_DIR)
-  : resolve(ROOT, 'data/vault');
+// 库与 vault 的路径跟服务端用同一套规则（server/paths.ts）：
+// 之前这里自己抄了一遍优先级，其中一处漏了 MDHUB_DB，工具和服务端会指向不同的库。
+// resolve() 保留：相对路径按当前工作目录解析，跟原来的行为一致。
+const DB_PATH = resolve(resolveDbPath());
+const VAULT_DIR = resolve(resolveVaultDir());
 const DEFAULT_OUT = resolve(ROOT, 'content');
 
 /* ------------------------------ 参数 ------------------------------ */

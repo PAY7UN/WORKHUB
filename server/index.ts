@@ -22,6 +22,7 @@ import { SYSTEM_PROMPT, buildContext, docToUnit, retrieveDocs, type RetrievalUni
 import { MAX_POLISH_CHARS, MAX_RUNNING_POLISH_TASKS } from '../shared/polish.ts';
 import { extOf } from '../shared/attachments.ts';
 import { DEFAULT_FILE_MIME, guessMime } from '../shared/files.ts';
+import { DEFAULT_API_PORT } from '../shared/constants.ts';
 import { attachUser, requireAdmin, signToken } from './auth.ts';
 import { clearLoginFailures, loginGate, noteLoginFailure } from './loginThrottle.ts';
 import { IS_PRODUCTION, USING_DEV_FALLBACK } from './config.ts';
@@ -149,7 +150,7 @@ import {
 } from './password.ts';
 
 const app = express();
-const PORT = Number(process.env.MDHUB_PORT ?? 8787);
+const PORT = Number(process.env.MDHUB_PORT ?? DEFAULT_API_PORT);
 
 /**
  * 能力数组的中文标签。

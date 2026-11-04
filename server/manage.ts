@@ -10,11 +10,8 @@
  * 机器令牌只管这一组端点，拿到它不等于拿到全站（见 server/manageTokens.ts）。
  */
 import { spawn } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
-import { readFileSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { arch, platform, release } from 'node:os';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { logger, displayPath, recentLogLines } from './logger.ts';
 import { verifyManageToken } from './manageTokens.ts';
@@ -23,25 +20,16 @@ import {
   startUpgrade,
 } from './updater.ts';
 import type { V2Database } from './storage/v2/schema.ts';
+import {
+  currentVersion,
+  detectSupervisor,
+  isSupervisedByTray,
+  planRestartFallback,
+  type RestartPlan,
+} from './host.ts';
 
 /** 令牌放在这个头里，而不是 Authorization */
 export const MANAGE_TOKEN_HEADER = 'x-workhub-token';
-
-/**
- * 读版本号。
- *
- * 打包后的 payload 里没有 package.json（或者有，但路径未必对），
- * 所以这里读不到就报 unknown——版本号是给人看的，读不到不影响功能。
- */
-function readVersion(): string {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const pkg = JSON.parse(readFileSync(resolve(here, '../package.json'), 'utf8')) as { version?: string };
-    return pkg.version ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
 
 /**
  * 机器令牌校验。
@@ -66,48 +54,24 @@ function requireManageToken(db: V2Database, req: Request, res: Response, next: N
 }
 
 /**
- * 认出谁在管着这个进程。
+ * 「谁在管着这个进程」和「被托盘托管」的判断都搬到 host.ts 了。
  *
- * 重启这件事的关键不在「怎么重启」，而在「重启后谁来把它拉起来」：
- * 有人管（systemd / docker / pm2）时，我们退出即可，守护进程会重新拉起；
- * 没人管时 exiting 就等于服务彻底停了，得自己再起一个。
+ * 之前 manage.ts 和 updater.ts 各写了一份 systemd/pm2/docker 的判断，
+ * 两边对同一个进程的答案必须一致——不一致的后果是起两个进程抢同一个端口，
+ * 或者一个都不起。
  */
-function detectSupervisor(env: NodeJS.ProcessEnv = process.env): string | null {
-  if (env.INVOCATION_ID) return 'systemd';
-  if (env.PM2_HOME || env.pm_id) return 'pm2';
-  if (existsSync('/.dockerenv')) return 'docker';
-  return null;
-}
-
-/** 被托盘托管的服务不能自己重启：托盘才是它的父进程监管者 */
-function isSupervisedByTray(): boolean {
-  return Boolean(process.env.WORKHUB_PARENT_PID);
-}
-
-export interface RestartPlan {
-  /** 'command' = 交给外部命令；'supervisor' = 退出让守护进程拉起；'self' = 自己再起一个 */
-  strategy: 'command' | 'supervisor' | 'self';
-  detail: string;
-}
 
 /**
  * 决定这次重启怎么做。
  *
- * 优先级：
- * 1. MDHUB_RESTART_CMD —— 运维明确指定了命令（比如 systemctl restart workhub），最省心
- * 2. 认得出守护进程 —— 退出即可，守护进程会接手
- * 3. 都没有 —— 自己再起一个，然后把旧的退出
- *
- * 第 3 条是兜底：像 `node server/index.ts` 这样裸跑的进程，
- * 退出后没人接盘，不自己起一个就等于把服务停了。
+ * 判断本身在 host.ts：自动升级走的是同一份逻辑，两边答案必须一致——
+ * 不一致的后果是升级时和重启时各按各的想法来，一个起不来进程，一个抢端口。
+ * 这里转出去是为了不改动已有的调用点。
  */
 export function planRestart(env: NodeJS.ProcessEnv = process.env): RestartPlan {
-  const cmd = (env.MDHUB_RESTART_CMD ?? '').trim();
-  if (cmd) return { strategy: 'command', detail: cmd };
-  const supervisor = detectSupervisor(env);
-  if (supervisor) return { strategy: 'supervisor', detail: `由 ${supervisor} 拉起` };
-  return { strategy: 'self', detail: '没有守护进程，自己再起一个' };
+  return planRestartFallback(env);
 }
+export type { RestartPlan };
 
 /**
  * 真正执行重启。
@@ -205,7 +169,7 @@ export function createManageRouter(db: V2Database, dbPath: string, hooks: Manage
     const memory = process.memoryUsage();
     res.json({
       status: 'ok',
-      version: readVersion(),
+      version: currentVersion(),
       pid: process.pid,
       startedAt: Date.now() - Math.floor(process.uptime() * 1000),
       uptime: Math.floor(process.uptime()),

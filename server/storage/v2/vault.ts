@@ -35,14 +35,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { logger } from '../../logger.ts';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
+import { resolveVaultDir } from '../../paths.ts';
 
 /** vault 根目录。与数据库同处 data/ 下，随 data/ 一起被 .gitignore 忽略 */
-export const VAULT_ROOT = process.env.MDHUB_VAULT_DIR ?? resolve(HERE, '../../../data/vault');
+export const VAULT_ROOT = resolveVaultDir();
 
 /** 正文在文件里的扩展名 */
 export const BODY_EXT = '.md';
@@ -258,10 +257,24 @@ export function stashFile(abs: string): string | null {
  */
 let janitor: Worker | null = null;
 
+/**
+ * 清道夫线程的入口文件。
+ *
+ * 开发态是 .ts 源码直跑，发布态是编译后的 .js（见 scripts/lib/server-build.mjs），
+ * 两种形态都得能起线程。这里刻意不用 new URL('./janitor.ts', import.meta.url)：
+ * 那样写打包器会把字面量当成静态资源引用，而编译产物里根本没有 .ts。
+ */
+function janitorEntry(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const compiled = resolve(here, 'janitor.js');
+  if (existsSync(compiled)) return compiled;
+  return resolve(here, 'janitor.ts');
+}
+
 function janitorWorker(): Worker | null {
   if (janitor) return janitor;
   try {
-    const w = new Worker(new URL('./janitor.ts', import.meta.url), {
+    const w = new Worker(pathToFileURL(janitorEntry()), {
       workerData: { root: VAULT_ROOT, suffix: TRASH_SUFFIX },
     });
     w.on('error', (err) => {

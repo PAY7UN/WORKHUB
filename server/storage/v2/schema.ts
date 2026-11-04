@@ -20,13 +20,17 @@
  */
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+import { resolveDbPath } from '../../paths.ts';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-
-/** v2 主库路径 */
-export const DB_V2_PATH = process.env.MDHUB_DB_V2 ?? resolve(HERE, '../../../data/mdhub-v2.db');
+/**
+ * v2 主库路径。
+ *
+ * 优先级与环境变量名都在 paths.ts 里定，别处不再各写一份——
+ * 之前这里只认 MDHUB_DB_V2，而 db.ts 认 MDHUB_DB_V2 → MDHUB_DB，
+ * 两边对「用户到底配了哪个」的理解并不一致。
+ */
+export const DB_V2_PATH = resolveDbPath();
 
 /** v2 数据库句柄 */
 export type V2Database = Database.Database;

@@ -2,6 +2,7 @@ import path from "path"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig, loadEnv } from "vite"
+import { DEFAULT_API_PORT } from "./shared/constants.ts"
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -9,7 +10,7 @@ export default defineConfig(({ mode }) => {
   // 进程环境变量优先于 .env 文件：这样可以在不改动 .env 的前提下，
   // 临时把前端指到另一个 API 实例（如并行跑一个测试库）。
   const env = loadEnv(mode, process.cwd(), "MDHUB_")
-  const apiPort = process.env.MDHUB_PORT || env.MDHUB_PORT || "8787"
+  const apiPort = process.env.MDHUB_PORT || env.MDHUB_PORT || String(DEFAULT_API_PORT)
   // 前端 dev server 端口与后端 API 端口是两回事：前者决定「别人在浏览器里输哪个地址」，
   // 后者只被本机代理访问。默认值取 8080 而不是 vite 默认的 5173，因为路由器的
   // 端口转发规则已按 8080 配置，写死在这里省掉每次改转发规则的麻烦。
@@ -22,6 +23,26 @@ export default defineConfig(({ mode }) => {
       alias: {
         "@": path.resolve(__dirname, "./src"),
       },
+    },
+    build: {
+      // 单包 1.5MB 意味着业务代码一改，用户就得重下整个应用。
+      // 拆成「很少变的依赖」和「常变的业务代码」两块，
+      // 前者靠内容哈希长期命中缓存，后者小到改动后重传也无所谓。
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (!id.includes("node_modules")) return undefined
+            // 代码编辑器：最重的一块，而且只在打开编辑器时才需要
+            if (id.includes("@codemirror") || id.includes("@lezer")) return "vendor-codemirror"
+            if (id.includes("@radix-ui")) return "vendor-radix"
+            if (id.includes("lucide-react")) return "vendor-icons"
+            // react 必须和 react-dom 待在一个 chunk：拆开会出现循环依赖警告
+            if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "vendor-react"
+            return "vendor"
+          },
+        },
+      },
+      chunkSizeWarningLimit: 800,
     },
     server: {
       // host: true 等价于监听 0.0.0.0。不设时 Vite 只绑 localhost，

@@ -16,16 +16,13 @@
  * 直接用它开库即可。
  */
 import { existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { openV2Db } from './storage/v2/schema.ts';
 import { issueManageToken, listManageTokens, revokeManageToken, revokeUnusedByLabel } from './manageTokens.ts';
 import { displayPath, logger } from './logger.ts';
+import { resolveDbPath } from './paths.ts';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-/** 要操作的库必须和服务端在用的是同一个（顺序与服务端一致） */
-const DB_PATH =
-  process.env.MDHUB_DB_V2 ?? process.env.MDHUB_DB ?? resolve(HERE, '../data/mdhub-v2.db');
+/** 要操作的库必须和服务端在用的是同一个（顺序与服务端一致，见 paths.ts） */
+const DB_PATH = resolveDbPath();
 
 const USAGE = [
   '用法：',

@@ -19,23 +19,20 @@
  */
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolveDbPath } from './paths.ts';
 import Database from 'better-sqlite3';
 import { MIN_PASSWORD_LENGTH, hashPassword, validateNewPassword } from './password.ts';
 import { displayPath, logger } from './logger.ts';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
 /**
  * 要改的库必须和服务端在用的那个是同一个。
  *
- * v2 起服务端认的是 data/mdhub-v2.db（顺序：MDHUB_DB_V2 → MDHUB_DB → 默认 v2 路径）。
- * 这里原先写死 data/mdhub.db，改的是旧库——服务端压根不读它，
+ * v2 起服务端认的是 data/mdhub-v2.db（顺序：MDHUB_DB_V2 → MDHUB_DB → 默认 v2 路径，
+ * 见 paths.ts）。这里原先写死 data/mdhub.db，改的是旧库——服务端压根不读它，
  * 于是「忘了密码」这条退路会显示「密码已更新」，用户却仍然登不进去。
  * 这条命令的全部价值就是救场，救不成的命令比没有更糟。
  */
-const DB_PATH =
-  process.env.MDHUB_DB_V2 ?? process.env.MDHUB_DB ?? resolve(HERE, '../data/mdhub-v2.db');
+const DB_PATH = resolveDbPath();
 
 const USAGE = [
   '用法：',

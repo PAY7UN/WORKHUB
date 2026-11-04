@@ -21,16 +21,17 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { logger, displayPath } from './logger.ts';
+import { APP_ROOT } from './paths.ts';
+import { currentVersion, planRestartFallback } from './host.ts';
 
 /** 代码目录：server/ 的上一级 */
 export function appRoot(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  return APP_ROOT;
 }
 
 /** 升级标记文件：宿主看门狗看到这个就明白「别急着拉我」 */
@@ -72,15 +73,14 @@ export function lastUpgradePath(root = appRoot()): string {
   return join(root, 'logs', '.last-upgrade.json');
 }
 
-/** 当前版本：读 package.json */
-export function currentVersion(root = appRoot()): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version?: string };
-    return pkg.version ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
+/**
+ * 当前版本：读 package.json。
+ *
+ * 实现搬到 host.ts 了——manage.ts 的状态接口也要读版本，两边各写一份的话，
+ * 迟早会有一边漏掉「读不到就报 unknown」这条。这里转出去，
+ * 已经引用 updater.ts 的地方不用改。
+ */
+export { currentVersion };
 
 /**
  * 比较两个版本号。
@@ -328,12 +328,10 @@ export interface UpgradeRestartPlan {
 export function planUpgradeRestart(env: NodeJS.ProcessEnv = process.env): UpgradeRestartPlan {
   if (env.WORKHUB_SERVICE_HOST) return { mode: 'host', detail: 'Windows 服务宿主（看门狗会拉起）' };
   if (env.WORKHUB_PARENT_PID) return { mode: 'tray', detail: '托盘（会拉起）' };
-  const cmd = (env.MDHUB_RESTART_CMD ?? '').trim();
-  if (cmd) return { mode: 'command', detail: cmd };
-  if (env.INVOCATION_ID) return { mode: 'supervisor', detail: 'systemd' };
-  if (env.PM2_HOME || env.pm_id) return { mode: 'supervisor', detail: 'pm2' };
-  if (existsSync('/.dockerenv')) return { mode: 'supervisor', detail: 'docker' };
-  return { mode: 'self', detail: '没有托管者，更新器自己拉起' };
+  // 后三档（命令 / 守护进程 / 自拉起）与重启接口共用一份判断，
+  // 两边答案必须一致——不一致就是两套人同时管，或者没人管
+  const fallback = planRestartFallback(env);
+  return { mode: fallback.strategy, detail: fallback.detail };
 }
 
 /** 升级过程中的状态，写给前端看 */
