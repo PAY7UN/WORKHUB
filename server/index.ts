@@ -54,6 +54,7 @@ import {
   findActiveGrant,
   findLatestRequest,
   findPendingRequest,
+  findImportProblems,
   findUserById,
   findUserByUsername,
   getAccessGrant,
@@ -81,6 +82,7 @@ import {
   listAllDocs,
   listKnownGuests,
   listReminders,
+  normalizeImportDocs,
   parseCapabilities,
   previewDingTalkConfig,
   readDocCipher,
@@ -824,12 +826,44 @@ app.delete('/api/docs/:id', requireAdmin, (req, res) => {
 
 /* ---- 覆盖式导入浏览器 localStorage 中的历史文档（仅管理员，一次性迁移用） */
 app.post('/api/docs/import', requireAdmin, (req, res) => {
-  const docs = req.body?.docs;
-  if (!Array.isArray(docs) || docs.length === 0) {
+  const raw = req.body?.docs;
+  if (!Array.isArray(raw) || raw.length === 0) {
     res.status(400).json({ error: 'docs 必须是非空数组' });
     return;
   }
-  res.json({ imported: replaceAllDocs(docs as DocNode[]) });
+
+  // 先看载荷，再动手。
+  //
+  // 覆盖式导入是「全量替换」：中途出岔子的代价是整个资料库没了——
+  // 库里空了，盘上的内容也找不回来。载荷不合格就原样退回，一个字节都不碰。
+  const problems = findImportProblems(raw);
+  if (problems.length) {
+    res.status(400).json({
+      error: `导入载荷有 ${problems.length} 处不合格，未改动任何数据`,
+      problems,
+    });
+    return;
+  }
+
+  try {
+    const { docs, defaulted } = normalizeImportDocs(raw);
+    const imported = replaceAllDocs(docs);
+
+    // 兜底补齐的地方要说出来：迁移完能查到「谁写的」「什么时候写的」，
+    // 比默默替人填上强。
+    const notes: string[] = [];
+    if (defaulted.timestamps) notes.push(`${defaulted.timestamps} 篇缺时间戳，已按当前时间补齐`);
+    if (defaulted.authors) notes.push(`${defaulted.authors} 篇缺作者，已记为导入人`);
+    if (defaulted.repos) notes.push(`${defaulted.repos} 篇指向了不存在的仓库，已落到默认仓库`);
+
+    logger.info('已覆盖式导入历史文档', `${imported} 篇`);
+    res.json({ imported, defaulted, notes });
+  } catch (err) {
+    // 走到这里说明中途出了岔子：事务已经回滚，旧目录已经挪回来了。
+    // 一定要说清楚「库还在」——不然排查的人会以为资料被清空了。
+    logger.error('导入失败，已回滚，资料库保持原样', err);
+    res.status(500).json({ error: '导入失败，已回滚，资料库保持原样' });
+  }
 });
 
 /* ------------------------------ 仓库 ------------------------------ */

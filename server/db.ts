@@ -13,14 +13,17 @@ import {
   VAULT_ROOT,
   bodyPath,
   contentHash,
+  discardParkedRepoDir,
   filePath,
   folderDirs,
   moveAssetFile,
   moveBodyFile,
   moveFileAt,
+  parkRepoDir,
   readFileSafe,
   removeBodyFile,
   removeRepoDir,
+  unparkRepoDir,
   writeFileAtomic,
 } from './storage/v2/vault.ts';
 import {
@@ -1591,26 +1594,319 @@ export function detachSubtree(rootId: string): { removed: number; files: string[
   return { removed: ids.length, files, dirs };
 }
 
-/** 覆盖式导入（用于迁移浏览器 localStorage 中的历史数据） */
+/**
+ * 导入载荷里的一处不合格。
+ *
+ * `at` 指向出问题的文档（没有 id 时用序号），`reason` 是人话原因——
+ * 报错要说清楚「哪里不对」，不然调用方只能对着一个 400 干瞪眼。
+ */
+export interface ImportProblem {
+  at: string;
+  reason: string;
+}
+
+/** 导入时给缺失的作者兜底 */
+const IMPORT_ACTOR = 'u-admin';
+
+/**
+ * 名字能不能当路径段用。
+ *
+ * 正文要落到 `vault/<仓库>/docs/<名字>` 里，名字里带斜杠就会凭空多出一层目录，
+ * 带 `..` 就可能踩到仓库外面去。Windows 那套保留字符同样不能碰。
+ */
+function isSafeDocName(name: string): boolean {
+  if (!name || name === '.' || name === '..') return false;
+  if (name.endsWith('.')) return false; // Windows 会悄悄去掉尾点，路径就对不上了
+  if (/[\\/:*?"<>|]/.test(name)) return false; // Windows 非法字符
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(name)) return false; // 控制字符
+  return true;
+}
+
+/**
+ * 找出导入载荷里的毛病。
+ *
+ * 为什么要先看载荷再动手：覆盖式导入是「全量替换」，
+ * 中途出岔子的代价是整个资料库没了——库里空了，盘上的内容也找不回来。
+ * 与其让它崩在半路，不如在动手之前把不合格的挑出来，原样退回。
+ *
+ * 只挑「真的没法用」的：
+ *   - id、名字、类型、父子关系决定内容落在哪，猜不出来，只能退回；
+ *   - 时间戳与作者缺了可以兜底（迁移的首要目标是「把内容搬过来」），
+ *     所以不算毛病，只在整理载荷时补上。
+ */
+export function findImportProblems(raw: unknown[]): ImportProblem[] {
+  const problems: ImportProblem[] = [];
+  const seen = new Map<string, number>();
+  const ids = new Set<string>();
+
+  raw.forEach((item, i) => {
+    const at = `#${i}`;
+    if (!item || typeof item !== 'object') {
+      problems.push({ at, reason: '不是对象' });
+      return;
+    }
+    const d = item as Record<string, unknown>;
+    const label = typeof d.id === 'string' && d.id ? d.id : at;
+
+    if (typeof d.id !== 'string' || !d.id.trim()) {
+      problems.push({ at, reason: '缺少 id' });
+    } else if (seen.has(d.id)) {
+      problems.push({ at: label, reason: `id 与第 ${(seen.get(d.id) ?? 0) + 1} 篇重复` });
+    } else {
+      seen.set(d.id, i);
+      ids.add(d.id);
+    }
+
+    if (typeof d.name !== 'string' || !d.name.trim()) {
+      problems.push({ at: label, reason: '缺少名字' });
+    } else if (!isSafeDocName(d.name)) {
+      problems.push({ at: label, reason: `名字「${d.name}」不能作为路径段（含斜杠或非法字符）` });
+    }
+
+    if (d.type !== 'file' && d.type !== 'folder') {
+      problems.push({ at: label, reason: `类型必须是 file 或 folder，实际是 ${JSON.stringify(d.type)}` });
+    }
+
+    if (d.createdAt !== undefined && !Number.isFinite(d.createdAt)) {
+      problems.push({ at: label, reason: 'createdAt 不是有效时间戳' });
+    }
+    if (d.updatedAt !== undefined && !Number.isFinite(d.updatedAt)) {
+      problems.push({ at: label, reason: 'updatedAt 不是有效时间戳' });
+    }
+    if (d.createdBy !== undefined && (typeof d.createdBy !== 'string' || !d.createdBy)) {
+      problems.push({ at: label, reason: 'createdBy 必须是非空字符串' });
+    }
+    if (d.updatedBy !== undefined && (typeof d.updatedBy !== 'string' || !d.updatedBy)) {
+      problems.push({ at: label, reason: 'updatedBy 必须是非空字符串' });
+    }
+    if (d.parentId !== undefined && d.parentId !== null && typeof d.parentId !== 'string') {
+      problems.push({ at: label, reason: 'parentId 必须是字符串或 null' });
+    }
+  });
+
+  // 父子关系：父节点必须在这批文档里。
+  // 导入是全量替换，库里原有的文档已经不存在了——
+  // 父节点不在这一批里的话，子节点只能算成平级，整棵树就散了。
+  raw.forEach((item, i) => {
+    if (!item || typeof item !== 'object') return;
+    const d = item as Record<string, unknown>;
+    if (typeof d.parentId !== 'string' || !d.parentId) return;
+    if (!ids.has(d.parentId)) {
+      const label = typeof d.id === 'string' && d.id ? d.id : `#${i}`;
+      problems.push({ at: label, reason: `父节点「${d.parentId}」不在这批文档里` });
+    }
+  });
+
+  // 有环：a 的爹是 b，b 的爹是 a。这样的树没法按「父在前」插进去。
+  const parentOf = new Map<string, string>();
+  raw.forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    const d = item as Record<string, unknown>;
+    if (typeof d.id === 'string' && typeof d.parentId === 'string' && d.parentId) {
+      parentOf.set(d.id, d.parentId);
+    }
+  });
+  for (const id of parentOf.keys()) {
+    const walked = new Set<string>([id]);
+    let cur = parentOf.get(id);
+    while (cur && parentOf.has(cur)) {
+      if (walked.has(cur)) {
+        problems.push({ at: id, reason: '父子关系成环' });
+        break;
+      }
+      walked.add(cur);
+      cur = parentOf.get(cur);
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * 导入时被兜底补齐的内容统计。
+ *
+ * 兜底不是静默的：迁移完得让人知道哪些地方是替它猜的，
+ * 不然「谁写的」「什么时候写的」就成了查无对证的东西。
+ */
+export interface ImportDefaulted {
+  /** 缺时间戳、按当前时间补齐的篇数 */
+  timestamps: number;
+  /** 缺作者、按导入人补齐的篇数 */
+  authors: number;
+  /** 归属仓库不存在、落到默认仓库的篇数 */
+  repos: number;
+}
+
+/**
+ * 把导入载荷整理成能安全写库的形状。
+ *
+ * 缺的时间戳与作者用兜底值补齐：迁移的首要目的是「把内容搬过来」，
+ * 元数据缺一两个不该让整次迁移失败。
+ * 归属仓库不存在时落到默认仓库——内容比归属重要，
+ * 换个仓库总比整批导不进去强。
+ *
+ * 加密文档不带走正文：快照里根本没有密文，
+ * 把明文塞进 .enc 文件等于在盘上留一份明文副本——
+ * 那比导不进来更糟。
+ */
+export function normalizeImportDocs(raw: unknown[]): {
+  docs: DocNode[];
+  defaulted: ImportDefaulted;
+} {
+  const repoIds = new Set(
+    (db.prepare('SELECT id FROM repos').all() as Array<{ id: string }>).map((r) => r.id),
+  );
+  const fallbackRepo = defaultRepoId();
+  const now = Date.now();
+  const defaulted: ImportDefaulted = { timestamps: 0, authors: 0, repos: 0 };
+
+  const docs = raw.map((item) => {
+    const d = (item ?? {}) as Record<string, unknown>;
+    const hasCreatedAt = Number.isFinite(d.createdAt);
+    const hasUpdatedAt = Number.isFinite(d.updatedAt);
+    const hasCreatedBy = typeof d.createdBy === 'string' && !!d.createdBy;
+    const hasUpdatedBy = typeof d.updatedBy === 'string' && !!d.updatedBy;
+    if (!hasCreatedAt || !hasUpdatedAt) defaulted.timestamps += 1;
+    if (!hasCreatedBy || !hasUpdatedBy) defaulted.authors += 1;
+
+    const createdAt = hasCreatedAt ? (d.createdAt as number) : now;
+    const encrypted = d.encrypted === true;
+    // 没写归属的文档落到默认仓库是常事，不用报；
+    // 但「指向了一个不存在的仓库」得报——那说明它被悄悄挪了地方。
+    const namedRepo = typeof d.repoId === 'string' && !!d.repoId;
+    const hasRepo = namedRepo && repoIds.has(d.repoId as string);
+    if (namedRepo && !hasRepo) defaulted.repos += 1;
+    const repoId = hasRepo ? (d.repoId as string) : fallbackRepo;
+
+    return {
+      id: d.id as string,
+      name: d.name as string,
+      type: d.type as DocNode['type'],
+      parentId: typeof d.parentId === 'string' && d.parentId ? d.parentId : null,
+      content: encrypted || typeof d.content !== 'string' ? undefined : d.content,
+      createdAt,
+      updatedAt: hasUpdatedAt ? (d.updatedAt as number) : createdAt,
+      createdBy: hasCreatedBy ? (d.createdBy as string) : IMPORT_ACTOR,
+      updatedBy: hasUpdatedBy ? (d.updatedBy as string) : IMPORT_ACTOR,
+      tags: Array.isArray(d.tags) ? (d.tags as string[]) : undefined,
+      encrypted,
+      lockedAt: Number.isFinite(d.lockedAt) ? (d.lockedAt as number) : undefined,
+      repoId,
+    } satisfies DocNode;
+  });
+
+  return { docs, defaulted };
+}
+
+/**
+ * 把文档排成「父在前、子在后」的顺序。
+ *
+ * 路径是算出来的：子节点的路径 = 父节点的路径 + 自己的名字。
+ * 父还没插进去就算不出子节点的路径，它会落成一个平级的节点——
+ * 树就散了，「同名冲突自动加序号」这条规则也跟着失效。
+ *
+ * 所以按在树里的深度排序：深度小的先插，父必然先于子。
+ * 深度相同的保持原有相对顺序（排序是稳定的）。
+ */
+function orderForImport(docs: DocNode[]): DocNode[] {
+  const byId = new Map(docs.map((d) => [d.id, d]));
+  const depthOf = (d: DocNode): number => {
+    let depth = 0;
+    let cur: DocNode | undefined = d;
+    const guard = new Set<string>();
+    while (cur?.parentId) {
+      if (guard.has(cur.parentId)) break; // 有环：校验阶段就拦下了，这里只是别死循环
+      guard.add(cur.parentId);
+      const parent = byId.get(cur.parentId);
+      if (!parent) break;
+      depth += 1;
+      cur = parent;
+    }
+    return depth;
+  };
+  return [...docs].sort((a, b) => depthOf(a) - depthOf(b));
+}
+
+/**
+ * 覆盖式导入（用于迁移浏览器 localStorage 中的历史数据）
+ *
+ * 这是「全量替换」：整个资料库被换成导入的这一批。
+ * 因此它必须是全有或全无的——中途失败绝不能留下一个「库空了」的残局。
+ * 三道防线：
+ *
+ *   1. 先校验后动手：载荷不合格就地退回，一个字节都不碰。
+ *   2. 库里的删与插在同一个事务里：插到一半炸了，事务回滚，库还是原来那份。
+ *   3. 盘上的旧目录先挪到一边暂存：回滚时挪回来，成功之后才清掉。
+ *      文件写盘不受事务保护，这一手是盘上唯一的兜底。
+ */
 export function replaceAllDocs(docs: DocNode[]): number {
-  // 覆盖式写入，先把仓库目录清空。
+  const ordered = orderForImport(docs);
+
+  // 旧仓库目录先挪到一边暂存。
   //
   // 只清库里的行会留下一地孤儿文件：它们不再被任何文档引用，
   // 却还占着磁盘，而且再也没人会去清理它们。
-  // 目录清不掉就整个失败——宁可什么都不做，也不要落一个「库是新的、盘是旧的」状态。
-  const slugs = db.prepare('SELECT slug FROM repos').all() as Array<{ slug: string }>;
-  for (const { slug } of slugs) {
-    removeRepoDir(slug);
+  // 挪而不是删，是因为「清空」这一步本身可能失败，
+  // 而失败点落在中间的话，内容就再也找不回来了。
+  const slugs = (db.prepare('SELECT slug FROM repos').all() as Array<{ slug: string }>).map(
+    (r) => r.slug,
+  );
+  const parked = new Map<string, string>();
+  try {
+    for (const slug of slugs) {
+      const name = parkRepoDir(slug);
+      if (name) parked.set(slug, name);
+    }
+  } catch (err) {
+    // 一个都没挪动成功：把已经挪走的挪回去，库与盘都还没动过
+    for (const [slug, name] of parked) {
+      try {
+        unparkRepoDir(name, slug);
+      } catch (e) {
+        logger.error(`导入中止，但旧目录挪不回去：${slug}`, e);
+      }
+    }
+    throw err;
   }
 
-  db.transaction(() => {
-    db.prepare('DELETE FROM nodes').run();
-    db.prepare('DELETE FROM node_fts').run();
-    db.prepare('DELETE FROM attachment_fts').run();
-  })();
-  [...docs]
-    .sort((a) => (a.type === 'folder' ? -1 : 1))
-    .forEach((d) => insertDoc(d));
+  try {
+    // 删与插在同一个事务里：插到一半炸了，事务回滚，库还是原来那份。
+    db.transaction(() => {
+      db.prepare('DELETE FROM nodes').run();
+      db.prepare('DELETE FROM node_fts').run();
+      db.prepare('DELETE FROM attachment_fts').run();
+      for (const d of ordered) insertDoc(d);
+    })();
+  } catch (err) {
+    // 库已经回滚了；盘上要把这次写了一半的新目录清掉，再把旧目录挪回原位。
+    //
+    // 顺序不能反：先删新目录，才腾得出位置放旧目录。
+    for (const slug of slugs) {
+      try {
+        removeRepoDir(slug);
+      } catch (e) {
+        logger.warn(`回滚时清不掉新目录：${slug}`, e);
+      }
+    }
+    for (const [slug, name] of parked) {
+      try {
+        unparkRepoDir(name, slug);
+      } catch (e) {
+        logger.error(`回滚时旧目录挪不回去：${slug}`, e);
+      }
+    }
+    throw err;
+  }
+
+  // 成了：暂存的旧目录清场
+  for (const name of parked.values()) {
+    try {
+      discardParkedRepoDir(name);
+    } catch (err) {
+      logger.warn('导入成功，但旧仓库目录没清掉', err);
+    }
+  }
   return docs.length;
 }
 

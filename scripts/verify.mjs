@@ -628,6 +628,73 @@ if (ready) {
           await fetch(base + `/api/docs/${doc2Id}`, { method: 'DELETE', headers: H2 });
           if (doc3Id) await fetch(base + `/api/docs/${doc3Id}`, { method: 'DELETE', headers: H2 });
         }
+
+        /* ---------------- 覆盖式导入：不合格的载荷不能连坐清空整个资料库 ---------------- */
+        // 导入是「全量替换」：整个资料库被换成导入的这一批。
+        // 中途出岔子的代价是资料库没了——库里空了，盘上的内容也找不回来。
+        // 所以载荷不合格必须就地退回，不能是「先清空，再报错」。
+        const sentinelRes = await fetch(base + '/api/docs', {
+          method: 'POST', headers: { ...H2, 'content-type': 'application/json' },
+          body: J({ name: '__verify_import_sentinel__.md', type: 'file', parentId: null, content: '导入前哨兵' }),
+        });
+        check('导入前先放一篇哨兵文档', sentinelRes.status === 200 || sentinelRes.status === 201,
+          `状态 ${sentinelRes.status}`);
+
+        const badImport = await fetch(base + '/api/docs/import', {
+          method: 'POST', headers: { ...H2, 'content-type': 'application/json' },
+          body: J({
+            docs: [
+              { id: 'bad-1', name: '类型非法.md', type: '目录' },      // 类型只能是 file/folder
+              { id: 'bad-2', name: '带/斜杠.md', type: 'file' },      // 名字不能当路径段
+            ],
+          }),
+        });
+        const badImportBody = await badImport.json();
+        check('畸形导入载荷被拒（400，不是 500）',
+          badImport.status === 400 && Array.isArray(badImportBody.problems) && badImportBody.problems.length >= 2,
+          `状态 ${badImport.status} ${JSON.stringify(badImportBody.problems ?? badImportBody.error ?? '').slice(0, 100)}`);
+
+        const afterBad = await (await fetch(base + '/api/docs', { headers: H2 })).json();
+        const afterBadNames = (afterBad.docs ?? []).map(d => d.name);
+        check('畸形导入没有连坐清空资料库',
+          afterBadNames.includes('__verify_import_sentinel__.md'),
+          `剩余 ${afterBadNames.length} 篇`);
+
+        // 合法载荷：库被整体替换，正文能读回
+        const goodImport = await fetch(base + '/api/docs/import', {
+          method: 'POST', headers: { ...H2, 'content-type': 'application/json' },
+          body: J({
+            docs: [
+              { id: 'imp-1', name: '__verify_imported_a__.md', type: 'file', parentId: null, content: '导入正文 A', createdAt: Date.now(), updatedAt: Date.now(), createdBy: 'u-admin', updatedBy: 'u-admin' },
+              { id: 'imp-2', name: '__verify_imported_b__.md', type: 'file', parentId: null, content: '导入正文 B', createdAt: Date.now(), updatedAt: Date.now(), createdBy: 'u-admin', updatedBy: 'u-admin' },
+            ],
+          }),
+        });
+        const goodImportBody = await goodImport.json();
+        check('合法载荷导入成功', goodImport.status === 200 && goodImportBody.imported === 2,
+          `状态 ${goodImport.status} imported=${goodImportBody.imported}`);
+
+        const afterGood = await (await fetch(base + '/api/docs', { headers: H2 })).json();
+        const afterGoodNames = (afterGood.docs ?? []).map(d => d.name);
+        check('导入后库被整体替换为新内容',
+          afterGoodNames.includes('__verify_imported_a__.md') && !afterGoodNames.includes('__verify_import_sentinel__.md'),
+          `现有 ${afterGoodNames.length} 篇`);
+
+        const importedDoc = await (await fetch(base + '/api/docs/imp-1', { headers: H2 })).json();
+        check('导入的正文可读回', importedDoc.doc?.content === '导入正文 A',
+          `正文 ${JSON.stringify(importedDoc.doc?.content ?? '').slice(0, 40)}`);
+
+        // 全文索引也要跟着重建：换了库就该能搜到新内容，搜不到旧内容
+        const searchAfter = await (await fetch(base + '/api/docs/search?q=' + encodeURIComponent('导入正文'), { headers: H2 })).json();
+        const hitIds = (searchAfter.hits ?? []).map(h => h.id);
+        check('导入后全文索引被重建（新内容搜得到）',
+          hitIds.includes('imp-1'),
+          `命中 ${JSON.stringify(hitIds).slice(0, 80)}`);
+
+        const searchOld = await (await fetch(base + '/api/docs/search?q=' + encodeURIComponent('哨兵'), { headers: H2 })).json();
+        check('导入后旧文档不再留在索引里',
+          (searchOld.hits ?? []).length === 0,
+          `仍命中 ${(searchOld.hits ?? []).length} 条`);
       }
     }
   }
