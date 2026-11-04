@@ -1,0 +1,25 @@
+fix: 托盘配置 appDir 只生效一半，.env 与日志还留在旧目录
+
+给托盘配了 appDir（便携部署换个目录装）之后发现：数据库去了新目录，
+.env 与日志却还在旧目录。原因是改配置时只改了 paths.dataDir，
+而 envFile 与 logsDir 早在 resolvePaths() 里按默认目录算好了。
+
+后果不报错：服务拿旧目录里的 .env 跑起来，一切看着正常——
+但这是两份配置拼起来的部署。新目录里没有自己的密钥，
+换个机器、换个用户，行为就跟这儿对不上。
+真实案例：便携部署到 D:\WorkHub，库建在 D:\WorkHub\data，
+.env 却读的是 %LOCALAPPDATA%\WorkHub\.env（上一份部署的旧密钥）。
+
+修法：把「工作目录派生出 .env 与日志位置」抽成 dataPaths()，
+resolvePaths 与配置生效处都走它，派生关系只有一处。
+
+- tray/paths.cjs：dataPaths(dataDir) -> { dataDir, envFile, logsDir }
+- tray/main.cjs：resolvePaths 改用它；配置 appDir 生效时连三处一起换
+- tray/paths.test.cjs：3 个用例盯住「换了目录，三处路径一起换」
+
+顺带把便携部署写进 README：配置放 exe 旁边 + appDir 指同一目录，
+程序、配置、数据库、日志全在一个文件夹里，拷到哪台机器就在哪跑。
+
+验证：tsc 0、eslint 0、node --test 202/202；实机在 D:\WorkHub 部署一整套，
+.env / logs / data 全部落在新目录，库是全新空库（nodes=0），
+admin 登录通过，旧目录的 .env 与库文件哈希一字未改。

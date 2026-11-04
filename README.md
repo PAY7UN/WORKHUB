@@ -305,6 +305,10 @@ npm run tray      # 开发态启动（Electron 自带运行时）
   （Windows 不像 Unix 会自动收拾孤儿进程）。
 - 配置放在 `tray/tray.config.json`（按机器而异，不进版本库；样例见 `tray/tray.config.example.json`）：
   `mode` / `target` / `appDir` / `entry` / `token` / `hotkey` / `update`。
+  配置文件按「离用户最近」找：托盘目录 → **exe 旁边** → `%APPDATA%\WorkHub`。
+  把配置放在 exe 旁边、再把 `appDir` 指到同一个目录，就是一套**便携部署**：
+  程序、配置、数据库、日志全在一个文件夹里，整个拷到别的机器照样跑。
+  托盘自更新时这些文件在保护名单（`data` / `logs` / `.env` / `tray.config.json`）里，不会被覆盖掉。
 
 ### 像可执行程序一样调用
 

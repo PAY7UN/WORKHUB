@@ -20,6 +20,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const { makeTrayImages } = require('./icon.cjs');
+const { dataPaths } = require('./paths.cjs');
 const {
   fetchStatus,
   fetchLogs,
@@ -115,11 +116,9 @@ function resolvePaths() {
     const dataDir = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'WorkHub');
     return {
       codeDir,
-      dataDir,
+      ...dataPaths(dataDir),
       entry: resolveEntry(codeDir),
       runner: path.join(codeDir, 'run-server.cjs'),
-      envFile: path.join(dataDir, '.env'),
-      logsDir: path.join(dataDir, 'logs'),
       packaged: true,
     };
   }
@@ -127,11 +126,9 @@ function resolvePaths() {
   const repoRoot = path.resolve(app.getAppPath(), '..');
   return {
     codeDir: repoRoot,
-    dataDir: repoRoot,
+    ...dataPaths(repoRoot),
     entry: resolveEntry(repoRoot),
     runner: path.join(__dirname, 'run-server.cjs'),
-    envFile: path.join(repoRoot, '.env'),
-    logsDir: path.join(repoRoot, 'logs'),
     packaged: false,
   };
 }
@@ -918,8 +915,11 @@ app.whenReady().then(async () => {
   if (!hasInstanceLock) return;
   paths = resolvePaths();
   config = loadConfig();
-  // 工作目录可配（便携运行、测试都可能用到），默认按运行形态取
-  if (config.appDir) paths.dataDir = path.resolve(config.appDir);
+  // 工作目录可配（便携运行、测试都可能用到），默认按运行形态取。
+  // 要连 .env 与日志的位置一起换：只改 dataDir 的话，数据库会落到新目录，
+  // 而密钥还在旧目录——服务用旧密钥跑起来，表面一切正常，
+  // 实际这是两份配置拼起来的部署，换台机器就露馅。
+  if (config.appDir) Object.assign(paths, dataPaths(path.resolve(config.appDir)));
   // 服务入口：配置里写了就用配置的；没写（或写的那个不存在）按约定探测
   if (config.entry) {
     const configured = path.isAbsolute(config.entry)
