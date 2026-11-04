@@ -10,18 +10,20 @@
 | 层 | 技术 |
 | --- | --- |
 | 前端 | React 19 + TypeScript + Vite + Tailwind CSS v4 + shadcn/ui |
-| 后端 | Node.js（原生 TS，零编译）+ Express |
+| 后端 | Node.js + Express（开发态直跑 `.ts`，发布态编译成 `.js` 随包发布） |
 | 存储 | SQLite（better-sqlite3），单文件免运维 |
 | 模型 | OpenAI 兼容接口（默认 MiniMax），由服务端持有凭据 |
 
 ## 目录结构
 
 ```
-mdhub/
-├─ shared/          前后端共享层（类型、种子数据、RAG 检索算法、密码策略、日志脱敏）
-├─ server/          Node 服务端（原生 TS，零编译）
+workhub/
+├─ shared/          前后端共享层：类型、种子数据、RAG 检索算法、密码策略、日志脱敏、附件规则、默认端口
+├─ server/          Node 服务端（仓库态是 TS，发布态编译成同名 .js 随包走）
 │  ├─ index.ts      Express 入口：鉴权、文档过滤、Agent SSE
 │  ├─ db.ts         SQLite 数据访问，API Key AES-256-GCM 加密
+│  ├─ paths.ts      路径的单一真源：数据库、仓库目录与环境变量优先级
+│  ├─ host.ts       宿主环境的单一真源：版本号、谁在管着这个进程
 │  ├─ auth.ts       HS256 JWT 签发与校验（含密码指纹）
 │  ├─ password.ts   密码哈希与指纹
 │  ├─ docCrypto.ts  文档信封加密：正文密文、DEK 被主密钥包裹
@@ -29,19 +31,41 @@ mdhub/
 │  ├─ dingtalk.ts   钉钉接入：加签、工作通知、钉钉待办
 │  ├─ reminderScheduler.ts 提醒调度：30 秒一轮巡检到期的提醒
 │  ├─ guests.ts     访客会话：httpOnly cookie 承载的访客身份
-│  ├─ manage.ts     运维接口：状态 / 最近日志 / 重启 / 停机（认机器令牌，不认用户会话）
+│  ├─ accessWatch.ts 访问授权的实时撤销通知（SSE）
+│  ├─ attachments.ts 附件：内容寻址存储、改名、移动
+│  ├─ repos.ts      仓库：文档的组织方式
+│  ├─ polishTasks.ts 润色任务：后台生成、SSE 推进、并发上限
+│  ├─ updater.ts    自动升级：查版本、下载校验、起更新器、写标记
+│  ├─ manage.ts     运维接口：状态 / 最近日志 / 重启 / 停机 / 升级（认机器令牌，不认用户会话）
 │  ├─ manageTokens.ts 机器令牌：发放、校验、列出、撤销、清理（库里只存哈希）
 │  ├─ manageToken.ts 机器令牌的命令行入口（npm run manage:token，支持 --json）
 │  ├─ logger.ts     统一日志出口：分级、脱敏、路径脱敏，兼带最近 500 行的内存缓冲
-│  └─ *.test.ts     node --test 用例（password / loginThrottle / logger / docCrypto / docAccess / accessGrant / dingtalk / manage）
-├─ scripts/         工具：docs.mjs（文档查看/导出）、verify.mjs（端到端自检）、
-│                   pack-tray.mjs（组装服务 payload + 调 electron-builder 出安装包）、
-│                   install-service.ps1 / uninstall-service.ps1（装卸 Windows 服务）、
-│                   service/WorkHubService.cs（服务宿主源码，用系统 csc.exe 现场编译）
+│  ├─ storage/v2/   v2 存储层：schema 建库迁移、vault 正文文件、search 检索、janitor 清道夫
+│  └─ *.test.ts     node --test 用例（password / loginThrottle / logger / docCrypto / docAccess /
+│                   accessGrant / dingtalk / manage / updater / import / fileOriginal / storage）
+├─ scripts/         工具脚本
+│  ├─ docs.mjs              文档查看与导出
+│  ├─ verify.mjs            端到端自检（77 项）
+│  ├─ verify-upgrade.mjs    升级链路自检：打包→预检→换代码→验活，外加故意喂坏包验回滚
+│  ├─ pack-server.mjs       打服务端发布包（顺带重建前端、编译服务端、收依赖与自带 Node）
+│  ├─ check-package.mjs     查发布包是不是真的自带环境（编译产物、依赖、运行时、清单、校验）
+│  ├─ pack-tray.mjs         组装服务 payload + 调 electron-builder 出托盘安装包
+│  ├─ deploy.ps1            铺包到机器上并注册服务（首装与升级同一条路）
+│  ├─ lib/                  几处共用逻辑的真源
+│  │  ├─ frontend-build.mjs   打包前重建前端
+│  │  ├─ server-build.mjs     把服务端编译成 server/*.js（发布态入口）
+│  │  ├─ runtime-deps.mjs     收集服务端运行时真正需要的依赖（70 个）
+│  │  ├─ node-runtime.mjs     准备自带的 node.exe
+│  │  └─ service-entry.mjs    服务入口约定的唯一真源（.workhub-entry → server/index.js → server/index.ts）
+│  ├─ upgrade-apply.mjs     外部更新器：预检、等旧进程退出、换代码、拉起、验活、失败回滚
+│  ├─ install-service.ps1 / uninstall-service.ps1  装卸 Windows 服务
+│  └─ service/WorkHubService.cs  服务宿主源码，用系统 csc.exe 现场编译
 ├─ electron-builder.yml 托盘工具的打包配置（应用目录、payload、NSIS 安装项）
 ├─ tray/            Windows 托盘工具（Electron 主进程）
 │  ├─ main.cjs      托盘图标与菜单；local 模式拉起并守护服务进程，remote 模式走 HTTP
-│  ├─ manage.cjs    remote 模式的 HTTP 客户端：状态 / 日志 / 重启
+│  ├─ manage.cjs    remote 模式的 HTTP 客户端：状态 / 日志 / 重启 / 升级
+│  ├─ update.cjs    托盘自更新：查版本 / 下载 / 校验 / 解包
+│  ├─ apply-update.cjs 外部更新器：等托盘退出 → 备份 → 覆盖 → 回滚 → 拉起托盘
 │  ├─ run-server.cjs 服务进程的包装：父进程（托盘）没了就自己退出，不留孤儿占端口
 │  ├─ icon.cjs      用代码画托盘图标 PNG 与 exe 图标 ICO（不往仓库里塞二进制资源）
 │  └─ package.json  Electron 应用入口声明
@@ -56,8 +80,9 @@ mdhub/
   └─ components/   app/ 业务组件（app/admin/ 管理后台各分区）、ui/ shadcn 基础组件
 ```
 
-> 数据库落在**项目根的 `data/`**，而不是 `server/data/`——`server/db.ts` 以自身目录为基准做
-> `resolve(HERE, '../data/mdhub-v2.db')`，`../` 即项目根。用 `MDHUB_DB_V2` 可改到别处。
+> 数据库落在**项目根的 `data/`**，而不是 `server/data/`——`server/paths.ts` 以自身目录为基准
+> 解析出项目根，默认写到 `<项目根>/data/mdhub-v2.db`。用 `MDHUB_DB_V2` 可改到别处。
+> 路径优先级（`MDHUB_DB_V2` → `MDHUB_DB` → 默认）只在这一个文件里定义，别处不再各写一份。
 >
 > 正文不在库里，在 `data/vault/` 的仓库目录里；库里只留索引（路径、哈希、大小）。
 > 老库 `data/mdhub.db` 是 v1 时代的遗留，作为回退底牌保留，不参与运行。
@@ -94,6 +119,98 @@ npm run server    # 同一个端口既提供 API 也提供前端页面
 所以生产环境不必再另摆一个 Caddy/nginx 托静态站点——少一个组件就少一处配置、一处证书、
 一处「页面能开但接口 404」的排查点。构建产物不在时只提供 API，并在日志里提示。
 
+## 零环境部署：目标机不用装 Node
+
+服务器上装 WorkHub 最容易卡住的地方从来不是 WorkHub，而是「先装 Node、再 npm install、再起服务」——
+每一步都是别人机器上不可控的变量（版本、镜像、编译工具链、代理、内网连不上 npm）。
+
+所以发布包是**自带环境**的：
+
+| 包里带什么 | 干什么 | 大概多大 |
+| --- | --- | --- |
+| `server/*.js` | 服务端编译产物。发布态真正被执行的就是它，不依赖目标机的 Node 能不能直跑 `.ts` | 几百 KB |
+| `node_modules/` | 服务端运行时真正需要的那 70 个包。目标机不用 `npm install`，升级时也不必在生产机上装依赖 | 约 12 MB |
+| `runtime/node.exe` | 一份自带 Node（版本跟打包机一致，better-sqlite3 的原生二进制一定对得上） | 约 80 MB |
+
+包里**不带数据**：`data/`（数据库与正文）、`logs/`、`.env` 一律不进包——
+升级换的是代码，不是数据。
+
+### 打包
+
+```bash
+npm run pack:server -- --out release
+```
+
+打包顺带做四件事：重建前端（`dist/`）、编译服务端（`server/*.js`）、收集运行时依赖、准备自带 Node。
+
+| 参数 | 作用 |
+| --- | --- |
+| `--out <目录>` | 产物目录，默认 `release/` |
+| `--skip-build` | 不重建前端、不编译服务端（产物已经就绪时用） |
+| `--no-runtime` | 不带自带 Node（目标机自己装了 Node 时用，包小 80MB） |
+| `--no-deps` | 不带依赖（目标机自己 `npm install` 时用） |
+
+产物是 `workhub-server-<版本>.zip` 和同名的 `.sha256`。
+把它挂到 GitHub Release（资产名保持 `workhub-server-<版本>.zip`）就能被自动升级认到。
+
+打完包先自己看一眼它是不是真的「自带环境」：
+
+```bash
+npm run pack:check
+```
+
+它会逐项核对：服务端是编译产物、运行时依赖在包里、自带 Node 在包里、
+文件清单跟包里的东西对得上、`.sha256` 对得上。
+少一样，目标机的「解压即用」就是空话——而这种缺失往往要到客户机器上才暴露。
+
+发版有现成的工作流（`.github/workflows/release.yml`）：Release 一发布，
+它会在 Windows 上打这个包、自检，再把包挂到 Release 上。
+
+### 铺到机器上：首装和升级走同一条路
+
+```powershell
+# 管理员身份的 PowerShell
+npm run deploy -- -Package .\release\workhub-server-1.0.0.zip
+```
+
+`scripts/deploy.ps1` 依次做：取包（本地 zip 或 URL）→ 校验 sha256 → 解压 →
+**停掉正在跑的服务** → 铺到部署目录（`data/`、`logs/`、`.env` 保留不动）→
+清掉新版里已经没有的旧文件 → 注册/重启服务 → 验活。
+
+**首装和「用包升级」是同一条命令**：升级时再跑一遍就行，代码覆盖、数据保留。
+目标机因此只需要「解压 + 一条命令」：不装 Node、不跑 npm、不联网。
+
+两个容易踩的坑，脚本已经替你处理了：
+
+| 坑 | 会怎样 | 脚本怎么处理 |
+| --- | --- | --- |
+| 直接往已存在的目录里拷 | 新代码落进 `server\server`，看着部署成功了，其实在跑旧代码 | 先整个搬进暂存目录，确认拷全了再一份份换过去 |
+| 覆盖正在运行的 `runtime\node.exe` | Windows 不让覆盖，铺到一半失败 | 铺文件之前先把服务停掉，等端口腾出来 |
+
+默认部署目录是 `%ProgramData%\WorkHub\app`（`-Task` 模式下是 `%LOCALAPPDATA%\WorkHub\app`）。
+
+| 参数 | 作用 |
+| --- | --- |
+| `-Package <路径或URL>` | 发布包。不填就只就地重装服务（改完配置、换了 Node 之后用） |
+| `-AppDir <目录>` | 部署目录 |
+| `-Port <端口>` | 服务端口（不填就读 `.env` 里的 `MDHUB_PORT`，再不行用 8787） |
+| `-Task` | 用任务计划程序代替 Windows 服务（不需要管理员权限） |
+| `-Force` | 端口被占用时也继续 |
+| `-NoStart` | 只铺文件，不注册服务 |
+| `-DryRun` | 只打印将要执行的动作 |
+
+### 自带运行时的替换规则
+
+「目标机上那份自带 Node 怎么办」，三种场景三种做法：
+
+| 场景 | 行为 | 为什么 |
+| --- | --- | --- |
+| `deploy.ps1` 铺带运行时的包 | 整块换掉 | 铺之前服务已经停了，这个 exe 不再被占着 |
+| `deploy.ps1` 铺不带运行时的包 | 保留目标机上原来那份 | 那台机器上只有这一份 Node，删了它服务就再也起不来了 |
+| 服务端自动升级 | 永远不换 | 正在跑的服务就占着它，覆盖必然失败；运行时大版本升级也该由人工安排重启窗口 |
+
+所以**换自带 Node 运行时 = 用 `deploy.ps1` 重新铺一次包**，不是点升级。
+
 ## 部署成 Windows 服务（服务器用）
 
 桌面端用托盘就行；服务器上要的是「开机自启、崩了能自己爬起来、没人管也在跑」，
@@ -120,7 +237,8 @@ sc.exe start WorkHub       # 起
 
 | 活儿 | 怎么做 |
 | --- | --- |
-| 拉起 node | 子进程，工作目录就是代码目录，`.env` 从那儿读 |
+| 拉起 node | 子进程，工作目录就是代码目录，`.env` 从那儿读。**优先用目录里自带的 `runtime/node.exe`**，目标机因此不用装 Node |
+| 认服务入口 | 按约定找入口：`server/index.js`（发布态编译产物）优先于 `server/index.ts`（仓库态源码）；要手工指定就在代码目录放一个 `.workhub-entry` 写上相对路径 |
 | 收日志 | node 的 stdout/stderr 转到 `logs/service.log`（带时间戳和级别） |
 | 崩溃自愈 | node 崩了自己拉起来，退避 5/10/15… 秒；连续 5 次拉不起来才放弃 |
 | 干净停止 | 收到停止指令先调服务端的停机接口，让它把事务收完；超时才强杀 |
@@ -143,6 +261,7 @@ npm run service:install -- -Task
 
 ```powershell
 # 指定代码目录（默认仓库根）、端口、node 路径
+# 不给 -Node 时优先用代码目录里的 runtime\node.exe，再从 PATH 和常见安装位置里找
 npm run service:install -- -AppDir D:\WorkHub -Port 8787 -Node "C:\Program Files\nodejs\node.exe"
 
 # 只看要做什么，不真改系统
@@ -185,17 +304,34 @@ npm run tray      # 开发态启动（Electron 自带运行时）
 - **托盘被强杀不会留下孤儿服务**：服务进程盯着父进程 PID，父进程没了就自己退出、释放端口
   （Windows 不像 Unix 会自动收拾孤儿进程）。
 - 配置放在 `tray/tray.config.json`（按机器而异，不进版本库；样例见 `tray/tray.config.example.json`）：
-  `mode` / `target` / `appDir` / `entry` / `token`。
+  `mode` / `target` / `appDir` / `entry` / `token` / `hotkey` / `update`。
+
+### 像可执行程序一样调用
+
+托盘不该只是「装完就躺着的图标」，它得像个能随时叫起来的程序：
+
+| 叫法 | 怎么用 |
+| --- | --- |
+| 全局快捷键 | 默认 `Ctrl+Alt+W`，按一下就打开网页（不用找图标）。改配置里的 `hotkey`；写空字符串表示不要注册 |
+| 命令行 | `WorkHub.exe --open` 直接打开网页 |
+| 桌面快捷方式 | 目标填 `WorkHub.exe`，参数填 `--open` |
+| 又点了一次图标 | 不会起第二个托盘：第二次启动只是让已有实例把网页打开 |
+
+单实例是上面几条能成立的前提：托盘要守护本机的服务进程，
+起两个就会抢端口，然后两个托盘互相打架。快捷键被别的程序抢走也不影响托盘——
+注册不上就只在日志里记一笔，托盘照常干活。
 
 ### remote 模式：拿托盘当运维面板
 
-`mode: "remote"` 时托盘不碰本机服务，只跟一台远端服务器说话。菜单里是三个动作：
+`mode: "remote"` 时托盘不碰本机服务，只跟一台远端服务器说话。菜单里的动作：
 
 | 菜单项 | 做什么 |
 | --- | --- |
 | 查看服务器状态 | 版本、运行时长、内存、数据库大小、内容条数、托管方式 |
 | 查看最近日志 | 服务端最近 200 行（默认，可指定行数） |
 | 重启服务器 | 先弹窗确认，再发重启请求 |
+| 检查服务器更新 | 查远端有没有新版本（服务端自己比 GitHub Release） |
+| 升级服务器 | 先弹窗确认，再让服务端下载并解压新包 |
 
 凭据是**机器令牌**（`x-workhub-token` 请求头），和用户登录口令是两套东西，互不通用：
 
@@ -235,6 +371,8 @@ npm run manage:token -- cleanup "windows service"
 | `GET /api/manage/status` | 状态快照 |
 | `GET /api/manage/logs?tail=N` | 最近 N 行日志（默认 200） |
 | `POST /api/manage/restart` | 重启服务 |
+| `GET /api/manage/update` | 查有没有新版本 |
+| `POST /api/manage/update` | 触发升级（服务端自己下载、解压、换代码） |
 
 重启会先判断服务是谁拉起来的（systemd / pm2 / docker / 托盘托管 / 裸跑），
 再选对应的重启方式；**被托盘托管时拒绝远端重启**——那种情况归本地托盘管，
@@ -246,7 +384,16 @@ npm run manage:token -- cleanup "windows service"
 npm run pack:tray
 ```
 
-产物：`release/WorkHub-Setup-<版本>.exe`（一键安装包，约 118MB——大头是 Electron 本身）。
+产物：
+
+| 文件 | 给谁 | 说明 |
+| --- | --- | --- |
+| `release/WorkHub-Setup-<版本>.exe` | 正常安装 | 一键安装包，约 118MB（大头是 Electron 本身） |
+| `release/workhub-tray-<版本>.zip` | 免安装 / 分发 | 解压即用：里面有 `WorkHub.exe`，双击就跑，不写注册表，放 U 盘里也能带走 |
+| `release/*.sha256` | — | 校验值，自动更新会核对它 |
+
+免安装包同时也是**托盘自更新的原料**：发布时把它挂到 tag 上，
+托盘就能自己下载、解压、换掉自己（见「[托盘自更新](#托盘自更新)」）。
 
 安装包里装的是两样东西，**目录分工是打包版的关键**：
 
@@ -275,6 +422,13 @@ npm run pack:tray
   在 IDE 打开的仓库里做目录改名会被安全删除钩子拦掉（EPERM），打包会挂在最后一步。
 - **better-sqlite3 只留 `prebuilds/win32-x64.node`**：它自带 10MB 的 sqlite3 C 源码和 6 个
   别的平台的预编译二进制，运行时都用不上。
+- **更新器脚本要放在 asar 外面**：托盘自更新的更新器是用纯 Node 跑的，它得读自己的脚本、
+  还要在托盘退出后覆盖程序目录里的文件——asar 里的文件是虚拟的，这些事都干不了。
+  所以走 `extraFiles` 把它放到 exe 旁边。
+- **payload 里要自带一份 Node 运行时**：更新器不能跑在托盘目录里（它一跑起来就把那个目录
+  锁住了，覆盖自己就变成了不可能），而托盘自己的 exe 也不能单独复制出去用（Electron 的 exe
+  旁边还散着一堆运行时文件，少一个都起不来）。纯 `node.exe` 复制到临时目录就能跑，
+  所以 payload 里得有一份——服务本身用不上，是给更新器用的。
 
 ## 局域网访问
 
@@ -385,7 +539,7 @@ npm run admin:password -- --generate
 | --- | --- | --- |
 | `MDHUB_SECRET` | 无（缺失则拒绝启动） | JWT 签名、Agent Key 加密主密钥，以及**文档加密主密钥的种子**（`MASTER_KEY = sha256(MDHUB_SECRET)`），**生产必须配置**；本地需写入 `.env` 或设置 `MDHUB_ALLOW_INSECURE_DEV=1`。改动它会让已加密文档的密文永久无法解密 |
 | `MDHUB_ADMIN_PASSWORD` | 本地随机生成 | 管理员**初始**密码，仅首次建库时写入；已有库请用 `npm run admin:password` 或侧边栏修改，改动此变量对已有库无效 |
-| `MDHUB_PORT` | `8787` | 服务端端口 |
+| `MDHUB_PORT` | `8787` | 服务端端口。默认值来自 `shared/constants.ts` 的 `DEFAULT_API_PORT`；改端口时记得连 `tray/main.cjs`、`scripts/install-service.ps1`、`scripts/service/WorkHubService.cs` 这三处镜像一起改（它们读不到 TS，各留了注释指回真源） |
 | `MDHUB_WEB_PORT` | `8080` | 前端 dev server 端口（监听 `0.0.0.0`，供局域网访问） |
 | `MDHUB_DB_V2` | `data/mdhub-v2.db` | 数据库路径（索引库）。`MDHUB_DB` 是 v1 时代的旧变量，仅作兼容兜底 |
 | `MDHUB_VAULT_DIR` | `data/vault` | 仓库目录：正文文件实际存放的位置 |
@@ -394,6 +548,11 @@ npm run admin:password -- --generate
 | `MDHUB_ALLOW_INSECURE_DEV` | 关闭 | 置 `1` 时允许使用公开的开发默认值（密钥 `mdhub-dev-secret-change-me`、密码 `admin123`）；`NODE_ENV=production` 下无效 |
 | `NODE_ENV` | 未设置 | 置 `production` 启用生产模式：强制要求显式配置密钥与管理员密码 |
 | `WORKHUB_MANAGE_TOKEN` | 无 | 机器令牌：托盘 remote 模式用；优先于配置文件里的 `token`。**只发给可信机器**，它等价于运维权限 |
+| `MDHUB_UPDATE_REPO` | `PAY7UN/WORKHUB` | 自动升级用的 GitHub 仓库（`owner/repo`）：比对版本、拉取发布包 |
+| `MDHUB_UPDATE_MANIFEST` | 无 | 自定义更新清单地址（JSON：版本号 + 每个文件的 sha256）。设了就不走 GitHub |
+| `MDHUB_UPDATE_URL` | 无 | 升级包直链。设了直接从这个地址下载，不走仓库发布页 |
+| `MDHUB_UPDATE_TOKEN` | 无 | 下载升级包用的 Bearer 令牌（私有仓库或私有清单用） |
+| `MDHUB_RESTART_CMD` | 无 | 升级后由谁把服务拉起来的自定义命令。不设则按托管方式判断：托盘 / Windows 服务宿主 / systemd / pm2 / docker / 都没人管时由更新器自拉起 |
 
 ## 日志
 
@@ -687,21 +846,159 @@ front matter（`id` / `name` / `tags` / 时间戳），正文原样保留。
 内容其实空着的文件。`content/` 默认在 `.gitignore` 里——
 **提交它等于公开这些文档**，确认要上传再删掉那行。
 
+## 自动升级
+
+服务端能自己把自己换成新版本：查版本 → 下载校验 → 换代码 → 拉起来 → 验活，
+任何一步不行就退回升级前的代码。
+
+### 两扇门
+
+| 入口 | 凭据 | 用途 |
+| --- | --- | --- |
+| `/api/admin/update` | 管理员会话 | 管理后台里点升级 |
+| `/api/manage/update` | 机器令牌（`x-workhub-token`） | 托盘 remote 模式、监控脚本 |
+
+两套凭据互不通用，所以升级这件事开了两扇门。
+
+### 流程
+
+1. **查版本**：默认去 GitHub 的 `PAY7UN/WORKHUB` 比对 Release；
+   也可以用 `MDHUB_UPDATE_MANIFEST`（自定义清单）或 `MDHUB_UPDATE_URL`（直链）。
+   查不到不算失败——没网、限流、压根没发 Release 都会发生，
+   所以「没有新版本」和「查不到」在结果里是两种说法，界面上该说的话不一样。
+2. **下载校验解包**：包里有文件清单与每个文件的 sha256，对不上就到此为止。
+   这一步**不动正在跑的代码**。
+3. **起更新器**：独立进程 `scripts/upgrade-apply.mjs`，只依赖 Node 内置模块——
+   它自己就站在被替换的代码目录边上，万一新代码有 bug，
+   靠的是新代码之外的自己把它救回来。
+4. **预检**：新代码先在隔离目录里被拉起来试跑一次（详见下一节）。
+   预检不过就到此为止，**代码一秒都不换，服务一秒都不停**。
+5. **服务退出**：Windows 上运行中的代码换不掉（node.exe 被占着，
+   better-sqlite3 的 `.node` 被 mmap 锁着）。更新器会等进程真的退出（最多 60 秒）。
+6. **换代码**：备份 → 覆盖 → 删掉新版里已经没有的旧文件 → 依赖变了就装依赖
+   （只有 `dependencies` 变了才装，`devDependencies` 不进生产包）。
+7. **拉起来并验活**：撤掉升级标记让宿主把服务拉起来，然后打 `/api/healthz`；
+   不通就回滚，再拉一次。
+
+`data/`、`.env`、`node_modules` 都不在被替换范围内——**代码进包，数据不进包**。
+
+自带运行时（`runtime/`）也不在替换范围内：正在跑的服务就占着那个 exe，覆盖必然失败。
+想换运行时用 `deploy.ps1` 重新铺一次包（见「[自带运行时的替换规则](#自带运行时的替换规则)」）。
+
+### 升级前先预检
+
+换代码之前，新版本会先在**隔离目录**里被拉起来试跑一次：
+
+1. 解包到临时目录，用**临时库**和**随机端口**起一个实例
+   （不碰生产库、不占生产端口，起来就掐掉）；
+2. 打健康检查，通了才算这一版能起来；
+3. 起不来就**当场放弃**：代码没换，服务照跑。
+
+预检实例带 `MDHUB_PREFLIGHT=1` 标记——这个标记让「只在正式运行时才犯的错」
+（比如依赖真实配置、真实数据才会炸的初始化逻辑）在预检里先暴露出来，
+而不用等真的把生产代码换掉才发现。
+
+### 起来 ≠ 稳定
+
+健康检查通过只说明「它起来了」。有些版本起来几秒就挂——
+所以健康检查通过之后还要**观察一段稳定期**（默认 15 秒，
+`MDHUB_UPGRADE_STABILIZE_MS` 可调），期间进程退出就算升级失败。
+
+### 失败回滚
+
+| 失败点 | 后果 |
+| --- | --- |
+| 下载或校验不过 | 没动过任何代码，服务照跑 |
+| 预检起不来 | 没动过任何代码，服务照跑（更新器负责把服务叫醒） |
+| 依赖装不上 | 回滚到升级前的代码，再拉起来 |
+| 升级后健康检查不过（等 90 秒） | 回滚到升级前的代码，再拉起来；连回滚后也起不来才需要人工介入 |
+| 起来了但稳定期内退出 | 同上——健康检查过了不算数 |
+
+升级结果记在库里，界面能直接看到「成功 / 已回滚 / 需要人工看看」。
+
+### 托盘自更新
+
+服务端能自己把自己换成新版本，托盘也能——用的是同一套原料：**发布时打好的那个 tag 压缩包**。
+
+| | 服务端 | 托盘 |
+| --- | --- | --- |
+| 包名 | `workhub-server-<版本>.zip` | `workhub-tray-<版本>.zip` |
+| 谁动手换 | 服务进程自己换代码 | 独立进程换整个程序目录 |
+| 入口 | 网页上的「升级」 | 托盘菜单「检查更新」 |
+
+包名是硬约定：更新器按名字找包，名字对不上就等于没发，
+而且使用者那边看不出任何异常——界面只会说「没有新版本」。
+所以发 Release 时两个包都要挂上（`npm run pack:tray` 会打出托盘那个）。
+
+托盘这边比服务端多两桩麻烦事：
+
+1. **Windows 上运行中的程序换不掉**：托盘得先退出，
+   换文件的活儿交给独立进程 `tray/apply-update.cjs`（只用 Node 内置模块，
+   跑的是 payload 自带的 `node.exe`——它得待在托盘目录之外，
+   否则一跑起来就把要替换的目录锁住了）。
+   更新器等托盘退出（最多 60 秒）→ 备份 → 覆盖 → 删掉新版里没有的旧文件 → 把托盘拉起来。
+2. **本地服务也得先停**：服务进程占着 payload 里的文件（better-sqlite3 的 `.node` 被 mmap 锁着），
+   不停就换不掉。更新完新托盘再把服务拉起来。
+
+所以升级期间托盘图标会消失几十秒——这是 Windows 上换程序目录的固有代价。
+中途出错会自动回滚到旧版本，并把托盘拉起来；托盘本身始终不受影响。
+
+内网部署走不通 GitHub 时，在托盘配置里指定更新源：
+
+```json
+{
+  "update": {
+    "manifest": "https://内网地址/manifest.json"
+  }
+}
+```
+
+清单格式跟服务端那份一样：`{ "version": "0.2.0", "url": "...", "sha256": "..." }`。
+
+### 打升级包
+
+见「[零环境部署](#零环境部署目标机不用装-node)」一节：包里除了代码，
+还带着运行时依赖与自带 Node，目标机解压即用。
+
+### 验证升级链路
+
+```bash
+npm run verify:upgrade
+```
+
+在临时目录里完整跑一遍：打包 → 预检 → 换代码 → 拉起来 → 验活 → 稳定期观察，
+外加两个坏包：
+
+| 坏在哪 | 该看到什么 |
+| --- | --- |
+| 起来就挂（健康检查之前就退出） | 自动回滚，版本退回上一个可用版本 |
+| 连预检都过不了（语法就是坏的） | 预检当场拦下：代码没换、服务没停，结果记为失败 |
+
+它只能在 Windows 上跑得起来（更新器要 taskkill 杀进程树、要 PowerShell 解压），
+所以 CI 里单开了一个 `windows-latest` 的任务。
+
 ## 自检
 
 ```bash
 npm run lint     # ESLint
 npm test         # 单元测试（node --test）
+npm run build:server  # 编译服务端（发布态入口 server/index.js）
 npm run verify   # 端到端自检
+npm run verify:upgrade  # 升级链路自检（含坏包自动回滚、预检拦截）
+npm run pack:check  # 查发布包是不是真的自带环境
 ```
 
-这三步已经接进 CI（`.github/workflows/ci.yml`）：每次推送与 PR 自动跑
-类型检查 → lint → 单测 → 端到端自检。CI 里的示例库是现场生成的
+这几步已经接进 CI（`.github/workflows/ci.yml`）：每次推送与 PR 自动跑
+类型检查 → lint → 单测 → 编译服务端 → 端到端自检；
+升级链路自检单开一个 `windows-latest` 的任务（它要 taskkill 杀进程树、
+要 PowerShell 解压，Linux 上跑不了，硬凑只会验出一套假环境），
+同一个任务里还会打一次发布包并自检——打包坏了不能等到发版那天才发现。
+CI 里的示例库是现场生成的
 （只导入 `server/db.ts` 即建库、灌示例文档、写出仓库目录），
 不碰仓库里的任何真实数据——`data/` 本来就不该被提交。
 
 `npm run verify` 会在**临时目录复制一份数据库和一份仓库目录**、用独立端口拉起一个服务端实例，
-跑完 69 项检查后自动退出：服务启动、访客与管理员清单一致、错误密码 401、登录与鉴权、
+跑完 77 项检查后自动退出：服务启动、访客与管理员清单一致、错误密码 401、登录与鉴权、
 Agent 配置脱敏、改密后旧令牌立即失效，文档加密全流程
 （密文入库、访客拿不到正文、加密接口不再签发密码、密码相关接口均已下线、管理员免密查看），
 访问授权全流程（访客取会话、无授权 403、提交申请、重复申请 409、访客读不到申请列表、
@@ -723,19 +1020,33 @@ Agent 配置脱敏、改密后旧令牌立即失效，文档加密全流程
 
 | 方法 | 路径 | 权限 |
 | --- | --- | --- |
+| `GET` | `/api/healthz` | 公开（健康探针：只答「能不能用」，库不可用回 503；不泄露版本与路径） |
 | `POST` | `/api/auth/login` | 公开（密码登录；连续失败会触发递增退避，超限返回 429） |
+| `GET` | `/api/auth/me` | 所有人（当前身份；带了令牌但服务端不认时 `tokenInvalid=true`，用来区分「本来就没登录」与「登录被作废」） |
 | `POST` | `/api/auth/change-password` | 管理员（需校验当前密码，改密后旧令牌全部失效） |
 | `GET` | `/api/docs` | 所有人（访客与管理员拿到同一份清单） |
+| `GET` | `/api/docs/search?q=` | 所有人（标题与正文全文搜索；加密文档在库里只有密文，搜不到内容——这条边界由存储方式自动成立） |
 | `POST` `PATCH` `DELETE` | `/api/docs/:id` | 管理员 |
 | `POST` | `/api/docs/upload` | 管理员（上传原件：请求体是文件字节，文件名与 MIME 走 query；只得到一个文件节点，不配同名备注） |
+| `POST` | `/api/docs/import` | 管理员（覆盖式导入浏览器里的历史文档：**先校验后替换**，载荷不合格原样退回，一个字节都不碰） |
 | `GET` | `/api/docs/:id/download` | 所有人（原件按原字节 + 原 MIME + 原文件名回传；笔记导出为 `.md`；加密文档需授权且须含 `download` 能力） |
 | `GET` | `/api/docs/:id/raw` | 所有人（内联预览原件，`inline` + 私有缓存；加密文档需授权且须含 `view` 能力） |
+| `POST` `GET` | `/api/docs/:id/attachments` | 上传=管理员，列表=所有人（上传的请求体是**原始二进制**而非 multipart：文件格式千差万别，「一个文件一段字节」才是统一的） |
+| `GET` | `/api/attachments/:id/download` | 所有人（按原始文件名回传，浏览器据此决定怎么打开） |
+| `PATCH` | `/api/attachments/:id` | 管理员（附件改名） |
+| `POST` | `/api/attachments/:id/move` | 管理员（换一篇文档挂着；只改宿主指针，不搬字节——内容寻址下同一份内容在磁盘上只有一份） |
+| `DELETE` | `/api/attachments/:id` | 管理员（删附件） |
+| `GET` `POST` | `/api/repos` | 读=所有人，写=管理员（仓库清单 / 新建；仓库只是资料的组织方式，不是保密边界，同名返回 409） |
+| `PATCH` `DELETE` | `/api/repos/:id` | 管理员（改仓库 / 删仓库） |
+| `POST` | `/api/repos/:id/docs` | 管理员（往仓库里导文档） |
 | `POST` | `/api/docs/:id/encrypt` | 管理员（首次加密，不签发任何密码） |
 | `POST` | `/api/docs/:id/decrypt` | 管理员（取消加密，明文写回） |
+| `POST` | `/api/docs/:id/reveal` | 管理员（免密查看加密文档正文；解密全程在服务端完成，密文不下发到浏览器） |
 | `GET` `POST` | `/api/auth/guest` | 所有人（访客会话：取回 / 修改昵称，凭证在 httpOnly cookie 里） |
 | `POST` | `/api/docs/:id/access-request` | 所有人（申请访问加密文档，重复申请 409） |
 | `POST` | `/api/docs/:id/access-open` | 所有人（凭已批准授权免密打开；无授权 403 并附 reason） |
 | `GET` | `/api/docs/:id/access-status` | 所有人（访客此刻的权限状态与能力，不含正文；界面据此收敛下载按钮） |
+| `GET` | `/api/docs/:id/access-watch` | 有授权的访客（SSE：授权被撤销或过期时即刻通知，对方的明文当场消失，不用等他下次请求才发现） |
 | `GET` | `/api/access-requests` | 管理员（待审批 / 已批 / 已拒；可按 docId 过滤） |
 | `POST` | `/api/access-requests/:rid/approve` | 管理员（批准即授权，expiresInDays 为 0 表示长期；capabilities 默认只有 `view`） |
 | `POST` | `/api/access-requests/:rid/reject` | 管理员（拒绝申请） |
@@ -744,15 +1055,24 @@ Agent 配置脱敏、改密后旧令牌立即失效，文档加密全流程
 | `GET` | `/api/docs/:id/access-grants` | 管理员（某篇文档的授权名单，含每条的能力） |
 | `PATCH` | `/api/docs/:id/access-grants/:gid` | 管理员（在线调整授权能力与有效期，并留一条 `adjust` 审计） |
 | `DELETE` | `/api/docs/:id/access-grants/:gid` | 管理员（收回授权，即刻生效） |
+| `POST` | `/api/access-grants/bulk` | 管理员（批量授权：直接给某个访客在多篇文档上开口子，不经过申请） |
+| `GET` | `/api/access-guests` | 管理员（已知访客清单，批量授权时供管理员「选谁」） |
 | `GET` | `/api/access-audit` | 管理员（访问审计流水；可按 docId 过滤） |
 | `GET` `PUT` | `/api/agent/config` | 管理员（Key 不回显） |
 | `GET` | `/api/agent/status` | 所有人 |
+| `GET` | `/api/agent/usage` | 管理员（token 用量统计；属运营成本数据，不向访客暴露） |
+| `POST` | `/api/agent/polish` | 管理员（润色：立即返回任务 id，生成在后台推进；正文由客户端传入，服务端只返结果不落库） |
+| `GET` | `/api/agent/polish-tasks` | 管理员（润色任务列表） |
+| `GET` | `/api/agent/polish-tasks/:id/stream` | 管理员（订阅润色进度，SSE；任务已完成时立即补发终态） |
+| `DELETE` | `/api/agent/polish-tasks/:id` | 管理员（删任务；进行中的先中止生成再删记录，两端口径必须一致） |
+| `POST` | `/api/agent/polish-tasks/clear-finished` | 管理员（清空已结束的任务，进行中的原样保留） |
 | `POST` | `/api/agent/ask` | 按 `allowGuest` 判定 |
 | `GET` `PUT` | `/api/dingtalk/config` | 管理员（密钥不回显） |
 | `POST` | `/api/dingtalk/test` | 管理员（按草稿配置发一条测试消息） |
 | `GET` `POST` | `/api/reminders` | 管理员（提醒清单 / 新建提醒） |
 | `PATCH` `DELETE` | `/api/reminders/:id` | 管理员（改时间、标记完成、取消、删除） |
 | `POST` | `/api/reminders/:id/fire` | 管理员（立即推送，与自动触发同一套逻辑） |
+| `GET` `POST` | `/api/admin/update` | 管理员（查更新 / 执行升级；详见「自动升级」章节） |
 
 ### 运维接口（机器令牌）
 
@@ -765,6 +1085,8 @@ Agent 配置脱敏、改密后旧令牌立即失效，文档加密全流程
 | `GET` | `/api/manage/logs?tail=N` | 最近 N 行日志（默认 200，内存里最多留 500 行） |
 | `POST` | `/api/manage/restart` | 重启服务（按托管方式选择 systemd / pm2 / docker / 自拉起） |
 | `POST` | `/api/manage/shutdown` | 停掉当前进程（不拉新的）。被托盘托管时拒绝——托盘会把它拉回来 |
+| `GET` | `/api/manage/update` | 查更新（能区分「没有新版本」和「查不到」，这两种在界面上该说的话不一样） |
+| `POST` | `/api/manage/update` | 执行升级（服务退出后由独立进程替换代码；校验不过或替换失败会自动回滚） |
 
 ## License
 
