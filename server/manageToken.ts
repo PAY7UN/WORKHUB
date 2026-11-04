@@ -10,7 +10,7 @@
  * 那台机器上没有人登录过服务端，自然也没有管理员会话可用。
  * 发放这把钥匙的动作必须能在这台服务器上离线完成。
  *
- * 为什么刻意不 import db.ts / config.ts：那两个模块一旦加载就会校验 MDHUB_SECRET
+ * 为什么刻意不 import db.ts / config.ts：那两个模块一旦加载就会校验 WORKHUB_SECRET
  * 并可能直接终止进程，还顺带建表、灌种子。这条命令的价值在于「随时能用」，
  * 不该因为「另一个密钥没配好」而跑不起来。schema.ts 是纯的（不含配置校验），
  * 直接用它开库即可。
@@ -31,7 +31,7 @@ const USAGE = [
   '  npm run manage:token -- revoke <令牌id>  撤销一把令牌',
   '  npm run manage:token -- cleanup [标签]   撤销该标签下从未使用过的令牌（默认 windows service）',
   '',
-  `数据库：${displayPath(DB_PATH)}（可用环境变量 MDHUB_DB_V2 / MDHUB_DB 覆盖）`,
+  `数据库：${displayPath(DB_PATH)}（可用环境变量 WORKHUB_DB_V2 / WORKHUB_DB 覆盖）`,
 ].join('\n');
 
 /** 打印可操作的失败原因后退出。exit code 1 便于脚本或 CI 感知 */

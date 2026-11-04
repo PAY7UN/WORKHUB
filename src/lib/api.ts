@@ -85,7 +85,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     // 申请与授权都认不出「是谁」
     res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' });
   } catch {
-    throw new ApiError('无法连接服务端，请确认后端已启动（端口见 .env 的 MDHUB_PORT）', 0);
+    throw new ApiError('无法连接服务端，请确认后端已启动（端口见 .env 的 WORKHUB_PORT）', 0);
   }
 
   // 只有服务端明确标记「令牌已过期/失效」时才清登录态。

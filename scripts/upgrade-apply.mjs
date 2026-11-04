@@ -33,6 +33,7 @@ import {
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { envValue } from '../server/env.ts';
 
 const args = {};
 {
@@ -300,14 +301,14 @@ async function preflight() {
   const port = await findFreePort();
   const env = {
     ...process.env,
-    MDHUB_PORT: String(port),
-    MDHUB_DB_V2: join(work, 'preflight.db'),
-    MDHUB_VAULT_DIR: join(work, 'vault'),
-    MDHUB_ADMIN_PASSWORD: randomBytes(12).toString('base64url'),
-    MDHUB_LOG_LEVEL: 'warn',
+    WORKHUB_PORT: String(port),
+    WORKHUB_DB_V2: join(work, 'preflight.db'),
+    WORKHUB_VAULT_DIR: join(work, 'vault'),
+    WORKHUB_ADMIN_PASSWORD: randomBytes(12).toString('base64url'),
+    WORKHUB_LOG_LEVEL: 'warn',
     // 标记：这是隔离的预检实例，别碰生产资源。
     // 服务端代码可以据此分辨「预检」和「正式运行」。
-    MDHUB_PREFLIGHT: '1',
+    WORKHUB_PREFLIGHT: '1',
   };
 
   log('info', `开始预检：在隔离目录里起一个 ${entry} 实例（端口 ${port}）`);
@@ -360,12 +361,12 @@ async function preflight() {
  */
 function resolvePort() {
   // 1. 环境变量最准：更新器是服务进程拉起来的，继承的就是服务自己在用的端口
-  const fromEnv = Number(process.env.MDHUB_PORT ?? '');
+  const fromEnv = Number(envValue('PORT') || '');
   if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
 
   // 2. .env 里也可能有（服务是用 --env-file 起的，端口写在那儿）
   try {
-    const match = readFileSync(join(ROOT, '.env'), 'utf8').match(/^\s*MDHUB_PORT\s*=\s*(\d+)/m);
+    const match = readFileSync(join(ROOT, '.env'), 'utf8').match(/^\s*(?:WORKHUB|MDHUB)_PORT\s*=\s*(\d+)/m);
     if (match) return Number(match[1]);
   } catch {
     // 没有 .env
@@ -763,7 +764,7 @@ async function main() {
   // 健康检查过了不等于稳：再盯一会儿，
   // 确认它没有「起来几秒就自己退出」——那种情况一旦放过去，
   // 更新器就收工了，谁也不会再管它，坏版本会一直留在生产上。
-  const stabilizeMs = Number(process.env.MDHUB_UPGRADE_STABILIZE_MS ?? 15000);
+  const stabilizeMs = Number(envValue('UPGRADE_STABILIZE_MS') || 15000);
   if (stabilizeMs > 0) {
     log('info', `进入稳定期观察（${Math.round(stabilizeMs / 1000)} 秒）`);
     const stable = await watchStability(port, newPid, stabilizeMs);

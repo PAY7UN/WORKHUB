@@ -3,7 +3,7 @@
  *
  * 为什么不让各处直接 console.log：
  * 1. 格式统一——一律 `[workhub][级别]` 前缀，grep `[workhub][error]` 就能捞出全部错误；
- * 2. 分级可控——MDHUB_LOG_LEVEL=silent 可在 CI / 容器里彻底静音，debug 用于排查；
+ * 2. 分级可控——WORKHUB_LOG_LEVEL=silent 可在 CI / 容器里彻底静音，debug 用于排查；
  * 3. 强制脱敏——所有入参都过一遍 shared/redact.ts，密钥不会因为某次
  *    「顺手把整个错误对象打出来」而进日志；
  * 4. 流向正确——error / warn 走 stderr，info / debug 走 stdout，
@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { redact } from '../shared/redact.ts';
+import { envValue } from './env.ts';
 
 export type LogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug';
 
@@ -26,11 +27,11 @@ const LEVEL_WEIGHT: Record<LogLevel, number> = {
 };
 
 function readLogLevel(): LogLevel {
-  const raw = (process.env.MDHUB_LOG_LEVEL ?? '').trim().toLowerCase();
+  const raw = envValue('LOG_LEVEL').toLowerCase();
   return raw in LEVEL_WEIGHT ? (raw as LogLevel) : 'info';
 }
 
-/** 当前生效的日志级别（由 MDHUB_LOG_LEVEL 覆盖，默认 info） */
+/** 当前生效的日志级别（由 WORKHUB_LOG_LEVEL 覆盖，默认 info） */
 export const LOG_LEVEL = readLogLevel();
 
 /**
@@ -118,7 +119,7 @@ export const logger = {
    * 用户拿到的是一把开不了门的钥匙，且完全看不出哪里不对。
    * 既然这个通道的用途就是「把内容原样交给用户」，就不该再动它的字符。
    *
-   * 为什么不受级别影响：那行字不是「日志」而是「凭证」。被 MDHUB_LOG_LEVEL=silent
+   * 为什么不受级别影响：那行字不是「日志」而是「凭证」。被 WORKHUB_LOG_LEVEL=silent
    * 静默掉的话，用户会拿着一个自己没见过的密码去登录，然后被挡在门外却查不到原因。
    * 代价是它必然出现在启动日志里，所以调用处必须同时提醒「别公开分享这段日志」。
    */
@@ -136,7 +137,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * 绝对路径会带出操作系统用户名目录（Windows 上是 C:\Users\xxx），
  * 而启动日志往往被原样贴进 issue 或公开仓库，等于顺带公开了本机目录结构。
  * 仓库内的路径给相对形式；仓库外的路径把家目录替换成 ~，其余原样保留
- * （用户显式指定了 MDHUB_DB=/data/mdhub.db 这种路径时，他需要看到它才能找得到）。
+ * （用户显式指定了 WORKHUB_DB=/data/mdhub.db 这种路径时，他需要看到它才能找得到）。
  */
 export function displayPath(target: string): string {
   const rel = relative(ROOT, target);

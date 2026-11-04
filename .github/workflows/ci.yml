@@ -41,11 +41,11 @@ jobs:
         run: |
           # 自检脚本要复制一份「正在使用的库」再验证，所以先造一份出来：
           # 只导入 db.ts 就会建库、灌示例文档，并把正文写进仓库目录。
-          node -e "console.log('MDHUB_SECRET=' + require('crypto').randomBytes(32).toString('hex'))" > .env
-          echo "MDHUB_ADMIN_PASSWORD=CiCheck#2026a" >> .env
-          # --env-file-if-exists 不能省：缺 MDHUB_SECRET 时服务端会拒绝加载，
+          node -e "console.log('WORKHUB_SECRET=' + require('crypto').randomBytes(32).toString('hex'))" > .env
+          echo "WORKHUB_ADMIN_PASSWORD=CiCheck#2026a" >> .env
+          # --env-file-if-exists 不能省：缺 WORKHUB_SECRET 时服务端会拒绝加载，
           # 那样连库都建不出来。
-          MDHUB_SEED_DEMO=1 node --env-file-if-exists=.env -e "import('./server/db.ts')"
+          WORKHUB_SEED_DEMO=1 node --env-file-if-exists=.env -e "import('./server/db.ts')"
 
       - name: 端到端自检
         run: npm run verify
@@ -84,7 +84,7 @@ jobs:
         run: |
           # 自带运行时直接用 CI 自己的 Node：版本跟依赖里的原生二进制对得上，
           # 也不用联网下载几十兆
-          $env:MDHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
+          $env:WORKHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
           npm run pack:server -- --out release
           npm run pack:check
 
@@ -94,6 +94,6 @@ jobs:
       - name: 打托盘包并自检
         shell: pwsh
         run: |
-          $env:MDHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
+          $env:WORKHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
           npm run pack:tray
           npm run pack:check

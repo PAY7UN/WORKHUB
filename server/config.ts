@@ -1,7 +1,7 @@
 /**
  * 运行期配置：集中读取环境变量，并在模块加载期强制校验。
  *
- * 安全要点：JWT 签名密钥与 API Key 加密主密钥同源（MDHUB_SECRET）。
+ * 安全要点：JWT 签名密钥与 API Key 加密主密钥同源（WORKHUB_SECRET）。
  * 一旦它缺失、过弱或取到公开默认值，任何人都能自签管理员令牌接管全站
  * 文档，或直接解密库中的模型密钥。因此这里不在缺失时静默回退，而是
  * 打印可操作的修复指引并终止加载——让不安全配置「起不来」，
@@ -9,9 +9,10 @@
  */
 import { randomBytes } from 'node:crypto';
 import { logger } from './logger.ts';
+import { envFlag, envValue } from './env.ts';
 
-/** 仅在显式设置 MDHUB_ALLOW_INSECURE_DEV=1 时才允许使用的开发默认值 */
-const DEV_FALLBACK_SECRET = 'mdhub-dev-secret-change-me';
+/** 仅在显式设置 WORKHUB_ALLOW_INSECURE_DEV=1 时才允许使用的开发默认值 */
+const DEV_FALLBACK_SECRET = 'workhub-dev-secret-change-me';
 const DEV_FALLBACK_ADMIN_PASSWORD = 'admin123';
 
 /** 签名密钥最小字符数，低于此值视为弱密钥 */
@@ -19,16 +20,11 @@ const MIN_SECRET_LENGTH = 32;
 
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
-const ALLOW_DEV_FALLBACK = process.env.MDHUB_ALLOW_INSECURE_DEV === '1';
+const ALLOW_DEV_FALLBACK = envFlag('ALLOW_INSECURE_DEV');
 
 /** 生成强随机密钥的提示命令 */
 const GENERATE_HINT =
   'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"';
-
-/** 读取环境变量并去除首尾空白；未设置与空值一律视为「未配置」 */
-function readEnv(name: string): string {
-  return (process.env[name] ?? '').trim();
-}
 
 /** 打印修复指引后终止加载（抛错使进程以非零码退出） */
 function abortStartup(title: string, details: string[]): never {
@@ -44,11 +40,11 @@ function abortStartup(title: string, details: string[]): never {
  * 本地开发需显式选择「写 .env」或「开启开发开关」之一。
  */
 function loadSecret(): string {
-  const configured = readEnv('MDHUB_SECRET');
+  const configured = envValue('SECRET');
 
   if (configured.length > 0) {
     if (configured.length < MIN_SECRET_LENGTH) {
-      abortStartup(`MDHUB_SECRET 过弱（当前 ${configured.length} 字符，至少 ${MIN_SECRET_LENGTH}）`, [
+      abortStartup(`WORKHUB_SECRET 过弱（当前 ${configured.length} 字符，至少 ${MIN_SECRET_LENGTH}）`, [
         '弱密钥可被离线爆破，请使用 32 字节随机值。',
         `生成方式：${GENERATE_HINT}`,
       ]);
@@ -57,7 +53,7 @@ function loadSecret(): string {
   }
 
   if (IS_PRODUCTION) {
-    abortStartup('生产环境未配置 MDHUB_SECRET', [
+    abortStartup('生产环境未配置 WORKHUB_SECRET', [
       '该密钥同时用于 JWT 签名与 API Key 加密，缺失等同于全站权限失守。',
       '请在 .env 或系统环境变量中设置后再启动。',
       `生成方式：${GENERATE_HINT}`,
@@ -69,10 +65,10 @@ function loadSecret(): string {
     return DEV_FALLBACK_SECRET;
   }
 
-  abortStartup('未配置 MDHUB_SECRET', [
+  abortStartup('未配置 WORKHUB_SECRET', [
     '本地开发请二选一：',
-    `  1) 在 app/.env 中设置 MDHUB_SECRET（推荐）：${GENERATE_HINT}`,
-    '  2) 设置 MDHUB_ALLOW_INSECURE_DEV=1，显式承认这是开发环境',
+    `  1) 在 app/.env 中设置 WORKHUB_SECRET（推荐）：${GENERATE_HINT}`,
+    '  2) 设置 WORKHUB_ALLOW_INSECURE_DEV=1，显式承认这是开发环境',
   ]);
 }
 
@@ -82,11 +78,11 @@ function loadSecret(): string {
  * 避免默认弱口令在开发环境里形成习惯。
  */
 function loadAdminPassword(): string {
-  const configured = readEnv('MDHUB_ADMIN_PASSWORD');
+  const configured = envValue('ADMIN_PASSWORD');
   if (configured.length > 0) return configured;
 
   if (IS_PRODUCTION) {
-    abortStartup('生产环境未配置 MDHUB_ADMIN_PASSWORD', [
+    abortStartup('生产环境未配置 WORKHUB_ADMIN_PASSWORD', [
       '该密码会在首次初始化时写入 users 表，缺失将退化为公开弱口令。',
       '请先设置一个强密码再启动。',
     ]);
@@ -95,8 +91,8 @@ function loadAdminPassword(): string {
   if (ALLOW_DEV_FALLBACK) return DEV_FALLBACK_ADMIN_PASSWORD;
 
   const generated = randomBytes(12).toString('base64url');
-  // notice：密码是「交付」而不是「日志」，不随 MDHUB_LOG_LEVEL 一起被静默
-  logger.notice(`未配置 MDHUB_ADMIN_PASSWORD，已生成一次性管理员密码：${generated}`);
+  // notice：密码是「交付」而不是「日志」，不随 WORKHUB_LOG_LEVEL 一起被静默
+  logger.notice(`未配置 WORKHUB_ADMIN_PASSWORD，已生成一次性管理员密码：${generated}`);
   logger.notice('该密码仅在此处显示一次，请立即记录到密码管理器。');
   logger.notice('提醒：启动日志里含这行密码，转贴日志前请先把它删掉。');
   return generated;

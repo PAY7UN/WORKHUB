@@ -8,7 +8,7 @@
   "update": {},
   "_说明": {
     "mode": "local = 本机自己跑服务；remote = 只连远端服务器",
-    "target": "留空则本地模式按 .env 里的 MDHUB_PORT 推 http://127.0.0.1:端口；remote 模式必填",
+    "target": "留空则本地模式按 .env 里的 WORKHUB_PORT 推 http://127.0.0.1:端口；remote 模式必填",
     "appDir": "工作目录（.env / 数据库 / 日志放这儿）。留空：打包态用 %LOCALAPPDATA%\\WorkHub，开发态用仓库根",
     "entry": "服务入口。相对路径按代码目录拼；打包态代码目录在安装目录里，一般不用改",
     "token": "remote 模式的机器令牌（服务器上用 npm run manage:token -- issue \"<用途>\" 发放）。也可用环境变量 WORKHUB_MANAGE_TOKEN 代替",

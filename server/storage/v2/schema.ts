@@ -27,7 +27,7 @@ import { resolveDbPath } from '../../paths.ts';
  * v2 主库路径。
  *
  * 优先级与环境变量名都在 paths.ts 里定，别处不再各写一份——
- * 之前这里只认 MDHUB_DB_V2，而 db.ts 认 MDHUB_DB_V2 → MDHUB_DB，
+ * 之前这里只认 WORKHUB_DB_V2，而 db.ts 认 WORKHUB_DB_V2 → WORKHUB_DB，
  * 两边对「用户到底配了哪个」的理解并不一致。
  */
 export const DB_V2_PATH = resolveDbPath();

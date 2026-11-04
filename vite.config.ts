@@ -6,15 +6,17 @@ import { DEFAULT_API_PORT } from "./shared/constants.ts"
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
-  // 与服务端共用 .env 的 MDHUB_PORT，避免代理端口写死后无法调整。
+  // 与服务端共用 .env 的 WORKHUB_PORT，避免代理端口写死后无法调整。
   // 进程环境变量优先于 .env 文件：这样可以在不改动 .env 的前提下，
   // 临时把前端指到另一个 API 实例（如并行跑一个测试库）。
-  const env = loadEnv(mode, process.cwd(), "MDHUB_")
-  const apiPort = process.env.MDHUB_PORT || env.MDHUB_PORT || String(DEFAULT_API_PORT)
+  // 旧名 MDHUB_ 仍然加载：改名前写下的 .env 不该就此失效。
+  const env = loadEnv(mode, process.cwd(), ["WORKHUB_", "MDHUB_"])
+  const apiPort =
+    process.env.WORKHUB_PORT || process.env.MDHUB_PORT || env.WORKHUB_PORT || env.MDHUB_PORT || String(DEFAULT_API_PORT)
   // 前端 dev server 端口与后端 API 端口是两回事：前者决定「别人在浏览器里输哪个地址」，
   // 后者只被本机代理访问。默认值取 8080 而不是 vite 默认的 5173，因为路由器的
   // 端口转发规则已按 8080 配置，写死在这里省掉每次改转发规则的麻烦。
-  const webPort = Number(env.MDHUB_WEB_PORT || 8080)
+  const webPort = Number(env.WORKHUB_WEB_PORT || env.MDHUB_WEB_PORT || 8080)
 
   return {
     base: './',

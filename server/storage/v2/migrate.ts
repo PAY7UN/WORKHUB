@@ -131,7 +131,7 @@ export function migrate(
   if (!hasOld) {
     oldDb.close();
     newDb.close();
-    throw new Error(`旧库里没有 docs 表，不是 MDHUB 库：${oldDbPath}`);
+    throw new Error(`旧库里没有 docs 表，不是 WorkHub 库：${oldDbPath}`);
   }
 
   // 迁移要能重跑：先把目标库里的内容表清空。

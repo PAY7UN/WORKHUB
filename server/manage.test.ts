@@ -101,7 +101,7 @@ test('校验会记下最近使用时间', () => {
 
 test('重启策略：显式命令优先，其次守护进程，最后自己拉起', () => {
   // 1. 运维指定了命令 → 用命令
-  assert.equal(planRestart({ MDHUB_RESTART_CMD: 'systemctl restart workhub' }).strategy, 'command');
+  assert.equal(planRestart({ WORKHUB_RESTART_CMD: 'systemctl restart workhub' }).strategy, 'command');
 
   // 2. 认得出守护进程 → 退出即可，守护进程会接手
   assert.equal(planRestart({ INVOCATION_ID: 'abc' }).strategy, 'supervisor');

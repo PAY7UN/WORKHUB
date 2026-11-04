@@ -26,6 +26,7 @@ import { DEFAULT_API_PORT } from '../shared/constants.ts';
 import { attachUser, requireAdmin, signToken } from './auth.ts';
 import { clearLoginFailures, loginGate, noteLoginFailure } from './loginThrottle.ts';
 import { IS_PRODUCTION, USING_DEV_FALLBACK } from './config.ts';
+import { envValue } from './env.ts';
 import { displayPath, logger } from './logger.ts';
 import {
   countRunningPolishTasks,
@@ -150,7 +151,7 @@ import {
 } from './password.ts';
 
 const app = express();
-const PORT = Number(process.env.MDHUB_PORT ?? DEFAULT_API_PORT);
+const PORT = Number(envValue('PORT') || DEFAULT_API_PORT);
 
 /**
  * 能力数组的中文标签。
@@ -805,12 +806,12 @@ app.patch('/api/docs/:id', requireAdmin, (req, res) => {
   try {
     updateDocRow(id, patch, nowUserId(req));
   } catch (err) {
-    // 加密文档的数据密钥取不回：主密钥（MDHUB_SECRET）与库里的密文已对不上。
+    // 加密文档的数据密钥取不回：主密钥（WORKHUB_SECRET）与库里的密文已对不上。
     // 这时必须让保存失败并说清楚原因——返回 200 的话，编辑器会以为存好了，
     // 而正文其实还停在旧版本，是一场看不见的数据丢失。
     if (err instanceof DekUnavailableError) {
       res.status(500).json({
-        error: '保存失败：服务端密钥无法解密该文档，请检查 MDHUB_SECRET 是否被更换',
+        error: '保存失败：服务端密钥无法解密该文档，请检查 WORKHUB_SECRET 是否被更换',
       });
       return;
     }
@@ -2355,7 +2356,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
  * 继续跑只会产生更诡异的问题），只是改走本项目的日志出口：格式一致、照样脱敏。
  *
  * 用 fatal 而不是 error：进程马上就要没了，这一行是最后一条消息，
- * 不能被 MDHUB_LOG_LEVEL=silent 一起静默掉。
+ * 不能被 WORKHUB_LOG_LEVEL=silent 一起静默掉。
  */
 process.on('unhandledRejection', (reason) => {
   logger.fatal('未处理的 Promise 拒绝，进程即将退出', reason);

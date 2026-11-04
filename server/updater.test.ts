@@ -28,12 +28,12 @@ test('版本比较：按数字段比，不受 v 前缀和预发布标记干扰',
 test('更新源：自定义源优先于 GitHub', () => {
   // 内网部署拿不到 GitHub，有自定义源就必须走自定义源
   const custom = resolveUpdateSource({
-    MDHUB_UPDATE_MANIFEST: 'https://intranet/manifest.json',
-    MDHUB_UPDATE_URL: 'https://intranet/pkg.zip',
+    WORKHUB_UPDATE_MANIFEST: 'https://intranet/manifest.json',
+    WORKHUB_UPDATE_URL: 'https://intranet/pkg.zip',
   });
   assert.equal(custom.kind, 'manifest');
 
-  const direct = resolveUpdateSource({ MDHUB_UPDATE_URL: 'https://intranet/pkg.zip' });
+  const direct = resolveUpdateSource({ WORKHUB_UPDATE_URL: 'https://intranet/pkg.zip' });
   assert.equal(direct.kind, 'url');
 
   const gh = resolveUpdateSource({});
@@ -41,8 +41,28 @@ test('更新源：自定义源优先于 GitHub', () => {
   assert.match(gh.url, /releases\/latest$/);
 
   // 仓库名可配：项目要是 fork 了或者搬家了，不用改代码
-  const forked = resolveUpdateSource({ MDHUB_UPDATE_REPO: 'someone/FORK' });
+  const forked = resolveUpdateSource({ WORKHUB_UPDATE_REPO: 'someone/FORK' });
   assert.match(forked.url, /someone\/FORK/);
+});
+
+test('更新源：旧变量名仍然生效', () => {
+  // 内网部署往往在改名前就配好了更新源，认不出旧名等于「升级功能忽然失灵」
+  const old = resolveUpdateSource({ MDHUB_UPDATE_MANIFEST: 'https://intranet/manifest.json' });
+  assert.equal(old.kind, 'manifest');
+  assert.equal(old.url, 'https://intranet/manifest.json');
+
+  const oldDirect = resolveUpdateSource({ MDHUB_UPDATE_URL: 'https://intranet/pkg.zip' });
+  assert.equal(oldDirect.kind, 'url');
+
+  const oldRepo = resolveUpdateSource({ MDHUB_UPDATE_REPO: 'someone/FORK' });
+  assert.match(oldRepo.url, /someone\/FORK/);
+
+  // 新旧都在时以新名为准
+  const both = resolveUpdateSource({
+    WORKHUB_UPDATE_MANIFEST: 'https://new/manifest.json',
+    MDHUB_UPDATE_MANIFEST: 'https://old/manifest.json',
+  });
+  assert.equal(both.url, 'https://new/manifest.json');
 });
 
 test('托管方式判断：谁在管这个进程，决定升级后谁来拉起', () => {
@@ -51,7 +71,7 @@ test('托管方式判断：谁在管这个进程，决定升级后谁来拉起',
   // 托盘：托盘盯着服务进程，死了会拉
   assert.equal(planUpgradeRestart({ WORKHUB_PARENT_PID: '1234' }).mode, 'tray');
   // 运维自己指定了重启命令
-  assert.equal(planUpgradeRestart({ MDHUB_RESTART_CMD: 'systemctl restart workhub' }).mode, 'command');
+  assert.equal(planUpgradeRestart({ WORKHUB_RESTART_CMD: 'systemctl restart workhub' }).mode, 'command');
   // systemd / pm2
   assert.equal(planUpgradeRestart({ INVOCATION_ID: 'abc' }).mode, 'supervisor');
   assert.equal(planUpgradeRestart({ PM2_HOME: '/root/.pm2' }).mode, 'supervisor');
@@ -61,7 +81,7 @@ test('托管方式判断：谁在管这个进程，决定升级后谁来拉起',
   // 宿主/托盘排在命令前面：它们已经在管这个进程了，
   // 再按命令去重启就是两套人同时管，抢端口
   assert.equal(
-    planUpgradeRestart({ WORKHUB_SERVICE_HOST: '1', MDHUB_RESTART_CMD: 'systemctl restart x' }).mode,
+    planUpgradeRestart({ WORKHUB_SERVICE_HOST: '1', WORKHUB_RESTART_CMD: 'systemctl restart x' }).mode,
     'host',
   );
 });

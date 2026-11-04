@@ -1,4 +1,4 @@
-﻿# WorkHub
+# WorkHub
 
 [![CI](https://github.com/PAY7UN/WORKHUB/actions/workflows/ci.yml/badge.svg)](https://github.com/PAY7UN/WORKHUB/actions/workflows/ci.yml)
 
@@ -81,8 +81,8 @@ workhub/
 ```
 
 > 数据库落在**项目根的 `data/`**，而不是 `server/data/`——`server/paths.ts` 以自身目录为基准
-> 解析出项目根，默认写到 `<项目根>/data/mdhub-v2.db`。用 `MDHUB_DB_V2` 可改到别处。
-> 路径优先级（`MDHUB_DB_V2` → `MDHUB_DB` → 默认）只在这一个文件里定义，别处不再各写一份。
+> 解析出项目根，默认写到 `<项目根>/data/mdhub-v2.db`。用 `WORKHUB_DB_V2` 可改到别处。
+> 路径优先级（`WORKHUB_DB_V2` → `WORKHUB_DB` → 默认）只在这一个文件里定义，别处不再各写一份。
 >
 > 正文不在库里，在 `data/vault/` 的仓库目录里；库里只留索引（路径、哈希、大小）。
 > 老库 `data/mdhub.db` 是 v1 时代的遗留，作为回退底牌保留，不参与运行。
@@ -105,7 +105,7 @@ npm run dev
 npm run dev:all
 ```
 
-首次启动会在 `data/mdhub-v2.db` 自动建库。示例文档**仅在显式设置 `MDHUB_SEED_DEMO=1` 时**灌入，
+首次启动会在 `data/mdhub-v2.db` 自动建库。示例文档**仅在显式设置 `WORKHUB_SEED_DEMO=1` 时**灌入，
 正式部署默认是空库（详见 `.env.example`）。
 
 ### 生产模式：一个进程就是完整应用
@@ -193,7 +193,7 @@ npm run deploy -- -Package .\release\workhub-server-1.0.0.zip
 | --- | --- |
 | `-Package <路径或URL>` | 发布包。不填就只就地重装服务（改完配置、换了 Node 之后用） |
 | `-AppDir <目录>` | 部署目录 |
-| `-Port <端口>` | 服务端口（不填就读 `.env` 里的 `MDHUB_PORT`，再不行用 8787） |
+| `-Port <端口>` | 服务端口（不填就读 `.env` 里的 `WORKHUB_PORT`，再不行用 8787） |
 | `-Task` | 用任务计划程序代替 Windows 服务（不需要管理员权限） |
 | `-Force` | 端口被占用时也继续 |
 | `-NoStart` | 只铺文件，不注册服务 |
@@ -404,7 +404,7 @@ npm run pack:tray
 
 之所以要分开：服务端是**按代码目录**定位数据库和 vault 的（`server/storage/v2/db.ts`），
 打包后代码在安装目录里，数据库要是跟着落在那儿，普通用户根本写不进去——
-服务一起来就报错。所以打包态用 `MDHUB_DB_V2` / `MDHUB_VAULT_DIR` 把它们掰到用户目录。
+服务一起来就报错。所以打包态用 `WORKHUB_DB_V2` / `WORKHUB_VAULT_DIR` 把它们掰到用户目录。
 
 首次运行的行为：
 
@@ -500,13 +500,13 @@ Get-NetTCPConnection -State Listen -LocalPort 8080
 
 | 场景 | 做法 |
 | --- | --- |
-| 想自己指定初始密码 | 在 `.env` 写 `MDHUB_ADMIN_PASSWORD=...`，**首次建库时**写入 |
+| 想自己指定初始密码 | 在 `.env` 写 `WORKHUB_ADMIN_PASSWORD=...`，**首次建库时**写入 |
 | 登录后想换密码 | 侧边栏头像旁的钥匙图标，需输入当前密码 |
 | 已经进不去 / 忘了密码 | 见下方「忘记密码」 |
 
-本地开发若未配置 `MDHUB_ADMIN_PASSWORD`，服务端会在**首次建库时**生成一个随机密码并打印到启动日志，**只显示这一次**，请立刻记录。之后想换成自己好记的，登录后用侧边栏的钥匙图标修改即可。
+本地开发若未配置 `WORKHUB_ADMIN_PASSWORD`，服务端会在**首次建库时**生成一个随机密码并打印到启动日志，**只显示这一次**，请立刻记录。之后想换成自己好记的，登录后用侧边栏的钥匙图标修改即可。
 
-> 早期版本文档里的默认密码 `admin123` 已不再适用：它只在显式设置 `MDHUB_ALLOW_INSECURE_DEV=1` 时才会启用。
+> 早期版本文档里的默认密码 `admin123` 已不再适用：它只在显式设置 `WORKHUB_ALLOW_INSECURE_DEV=1` 时才会启用。
 
 ### 忘记密码
 
@@ -522,7 +522,7 @@ npm run admin:password -- --generate
 要点：
 
 - 命令可在服务端运行期间执行（SQLite 处于 WAL 模式，支持并发写）
-- 不依赖 `MDHUB_SECRET` 是否配置，也不会建表或灌种子数据
+- 不依赖 `WORKHUB_SECRET` 是否配置，也不会建表或灌种子数据
 - 改密后**所有已登录设备的下一次请求都会因令牌指纹过期而被要求重新登录**
 - 密码规则与设置页一致：至少 8 位
 
@@ -530,29 +530,32 @@ npm run admin:password -- --generate
 
 复制 `.env.example` 为 `.env` 后按需修改（服务端启动时自动加载）：
 
-> **关于 `MDHUB_` 前缀**：产品名已改为 WorkHub，但环境变量、数据库文件名（`mdhub-v2.db`）、
-> Cookie（`mdhub_sid`）与前端存储键（`mdhub.*`）一律**保持原样**——
-> 这些是运行时契约而非品牌：改掉它们会让既有部署读不到 `.env`、找不到库、
-> 登录态与本地设置全部作废。改品牌不动契约。
+> **关于前缀改名**：环境变量统一用 `WORKHUB_` 前缀，跟产品名对齐。
+> 旧前缀 `MDHUB_` 仍然认——服务端先看新名，新名没有才看旧名；两个都配时以新名为准。
+> 这么做是因为这些变量不是随手配的开关，而是运行时契约：`SECRET` 改名会让
+> 已加密的文档永久无法解密，`PORT` 改名会让托盘与服务端指向不同的端口。
+>
+> 下面几个名字**保持原样**，因为它们存着旧数据，改了等于让既有部署「找不到自己的东西」：
+> 数据库文件名（`mdhub-v2.db`）、Cookie（`mdhub_sid`）、前端存储键（`mdhub.*`）。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `MDHUB_SECRET` | 无（缺失则拒绝启动） | JWT 签名、Agent Key 加密主密钥，以及**文档加密主密钥的种子**（`MASTER_KEY = sha256(MDHUB_SECRET)`），**生产必须配置**；本地需写入 `.env` 或设置 `MDHUB_ALLOW_INSECURE_DEV=1`。改动它会让已加密文档的密文永久无法解密 |
-| `MDHUB_ADMIN_PASSWORD` | 本地随机生成 | 管理员**初始**密码，仅首次建库时写入；已有库请用 `npm run admin:password` 或侧边栏修改，改动此变量对已有库无效 |
-| `MDHUB_PORT` | `8787` | 服务端端口。默认值来自 `shared/constants.ts` 的 `DEFAULT_API_PORT`；改端口时记得连 `tray/main.cjs`、`scripts/install-service.ps1`、`scripts/service/WorkHubService.cs` 这三处镜像一起改（它们读不到 TS，各留了注释指回真源） |
-| `MDHUB_WEB_PORT` | `8080` | 前端 dev server 端口（监听 `0.0.0.0`，供局域网访问） |
-| `MDHUB_DB_V2` | `data/mdhub-v2.db` | 数据库路径（索引库）。`MDHUB_DB` 是 v1 时代的旧变量，仅作兼容兜底 |
-| `MDHUB_VAULT_DIR` | `data/vault` | 仓库目录：正文文件实际存放的位置 |
-| `MDHUB_LOG_LEVEL` | `info` | 服务端日志级别：`silent` / `error` / `warn` / `info` / `debug` |
-| `MDHUB_SEED_DEMO` | 关闭 | 置 `1` 时首次建库灌入示例文档（`shared/seed.ts`）；正式部署保持关闭 |
-| `MDHUB_ALLOW_INSECURE_DEV` | 关闭 | 置 `1` 时允许使用公开的开发默认值（密钥 `mdhub-dev-secret-change-me`、密码 `admin123`）；`NODE_ENV=production` 下无效 |
+| `WORKHUB_SECRET` | 无（缺失则拒绝启动） | JWT 签名、Agent Key 加密主密钥，以及**文档加密主密钥的种子**（`MASTER_KEY = sha256(WORKHUB_SECRET)`），**生产必须配置**；本地需写入 `.env` 或设置 `WORKHUB_ALLOW_INSECURE_DEV=1`。改动它会让已加密文档的密文永久无法解密 |
+| `WORKHUB_ADMIN_PASSWORD` | 本地随机生成 | 管理员**初始**密码，仅首次建库时写入；已有库请用 `npm run admin:password` 或侧边栏修改，改动此变量对已有库无效 |
+| `WORKHUB_PORT` | `8787` | 服务端端口。默认值来自 `shared/constants.ts` 的 `DEFAULT_API_PORT`；改端口时记得连 `tray/main.cjs`、`scripts/install-service.ps1`、`scripts/service/WorkHubService.cs` 这三处镜像一起改（它们读不到 TS，各留了注释指回真源） |
+| `WORKHUB_WEB_PORT` | `8080` | 前端 dev server 端口（监听 `0.0.0.0`，供局域网访问） |
+| `WORKHUB_DB_V2` | `data/mdhub-v2.db` | 数据库路径（索引库）。`WORKHUB_DB` 是 v1 时代的旧变量，仅作兼容兜底；改名前的 `MDHUB_DB_V2` / `MDHUB_DB` 同样认 |
+| `WORKHUB_VAULT_DIR` | `data/vault` | 仓库目录：正文文件实际存放的位置 |
+| `WORKHUB_LOG_LEVEL` | `info` | 服务端日志级别：`silent` / `error` / `warn` / `info` / `debug` |
+| `WORKHUB_SEED_DEMO` | 关闭 | 置 `1` 时首次建库灌入示例文档（`shared/seed.ts`）；正式部署保持关闭 |
+| `WORKHUB_ALLOW_INSECURE_DEV` | 关闭 | 置 `1` 时允许使用公开的开发默认值（密钥 `workhub-dev-secret-change-me`、密码 `admin123`）；`NODE_ENV=production` 下无效 |
 | `NODE_ENV` | 未设置 | 置 `production` 启用生产模式：强制要求显式配置密钥与管理员密码 |
 | `WORKHUB_MANAGE_TOKEN` | 无 | 机器令牌：托盘 remote 模式用；优先于配置文件里的 `token`。**只发给可信机器**，它等价于运维权限 |
-| `MDHUB_UPDATE_REPO` | `PAY7UN/WORKHUB` | 自动升级用的 GitHub 仓库（`owner/repo`）：比对版本、拉取发布包 |
-| `MDHUB_UPDATE_MANIFEST` | 无 | 自定义更新清单地址（JSON：版本号 + 每个文件的 sha256）。设了就不走 GitHub |
-| `MDHUB_UPDATE_URL` | 无 | 升级包直链。设了直接从这个地址下载，不走仓库发布页 |
-| `MDHUB_UPDATE_TOKEN` | 无 | 下载升级包用的 Bearer 令牌（私有仓库或私有清单用） |
-| `MDHUB_RESTART_CMD` | 无 | 升级后由谁把服务拉起来的自定义命令。不设则按托管方式判断：托盘 / Windows 服务宿主 / systemd / pm2 / docker / 都没人管时由更新器自拉起 |
+| `WORKHUB_UPDATE_REPO` | `PAY7UN/WORKHUB` | 自动升级用的 GitHub 仓库（`owner/repo`）：比对版本、拉取发布包 |
+| `WORKHUB_UPDATE_MANIFEST` | 无 | 自定义更新清单地址（JSON：版本号 + 每个文件的 sha256）。设了就不走 GitHub |
+| `WORKHUB_UPDATE_URL` | 无 | 升级包直链。设了直接从这个地址下载，不走仓库发布页 |
+| `WORKHUB_UPDATE_TOKEN` | 无 | 下载升级包用的 Bearer 令牌（私有仓库或私有清单用） |
+| `WORKHUB_RESTART_CMD` | 无 | 升级后由谁把服务拉起来的自定义命令。不设则按托管方式判断：托盘 / Windows 服务宿主 / systemd / pm2 / docker / 都没人管时由更新器自拉起 |
 
 ## 日志
 
@@ -567,7 +570,7 @@ npm run admin:password -- --generate
 | `debug` | 排查用的细节 | stdout |
 | `notice` | 必须让用户看到的关键信息（一次性管理员密码），**不受级别开关影响** | stdout |
 
-用 `MDHUB_LOG_LEVEL` 调整：`silent` 全关、`error` 只留错误、`warn` / `info` 逐级放开、`debug` 最啰嗦。
+用 `WORKHUB_LOG_LEVEL` 调整：`silent` 全关、`error` 只留错误、`warn` / `info` 逐级放开、`debug` 最啰嗦。
 `npm run server > out.log` 时常规输出（`info` / `debug` / `notice`）进 `out.log`，错误（`error` / `warn` / `fatal`）
 仍在控制台——`>` 只重定向 stdout，想把两者收进同一个文件要补 `2>&1`。
 
@@ -581,7 +584,7 @@ npm run admin:password -- --generate
   不带本机用户名目录。上游返回的错误体同样先脱敏再发给浏览器。
   唯一的例外是 `notice`：它承担一次性密码的逐字交付，脱敏规则可能把密码本身改写
   （随机串里恰好出现 `sk-` 就成了 `sk-***`），那就等于给了用户一把开不了门的钥匙。
-- **一次性密码只在启动时打印**。未配置 `MDHUB_ADMIN_PASSWORD` 时生成的那串随机密码会出现在
+- **一次性密码只在启动时打印**。未配置 `WORKHUB_ADMIN_PASSWORD` 时生成的那串随机密码会出现在
   启动日志里（只此一次），它不受日志级别影响。**转贴启动日志前请先把那几行删掉。**
 
 前端日志在 `src/lib/logger.ts`：开发期全开，生产构建只保留 `error`——
@@ -637,7 +640,7 @@ npm run admin:password -- --generate
 
 解锁后的明文只留在浏览器内存里，不写回全局状态、不落 localStorage；退出该文档即需重新申请。
 
-> ⚠️ 主密钥 `MASTER_KEY = sha256(MDHUB_SECRET)`：**改动 `MDHUB_SECRET` 会让既有密文永久无法解密**。
+> ⚠️ 主密钥 `MASTER_KEY = sha256(WORKHUB_SECRET)`：**改动 `WORKHUB_SECRET` 会让既有密文永久无法解密**。
 
 > 升级说明：本次改动会 `DROP` 掉 `docs` 表里的 `enc_wrapped_dek` / `enc_salt` /
 > `enc_pwd_used_at` / `enc_pw_cipher` 四列（访问密码机制的遗留物）。
@@ -706,7 +709,7 @@ npm run admin:password -- --generate
 > 还是包裹数据密钥的密码派生密钥），库一旦被拖走就是一次凭据泄露。
 > 现在服务端只认会话与授权，不认任何共享口令。
 
-**访客侧**：打开加密文档时会先拿自己的会话（`mdhub_sid` httpOnly cookie）去问一次
+**访客侧**：打开加密文档时会先拿自己的会话（`WORKHUB_sid` httpOnly cookie）去问一次
 「有没有已批准的授权」——有就直接打开，没有才显示申请界面。
 填个名字、说明来意即可提交；管理员批准后刷新页面就能看到正文。
 申请被拒会显示「未获批准」，可重新申请。
@@ -863,7 +866,7 @@ front matter（`id` / `name` / `tags` / 时间戳），正文原样保留。
 ### 流程
 
 1. **查版本**：默认去 GitHub 的 `PAY7UN/WORKHUB` 比对 Release；
-   也可以用 `MDHUB_UPDATE_MANIFEST`（自定义清单）或 `MDHUB_UPDATE_URL`（直链）。
+   也可以用 `WORKHUB_UPDATE_MANIFEST`（自定义清单）或 `WORKHUB_UPDATE_URL`（直链）。
    查不到不算失败——没网、限流、压根没发 Release 都会发生，
    所以「没有新版本」和「查不到」在结果里是两种说法，界面上该说的话不一样。
 2. **下载校验解包**：包里有文件清单与每个文件的 sha256，对不上就到此为止。
@@ -894,7 +897,7 @@ front matter（`id` / `name` / `tags` / 时间戳），正文原样保留。
 2. 打健康检查，通了才算这一版能起来；
 3. 起不来就**当场放弃**：代码没换，服务照跑。
 
-预检实例带 `MDHUB_PREFLIGHT=1` 标记——这个标记让「只在正式运行时才犯的错」
+预检实例带 `WORKHUB_PREFLIGHT=1` 标记——这个标记让「只在正式运行时才犯的错」
 （比如依赖真实配置、真实数据才会炸的初始化逻辑）在预检里先暴露出来，
 而不用等真的把生产代码换掉才发现。
 
@@ -902,7 +905,7 @@ front matter（`id` / `name` / `tags` / 时间戳），正文原样保留。
 
 健康检查通过只说明「它起来了」。有些版本起来几秒就挂——
 所以健康检查通过之后还要**观察一段稳定期**（默认 15 秒，
-`MDHUB_UPGRADE_STABILIZE_MS` 可调），期间进程退出就算升级失败。
+`WORKHUB_UPGRADE_STABILIZE_MS` 可调），期间进程退出就算升级失败。
 
 ### 失败回滚
 
@@ -1013,7 +1016,7 @@ Agent 配置脱敏、改密后旧令牌立即失效，文档加密全流程
 改密码那一步同样只在副本上执行。
 
 > 前置条件：先跑过一次 `npm run server` 建好 `data/mdhub-v2.db` 与 `data/vault/`
-> （示例文档需 `MDHUB_SEED_DEMO=1`），脚本会复制这两份做隔离验证；
+> （示例文档需 `WORKHUB_SEED_DEMO=1`），脚本会复制这两份做隔离验证；
 > 没有库时它会直接告诉你缺什么，而不是抛一堆无关错误。
 
 ## 常用接口

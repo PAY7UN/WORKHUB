@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { logger, displayPath } from './logger.ts';
+import { envValueFrom } from './env.ts';
 import { APP_ROOT } from './paths.ts';
 import { currentVersion, planRestartFallback } from './host.ts';
 
@@ -129,12 +130,12 @@ export interface UpdateSource {
  * 有自定义源就一定用它——内网部署拿不到 GitHub，硬走 GitHub 只会一直失败。
  */
 export function resolveUpdateSource(env: NodeJS.ProcessEnv = process.env): UpdateSource {
-  const token = (env.MDHUB_UPDATE_TOKEN ?? '').trim() || undefined;
-  const manifest = (env.MDHUB_UPDATE_MANIFEST ?? '').trim();
+  const token = envValueFrom(env, 'UPDATE_TOKEN') || undefined;
+  const manifest = envValueFrom(env, 'UPDATE_MANIFEST');
   if (manifest) return { kind: 'manifest', url: manifest, token };
-  const direct = (env.MDHUB_UPDATE_URL ?? '').trim();
+  const direct = envValueFrom(env, 'UPDATE_URL');
   if (direct) return { kind: 'url', url: direct, token };
-  const repo = (env.MDHUB_UPDATE_REPO ?? 'PAY7UN/WORKHUB').trim();
+  const repo = envValueFrom(env, 'UPDATE_REPO') || 'PAY7UN/WORKHUB';
   return { kind: 'github', url: `https://api.github.com/repos/${repo}/releases/latest`, token };
 }
 

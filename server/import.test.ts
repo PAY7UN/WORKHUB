@@ -19,9 +19,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const workDir = mkdtempSync(join(tmpdir(), 'mdhub-import-'));
-process.env.MDHUB_DB_V2 = join(workDir, 'test.db');
-process.env.MDHUB_VAULT_DIR = join(workDir, 'vault');
-process.env.MDHUB_SECRET = 'test-secret-for-import-cases-0123456789abcdef';
+process.env.WORKHUB_DB_V2 = join(workDir, 'test.db');
+process.env.WORKHUB_VAULT_DIR = join(workDir, 'vault');
+process.env.WORKHUB_SECRET = 'test-secret-for-import-cases-0123456789abcdef';
 
 const {
   db,

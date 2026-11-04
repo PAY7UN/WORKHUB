@@ -9,11 +9,13 @@
  * 环境变量优先是有意的：配置文件是明文，容易被同步盘、截图、备份带走；
  * 令牌应该由运维自己放进系统环境变量，而不是躺在某个随手能拷走的文件里。
  */
+const { envValue } = require('./env.cjs');
+
 const MANAGE_TOKEN_HEADER = 'x-workhub-token';
 
-/** 取令牌：环境变量优先于配置文件 */
+/** 取令牌：环境变量优先于配置文件（旧名 MDHUB_MANAGE_TOKEN 也认） */
 function manageToken(config) {
-  return String(process.env.WORKHUB_MANAGE_TOKEN || config?.token || '').trim();
+  return envValue(process.env, 'MANAGE_TOKEN') || String(config?.token || '').trim();
 }
 
 /**

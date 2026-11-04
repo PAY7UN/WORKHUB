@@ -28,6 +28,7 @@ const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { envValue } = require('./env.cjs');
 
 /** 托盘升级包的资产名。发布时必须对上这个名字。 */
 const ASSET_PATTERN = /^workhub-tray-.*\.zip$/i;
@@ -74,13 +75,13 @@ function compareVersions(a, b) {
  * 配置来自托盘配置文件（tray.config.json 的 update 段），也可用环境变量覆盖。
  */
 function resolveUpdateSource(config = {}, env = process.env) {
-  const token = (env.WORKHUB_UPDATE_TOKEN ?? '').trim() || undefined;
+  const token = envValue(env, 'UPDATE_TOKEN') || undefined;
   const update = config.update ?? {};
-  const manifest = (update.manifest ?? env.MDHUB_UPDATE_MANIFEST ?? '').trim();
+  const manifest = String(update.manifest ?? '').trim() || envValue(env, 'UPDATE_MANIFEST');
   if (manifest) return { kind: 'manifest', url: manifest, token };
-  const direct = (update.url ?? env.MDHUB_UPDATE_URL ?? '').trim();
+  const direct = String(update.url ?? '').trim() || envValue(env, 'UPDATE_URL');
   if (direct) return { kind: 'url', url: direct, token };
-  const repo = (update.repo ?? env.MDHUB_UPDATE_REPO ?? DEFAULT_REPO).trim();
+  const repo = String(update.repo ?? '').trim() || envValue(env, 'UPDATE_REPO') || DEFAULT_REPO;
   return { kind: 'github', url: `https://api.github.com/repos/${repo}/releases/latest`, token };
 }
 

@@ -1,11 +1,12 @@
 /**
  * SQLite 数据访问层：文档、用户、Agent 配置。
- * API Key 以 AES-256-GCM 加密落库，主密钥来自 config.ts 中已校验的 MDHUB_SECRET。
+ * API Key 以 AES-256-GCM 加密落库，主密钥来自 config.ts 中已校验的 WORKHUB_SECRET。
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ADMIN_PASSWORD, SECRET } from './config.ts';
+import { envFlag } from './env.ts';
 import { logger } from './logger.ts';
 import { hashPassword, verifyPassword } from './password.ts';
 import { openV2Db } from './storage/v2/schema.ts';
@@ -103,7 +104,7 @@ db.pragma('wal_checkpoint(TRUNCATE)');
 /**
  * 主密钥：JWT 签名与密文包裹都基于它。
  * 导出供文档加密使用——服务端用它包裹/解包加密文档的数据密钥。
- * 注意：改动 MDHUB_SECRET 会让既有密文（API Key、加密文档）全部不可解。
+ * 注意：改动 WORKHUB_SECRET 会让既有密文（API Key、加密文档）全部不可解。
  */
 export const MASTER_KEY = createHash('sha256').update(SECRET).digest();
 
@@ -160,10 +161,10 @@ function rowToUser(r: UserRow): User {
 /* ------------------------------ 初始化 ------------------------------ */
 
 /**
- * 示例文档仅在显式开启时灌入（MDHUB_SEED_DEMO=1）。
+ * 示例文档仅在显式开启时灌入（WORKHUB_SEED_DEMO=1）。
  * 正式部署默认为空库，避免示例内容被当成真实数据带进生产。
  */
-if (process.env.MDHUB_SEED_DEMO === '1') {
+if (envFlag('SEED_DEMO')) {
   const docCount = db.prepare('SELECT COUNT(*) AS n FROM nodes').get() as { n: number };
   if (docCount.n === 0) {
     // 示例文档也要有归属：仓库为空时先建一个，否则文档无处安放
@@ -190,7 +191,7 @@ if (process.env.MDHUB_SEED_DEMO === '1') {
           updatedBy: 'u-admin',
         }),
       );
-    logger.info(`已载入 ${SEED_DOCS.length} 篇示例文档（MDHUB_SEED_DEMO=1）`);
+    logger.info(`已载入 ${SEED_DOCS.length} 篇示例文档（WORKHUB_SEED_DEMO=1）`);
   }
 }
 
@@ -218,7 +219,7 @@ if (userCount.n === 0) {
   insertUser.run('u-admin', 'admin', '系统管理员', 'admin', 'A', '#6366f1', '', hashPassword(ADMIN_PASSWORD));
   insertUser.run('u-viewer', 'viewer', '访客', 'viewer', 'V', '#f59e0b', '', '');
 } else {
-  // 体检：.env 里的 MDHUB_ADMIN_PASSWORD 只在首次建库那一刻写进账号，之后再改它
+  // 体检：.env 里的 WORKHUB_ADMIN_PASSWORD 只在首次建库那一刻写进账号，之后再改它
   // 不会动已有账号的密码。很多人改完 .env 就登不上了，又找不到原因，
   // 只觉得「密码失效了」——那句话得在这里说清楚，而不是让人对着一句
   // 「密码错误」反复重试。真相其实就一句：这个变量只对新建的库生效。
@@ -226,7 +227,7 @@ if (userCount.n === 0) {
     .prepare("SELECT password_hash, password FROM users WHERE username = 'admin'")
     .get() as { password_hash: string; password: string } | undefined;
   if (adminRow && !verifyPassword(ADMIN_PASSWORD, adminRow.password_hash, adminRow.password)) {
-    logger.warn('.env 中的 MDHUB_ADMIN_PASSWORD 与数据库中现有的管理员密码不一致');
+    logger.warn('.env 中的 WORKHUB_ADMIN_PASSWORD 与数据库中现有的管理员密码不一致');
     logger.warn('  该变量只在首次建库时写入，之后修改 .env 不会改变已有账号的密码');
     logger.warn('  若要改用 .env 里的密码，请执行：npm run admin:password -- <新密码>');
   }
@@ -2056,7 +2057,7 @@ export function updateUserPassword(id: string, plain: string): string {
 /**
  * 把明文密码升级为哈希。登录成功后调用一次，是存量库唯一的迁移路径。
  *
- * 不单独提供「重置为环境变量密码」的通道：那会让 MDHUB_ADMIN_PASSWORD 在
+ * 不单独提供「重置为环境变量密码」的通道：那会让 WORKHUB_ADMIN_PASSWORD 在
  * 已有库上重新生效，与「环境变量仅用于首次初始化」的既定语义冲突。
  */
 export function upgradeLegacyPassword(id: string, plain: string): void {

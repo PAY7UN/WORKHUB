@@ -140,7 +140,7 @@ function issueToken(dbPath) {
   const output = execFileSync(
     process.execPath,
     [join(ROOT, 'server', 'manageToken.ts'), 'issue', '升级验证', '--json'],
-    { env: { ...process.env, MDHUB_DB_V2: dbPath }, encoding: 'utf8' },
+    { env: { ...process.env, WORKHUB_DB_V2: dbPath }, encoding: 'utf8' },
   );
   return JSON.parse(output).token;
 }
@@ -381,11 +381,11 @@ async function main() {
 
   const serviceEnv = {
     ...process.env,
-    MDHUB_PORT: String(PORT),
-    MDHUB_DB_V2: dbPath,
+    WORKHUB_PORT: String(PORT),
+    WORKHUB_DB_V2: dbPath,
     // 服务端要求显式承认「这是开发环境」才肯用默认密钥。
     // 这是临时目录里的验证实例，不设它服务根本起不来。
-    MDHUB_ALLOW_INSECURE_DEV: '1',
+    WORKHUB_ALLOW_INSECURE_DEV: '1',
   };
 
 
@@ -416,11 +416,11 @@ async function main() {
   // CI 上打的（那里会重新构建前端），这一步验的是升级流程本身。
   // 这个包**带自带运行时**：目标机什么都不装的那套才是主场景，
   // 自带运行时的替换与备份规则得跟着它一起验。
-  // MDHUB_NODE_DIR 指向本机的 Node 目录：离线打包，不用联网下载几十兆。
+  // WORKHUB_NODE_DIR 指向本机的 Node 目录：离线打包，不用联网下载几十兆。
   execFileSync(process.execPath, [join(newAppDir, 'scripts', 'pack-server.mjs'), '--out', pkgDir, '--skip-build'], {
     cwd: newAppDir,
     stdio: 'inherit',
-    env: { ...process.env, MDHUB_NODE_DIR: dirname(process.execPath) },
+    env: { ...process.env, WORKHUB_NODE_DIR: dirname(process.execPath) },
   });
   const zipName = `workhub-server-${NEW_VERSION}.zip`;
   check(`升级包打出来了（${zipName}）`, existsSync(join(pkgDir, zipName)));
@@ -441,7 +441,7 @@ async function main() {
   await waitFor(async () => !(await health()), 15000, '服务停下');
   service = startService(appDir, {
     ...serviceEnv,
-    MDHUB_UPDATE_MANIFEST: `http://127.0.0.1:${fileServer.port}/manifest.json`,
+    WORKHUB_UPDATE_MANIFEST: `http://127.0.0.1:${fileServer.port}/manifest.json`,
   });
   serviceRef = service;
   const restarted = await waitFor(health, 40000, '服务重启');
@@ -537,12 +537,12 @@ async function main() {
   // 坏法要说清楚：升级前有预检（拿新代码在隔离目录起一个实例），
   // 预检都过不了的包压根换不上去，回滚也就无从谈起——那正是预检立功了。
   // 所以这里注入的坏，是「正式实例才犯」的坏：预检实例带着
-  // MDHUB_PREFLIGHT 标记，正式实例没有。正式实例起不来 → 健康检查不过 → 回滚。
+  // WORKHUB_PREFLIGHT 标记，正式实例没有。正式实例起不来 → 健康检查不过 → 回滚。
   const badEntry = resolveEntry(newAppDir);
   const badEntryPath = join(newAppDir, badEntry);
   writeFileSync(
     badEntryPath,
-    `${readFileSync(badEntryPath, 'utf8')}\n// 验证用：预检实例放过，正式实例直接起不来\nif (!process.env.MDHUB_PREFLIGHT) { throw new Error('故意的：这版起不来'); }\n`,
+    `${readFileSync(badEntryPath, 'utf8')}\n// 验证用：预检实例放过，正式实例直接起不来\nif (!process.env.WORKHUB_PREFLIGHT) { throw new Error('故意的：这版起不来'); }\n`,
   );
   // 坏包专属的记号：回滚后它应该消失（说明真的换回去了，不是残留）
   writeFileSync(join(newAppDir, 'server', 'broken-marker.txt'), 'broken\n');

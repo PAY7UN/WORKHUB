@@ -17,7 +17,7 @@ type DatabaseInstance = Database.Database;
 // vault 的根目录在模块加载时就定死了，
 // 所以必须先设好环境变量再动态 import——静态 import 会提前求值。
 const workDir = mkdtempSync(join(tmpdir(), 'mdhub-v2-test-'));
-process.env.MDHUB_VAULT_DIR = join(workDir, 'vault');
+process.env.WORKHUB_VAULT_DIR = join(workDir, 'vault');
 
 const { bodyFileName, safeRelPath, slugify } = await import('./vault.ts');
 const { migrate, toMatchQuery, verify } = await import('./migrate.ts');
@@ -181,14 +181,14 @@ test('迁移：正文落文件、仓库归属正确、校验通过', () => {
   // 正文文件确实存在且内容一致
   const repo = db.prepare('select slug from repos where id=?').get('r-1') as { slug: string };
   const body = readFileSync(
-    join(process.env.MDHUB_VAULT_DIR!, repo.slug, 'docs', '样例笔记.md'),
+    join(process.env.WORKHUB_VAULT_DIR!, repo.slug, 'docs', '样例笔记.md'),
     'utf8',
   );
   assert.equal(body, '# 样例\n真机调试 adb install\n');
 
   // 加密文档写成 .md.enc
   const enc = readFileSync(
-    join(process.env.MDHUB_VAULT_DIR!, repo.slug, 'docs', '密文样例.md.enc'),
+    join(process.env.WORKHUB_VAULT_DIR!, repo.slug, 'docs', '密文样例.md.enc'),
     'utf8',
   );
   assert.equal(enc, 'v1:iv:tag:ciphertext');

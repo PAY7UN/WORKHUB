@@ -14,8 +14,8 @@
  *   - scripts/service/WorkHubService.cs  .NET Framework 4 没有 JSON 解析器
  */
 
-/** 服务端 API 端口。对应环境变量 MDHUB_PORT */
+/** 服务端 API 端口。对应环境变量 WORKHUB_PORT */
 export const DEFAULT_API_PORT = 8787;
 
-/** 前端开发服务器端口。对应环境变量 MDHUB_WEB_PORT */
+/** 前端开发服务器端口。对应环境变量 WORKHUB_WEB_PORT */
 export const DEFAULT_WEB_PORT = 8080;

@@ -4,6 +4,7 @@ import { readFileSync, copyFileSync, cpSync, existsSync, mkdtempSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { envValue } from '../server/env.ts';
 
 // 根目录按脚本自身位置推导：写死绝对路径会让脚本只在本机可用，
 // 也会把本机目录名留进公开仓库
@@ -15,7 +16,7 @@ const PW2 = 'RuntimeCheck#2026b';
 const ENV_PATH = join(ROOT, '.env');
 if (!existsSync(ENV_PATH)) {
   console.error(`找不到 ${ENV_PATH}`);
-  console.error('先复制 .env.example 为 .env 并填写 MDHUB_SECRET，再运行本脚本。');
+  console.error('先复制 .env.example 为 .env 并填写 WORKHUB_SECRET，再运行本脚本。');
   process.exit(1);
 }
 /**
@@ -24,16 +25,15 @@ if (!existsSync(ENV_PATH)) {
  * 原先这里写死 data/mdhub.db——那是旧库，拿它当验证对象等于验证一个
  * 早就不用的世界，脚本通过也不代表线上这套是好的。
  */
-const SOURCE_DB =
-  process.env.MDHUB_DB_V2 ?? join(ROOT, 'data/mdhub-v2.db');
+const SOURCE_DB = envValue('DB_V2') || join(ROOT, 'data/mdhub-v2.db');
 if (!existsSync(SOURCE_DB)) {
   console.error(`找不到 ${SOURCE_DB}`);
-  console.error('先运行一次 npm run server（示例文档需设 MDHUB_SEED_DEMO=1），再运行本脚本。');
+  console.error('先运行一次 npm run server（示例文档需设 WORKHUB_SEED_DEMO=1），再运行本脚本。');
   process.exit(1);
 }
 
 /** 仓库目录（正文所在）也要复制一份：v2 的正文不在库里，在仓库目录里 */
-const SOURCE_VAULT = process.env.MDHUB_VAULT_DIR ?? join(ROOT, 'data/vault');
+const SOURCE_VAULT = envValue('VAULT_DIR') || join(ROOT, 'data/vault');
 if (!existsSync(SOURCE_VAULT)) {
   console.error(`找不到 ${SOURCE_VAULT}`);
   console.error('先运行一次 npm run server 生成仓库目录，再运行本脚本。');
@@ -62,7 +62,7 @@ cpSync(SOURCE_VAULT, vaultPath, { recursive: true });
 
 // 用副本重置密码为已知值
 execFileSync(process.execPath, ['server/resetAdminPassword.ts', PW1], {
-  cwd: ROOT, env: { ...process.env, MDHUB_DB_V2: dbPath }, stdio: 'pipe',
+  cwd: ROOT, env: { ...process.env, WORKHUB_DB_V2: dbPath }, stdio: 'pipe',
 });
 
 const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'server/index.ts'], {
@@ -70,9 +70,9 @@ const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'server/inde
   env: {
     ...process.env,
     ...env,
-    MDHUB_PORT: PORT,
-    MDHUB_DB_V2: dbPath,
-    MDHUB_VAULT_DIR: vaultPath,
+    WORKHUB_PORT: PORT,
+    WORKHUB_DB_V2: dbPath,
+    WORKHUB_VAULT_DIR: vaultPath,
     NODE_ENV: 'development',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -143,7 +143,7 @@ if (ready) {
     check('改密前旧令牌可访问受保护接口', before.status === 200, `状态 ${before.status}`);
 
     execFileSync(process.execPath, ['server/resetAdminPassword.ts', PW2], {
-      cwd: ROOT, env: { ...process.env, MDHUB_DB_V2: dbPath }, stdio: 'pipe',
+      cwd: ROOT, env: { ...process.env, WORKHUB_DB_V2: dbPath }, stdio: 'pipe',
     });
     const stale = await fetch(base + '/api/agent/config', { headers: H });
     check('改密后旧令牌在受保护接口失效', stale.status === 401, `状态 ${stale.status}（期望 401）`);

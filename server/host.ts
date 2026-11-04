@@ -8,6 +8,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { envValueFrom } from './env.ts';
 import { APP_ROOT } from './paths.ts';
 
 /**
@@ -63,7 +64,7 @@ export interface RestartPlan {
  */
 export function planRestartFallback(env: NodeJS.ProcessEnv = process.env): RestartPlan {
   // 1. 运维明确指定了命令（比如 systemctl restart workhub），最省心
-  const cmd = (env.MDHUB_RESTART_CMD ?? '').trim();
+  const cmd = envValueFrom(env, 'RESTART_CMD');
   if (cmd) return { strategy: 'command', detail: cmd };
   // 2. 认得出守护进程 —— 退出即可，守护进程会接手
   const supervisor = detectSupervisor(env);

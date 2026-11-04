@@ -6,11 +6,11 @@
  *   npm run admin:password -- --generate  生成强随机密码并写入（仅打印一次）
  *
  * 为什么需要它：UI 里的「修改密码」要求先登录，而首次初始密码在未配置
- * MDHUB_ADMIN_PASSWORD 时是启动日志里打印一次就消失的随机串。一旦用户错过那行
+ * WORKHUB_ADMIN_PASSWORD 时是启动日志里打印一次就消失的随机串。一旦用户错过那行
  * 日志、或忘了自己当初设的值，就只能在「进不去」和「删库重建」之间二选一。
  * 这个脚本补上那条退路。
  *
- * 为什么刻意不 import db.ts / config.ts：那两个模块一旦加载就会校验 MDHUB_SECRET
+ * 为什么刻意不 import db.ts / config.ts：那两个模块一旦加载就会校验 WORKHUB_SECRET
  * 并可能直接终止进程，还顺带建表、灌种子。求救命令不该因为「另一个密钥没配好」
  * 而跑不起来，更不该产生副作用，所以这里自开一个最小连接。
  *
@@ -27,7 +27,7 @@ import { displayPath, logger } from './logger.ts';
 /**
  * 要改的库必须和服务端在用的那个是同一个。
  *
- * v2 起服务端认的是 data/mdhub-v2.db（顺序：MDHUB_DB_V2 → MDHUB_DB → 默认 v2 路径，
+ * v2 起服务端认的是 data/mdhub-v2.db（顺序：WORKHUB_DB_V2 → WORKHUB_DB → 默认 v2 路径，
  * 见 paths.ts）。这里原先写死 data/mdhub.db，改的是旧库——服务端压根不读它，
  * 于是「忘了密码」这条退路会显示「密码已更新」，用户却仍然登不进去。
  * 这条命令的全部价值就是救场，救不成的命令比没有更糟。
@@ -39,7 +39,7 @@ const USAGE = [
   '  npm run admin:password -- <新密码>     将管理员密码设为指定值',
   '  npm run admin:password -- --generate  生成强随机密码并写入（仅打印一次）',
   '',
-  `数据库：${displayPath(DB_PATH)}（可用环境变量 MDHUB_DB_V2 / MDHUB_DB 覆盖）`,
+  `数据库：${displayPath(DB_PATH)}（可用环境变量 WORKHUB_DB_V2 / WORKHUB_DB 覆盖）`,
 ].join('\n');
 
 /** 打印可操作的失败原因后退出。exit code 1 便于脚本或 CI 感知 */
@@ -95,7 +95,7 @@ function main(): void {
       .run(hashPassword(plain));
     if (info.changes === 0) {
       fail('未找到 username = admin 的账号', [
-        '数据库可能已被替换过，请确认 MDHUB_DB_V2 / MDHUB_DB 指向的是正在使用的那个文件。',
+        '数据库可能已被替换过，请确认 WORKHUB_DB_V2 / WORKHUB_DB 指向的是正在使用的那个文件。',
       ]);
     }
   } finally {

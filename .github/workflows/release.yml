@@ -50,13 +50,13 @@ jobs:
       - name: 打服务端升级包（自带 Node 运行时）
         shell: pwsh
         run: |
-          $env:MDHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
+          $env:WORKHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
           npm run pack:server -- --out release
 
       - name: 打托盘包（安装程序 + 免安装版）
         shell: pwsh
         run: |
-          $env:MDHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
+          $env:WORKHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
           npm run pack:tray
 
       - name: 包合格吗

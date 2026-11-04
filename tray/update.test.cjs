@@ -70,10 +70,24 @@ test('更新源优先级：清单 > 直链 > GitHub', () => {
 test('更新源：环境变量能覆盖配置', () => {
   const source = resolveUpdateSource(
     { update: { repo: 'a/b' } },
-    { MDHUB_UPDATE_MANIFEST: 'https://x/m.json' },
+    { WORKHUB_UPDATE_MANIFEST: 'https://x/m.json' },
   );
   assert.equal(source.kind, 'manifest');
   assert.equal(source.url, 'https://x/m.json');
+});
+
+test('更新源：旧变量名仍然生效，新名优先', () => {
+  // 托盘与服务端必须读到同一个值：两边规则不一致的症状是
+  // 「托盘连的是 A，服务端跑在 B」，属于最难查的那一类
+  const old = resolveUpdateSource({}, { MDHUB_UPDATE_MANIFEST: 'https://old/m.json' });
+  assert.equal(old.kind, 'manifest');
+  assert.equal(old.url, 'https://old/m.json');
+
+  const both = resolveUpdateSource(
+    {},
+    { WORKHUB_UPDATE_MANIFEST: 'https://new/m.json', MDHUB_UPDATE_MANIFEST: 'https://old/m.json' },
+  );
+  assert.equal(both.url, 'https://new/m.json');
 });
 
 test('从 Release 里认托盘包：只认 workhub-tray-*.zip', async () => {

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   把 WorkHub 服务端注册成开机自启的常驻服务。
 
@@ -22,7 +22,7 @@
   再从 PATH 和常见安装位置里找。
 
 .PARAMETER Port
-  服务端口。不填就读 .env 里的 MDHUB_PORT，再不行用 8787。
+  服务端口。不填就读 .env 里的 WORKHUB_PORT，再不行用 8787。
 
 .PARAMETER Token
   机器令牌。留空则自动发一把（停机时靠它走优雅关闭）。
@@ -127,12 +127,13 @@ function Find-Csc {
 }
 
 # 从 .env 里读端口
+# 新名 WORKHUB_PORT，旧名 MDHUB_PORT 也认：改名前写下的 .env 不该就此失效
 function Get-PortFromEnv {
     param([string]$Dir)
     $envFile = Join-Path $Dir '.env'
     if (-not (Test-Path $envFile)) { return 0 }
     foreach ($line in Get-Content $envFile -ErrorAction SilentlyContinue) {
-        if ($line -match '^\s*MDHUB_PORT\s*=\s*(\d+)\s*$') { return [int]$Matches[1] }
+        if ($line -match '^\s*(?:WORKHUB|MDHUB)_PORT\s*=\s*(\d+)\s*$') { return [int]$Matches[1] }
     }
     return 0
 }

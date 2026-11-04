@@ -13,8 +13,8 @@
  *   node scripts/docs.mjs --export --no-clean     导出但不清理目标目录里的旧文件
  *
  * 环境变量：
- *   MDHUB_DB_V2 / MDHUB_DB  数据库路径，默认 <项目根>/data/mdhub-v2.db
- *   MDHUB_VAULT_DIR         仓库目录，默认 <项目根>/data/vault
+ *   WORKHUB_DB_V2 / WORKHUB_DB  数据库路径，默认 <项目根>/data/mdhub-v2.db
+ *   WORKHUB_VAULT_DIR         仓库目录，默认 <项目根>/data/vault
  */
 
 import {
@@ -36,7 +36,7 @@ const Database = require('better-sqlite3');
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
 // 库与 vault 的路径跟服务端用同一套规则（server/paths.ts）：
-// 之前这里自己抄了一遍优先级，其中一处漏了 MDHUB_DB，工具和服务端会指向不同的库。
+// 之前这里自己抄了一遍优先级，其中一处漏了 WORKHUB_DB，工具和服务端会指向不同的库。
 // resolve() 保留：相对路径按当前工作目录解析，跟原来的行为一致。
 const DB_PATH = resolve(resolveDbPath());
 const VAULT_DIR = resolve(resolveVaultDir());
@@ -62,7 +62,7 @@ if (!doList && !doExport) {
 
 if (!existsSync(DB_PATH)) {
   console.error(`找不到数据库：${DB_PATH}`);
-  console.error('先跑一次 npm run server 生成数据库，或用 MDHUB_DB_V2 指定路径。');
+  console.error('先跑一次 npm run server 生成数据库，或用 WORKHUB_DB_V2 指定路径。');
   process.exit(1);
 }
 

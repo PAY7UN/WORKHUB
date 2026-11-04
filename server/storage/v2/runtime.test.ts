@@ -12,9 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const workDir = mkdtempSync(join(tmpdir(), 'mdhub-rt-'));
-process.env.MDHUB_DB_V2 = join(workDir, 'test.db');
-process.env.MDHUB_VAULT_DIR = join(workDir, 'vault');
-process.env.MDHUB_SECRET = 'test-secret-for-runtime-cases-0123456789abcdef';
+process.env.WORKHUB_DB_V2 = join(workDir, 'test.db');
+process.env.WORKHUB_VAULT_DIR = join(workDir, 'vault');
+process.env.WORKHUB_SECRET = 'test-secret-for-runtime-cases-0123456789abcdef';
 
 const { db, insertDoc, updateDocRow, detachSubtree, moveNodesToRepo, recallDocIds, recallAttachmentIds, searchDocs, listAllDocs, repoSlugOf, getDoc, encryptDocRow } = await import('../../db.ts');
 const { createRepo, deleteRepo, getRepo } = await import('../../repos.ts');
@@ -256,7 +256,7 @@ test('跨仓库搬家：正文与附件都落到目标仓库的目录里', async
     `附件的位置应指向目标仓库，实际是 ${att.storage_key}`,
   );
   assert.ok(
-    existsSync(join(process.env.MDHUB_VAULT_DIR!, att.storage_key)),
+    existsSync(join(process.env.WORKHUB_VAULT_DIR!, att.storage_key)),
     '附件文件应落在目标仓库的目录里',
   );
 });
@@ -317,7 +317,7 @@ test('加密文档：接口里绝不能出现密文', () => {
 test('删仓库：目录删不掉时不能只删一半', () => {
   const repo = createRepo({ name: '删不掉的仓库', createdBy: 'admin' });
   makeDoc('目录删不掉时的文档', '正文内容', repo.id);
-  const repoDir = join(process.env.MDHUB_VAULT_DIR!, repo.slug);
+  const repoDir = join(process.env.WORKHUB_VAULT_DIR!, repo.slug);
   const bodyFile = bodyPath(repo.slug, '目录删不掉时的文档', false);
   assert.ok(existsSync(bodyFile));
 
@@ -357,7 +357,7 @@ test('删仓库：目录整个清掉，索引一并清空', async () => {
     createdBy: 'u-admin',
   });
 
-  const repoDir = join(process.env.MDHUB_VAULT_DIR!, repo.slug);
+  const repoDir = join(process.env.WORKHUB_VAULT_DIR!, repo.slug);
   assert.ok(existsSync(repoDir), '仓库目录应已建立');
 
   const res = deleteRepo(repo.id);

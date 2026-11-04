@@ -442,7 +442,7 @@ export interface DingTalkConfig {
   unionId: string;
   /** 待办执行人 userid 列表 */
   executorIds: string[];
-  /** 待办点击后跳转的 MDHUB 地址，如 http://192.168.1.10:5173 */
+  /** 待办点击后跳转的 WorkHub 地址，如 http://192.168.1.10:5173 */
   todoBaseUrl: string;
 }
 
@@ -496,7 +496,7 @@ export interface Reminder {
   /** 本条提醒的推送通道，缺省沿用全局配置 */
   channel: DingTalkChannel;
   status: ReminderStatus;
-  /** 关联文档（可选）：提醒正文会带上文档名，点击可跳回 MDHUB */
+  /** 关联文档（可选）：提醒正文会带上文档名，点击可跳回 WorkHub */
   docId: string | null;
   docName: string | null;
   createdAt: number;

@@ -109,7 +109,7 @@ async function buildPayload() {
     log: (msg) => console.log(`  ${msg}`),
   });
   if (!runtimeExe) {
-    console.warn('  ! 没有自带运行时，托盘将无法自动更新（可用 MDHUB_NODE_DIR 指定本机 Node）');
+    console.warn('  ! 没有自带运行时，托盘将无法自动更新（可用 WORKHUB_NODE_DIR 指定本机 Node）');
   }
 }
 

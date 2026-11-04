@@ -7,12 +7,13 @@
 //
 // 运行时怎么选：
 // - 默认跟打包机当前的 Node 同版本，better-sqlite3 的原生二进制一定对得上；
-// - 也可以用 MDHUB_NODE_DIR 指向本机已有的 Node 目录（离线打包）；
-// - 也可以用 MDHUB_NODE_VERSION 指定别的版本。
+// - 也可以用 WORKHUB_NODE_DIR 指向本机已有的 Node 目录（离线打包）；
+// - 也可以用 WORKHUB_NODE_VERSION 指定别的版本。
 import { spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { envValue } from '../../server/env.ts';
 
 /** 首选国内镜像，nodejs.org 兜底 */
 const MIRRORS = [
@@ -73,7 +74,7 @@ async function unzip(zipPath, destDir) {
  */
 export async function ensureNodeRuntime({
   target,
-  version = process.env.MDHUB_NODE_VERSION ?? process.versions.node,
+  version = envValue('NODE_VERSION') || process.versions.node,
   log = () => {},
   required = false,
 }) {
@@ -85,10 +86,10 @@ export async function ensureNodeRuntime({
   }
 
   // 离线打包：直接用本机已装的 Node
-  const localDir = process.env.MDHUB_NODE_DIR;
+  const localDir = envValue('NODE_DIR');
   if (localDir) {
     const source = join(localDir, NODE_EXE);
-    if (!existsSync(source)) throw new Error(`MDHUB_NODE_DIR 里没有 ${NODE_EXE}：${localDir}`);
+    if (!existsSync(source)) throw new Error(`WORKHUB_NODE_DIR 里没有 ${NODE_EXE}：${localDir}`);
     cpSync(source, dest);
     log(`已从 ${localDir} 复制自带运行时`);
     return dest;
@@ -139,7 +140,7 @@ export async function ensureNodeRuntime({
   } catch (err) {
     if (required) throw err;
     log(`! 没能准备自带运行时：${err.message}`);
-    log('  目标机将需要自行安装 Node（打包时可用 MDHUB_NODE_DIR 指向本机 Node 目录）');
+    log('  目标机将需要自行安装 Node（打包时可用 WORKHUB_NODE_DIR 指向本机 Node 目录）');
     return null;
   } finally {
     rmSync(work, { recursive: true, force: true });

@@ -40,7 +40,7 @@ const RESTART_DELAY_MS = 2000;
 
 const DEFAULTS = {
   mode: 'local', // 'local' | 'remote'
-  target: '', // 留空则本地模式按 .env 的 MDHUB_PORT 推 127.0.0.1
+  target: '', // 留空则本地模式按 .env 的 WORKHUB_PORT 推 127.0.0.1
   appDir: '', // 工作目录（.env / 数据库 / 日志）；留空则按运行形态取默认
   entry: '', // 服务入口（相对代码目录）；留空则按约定自动探测
   token: '', // remote 模式的机器令牌
@@ -182,18 +182,18 @@ function loadConfig() {
  * 读服务端口。
  *
  * 优先级跟 Node 的 `--env-file` 一致：**进程环境变量优先于 .env 文件**。
- * 托盘启动时若环境里已经带着 MDHUB_PORT，服务端（子进程继承同一份环境）
+ * 托盘启动时若环境里已经带着 WORKHUB_PORT，服务端（子进程继承同一份环境）
  * 听的就是那个端口，托盘也得跟着它走，否则托盘指向的地址和服务实际监听的地址对不上，
  * 表现是「菜单显示已停止，可服务明明在跑」。
+ *
+ * 旧名 WORKHUB_PORT 也认（见 server/env.ts 的说明）。
  */
 function readPortFromEnv(envFile) {
-  if (process.env.MDHUB_PORT) {
-    const fromEnv = Number(process.env.MDHUB_PORT);
-    if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
-  }
+  const fromEnv = Number(process.env.WORKHUB_PORT || process.env.WORKHUB_PORT);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
   try {
     const raw = fs.readFileSync(envFile, 'utf8');
-    const match = raw.match(/^\s*MDHUB_PORT\s*=\s*(\d+)/m);
+    const match = raw.match(/^\s*(?:WORKHUB|MDHUB)_PORT\s*=\s*(\d+)/m);
     return match ? Number(match[1]) : DEFAULT_PORT;
   } catch {
     return DEFAULT_PORT;
@@ -205,7 +205,7 @@ function readPortFromEnv(envFile) {
 /**
  * 打包态首次运行时生成 .env。
  *
- * 服务端在生产模式下没有 MDHUB_SECRET / MDHUB_ADMIN_PASSWORD 就拒绝启动
+ * 服务端在生产模式下没有 WORKHUB_SECRET / WORKHUB_ADMIN_PASSWORD 就拒绝启动
  * （这是故意的：密钥缺失等于全站权限失守，不能悄悄降级成默认弱口令）。
  * 使用者装完即用，就意味着这两个值得由托盘替他们准备好：
  * 随机密钥 + 随机密码，密码当面告诉他一次。
@@ -223,11 +223,11 @@ async function ensureEnvFile() {
     [
       '# WorkHub 本地版配置（首次启动自动生成）',
       '# 主密钥：用于 JWT 签名与 API Key 加密，切勿泄露或分享',
-      `MDHUB_SECRET=${secret}`,
+      `WORKHUB_SECRET=${secret}`,
       '# 管理员初始密码：仅首次建库时写入账号，之后改这里不会改密码',
-      `MDHUB_ADMIN_PASSWORD=${password}`,
+      `WORKHUB_ADMIN_PASSWORD=${password}`,
       '# 监听端口（托盘按它拼出「打开网页」的地址）',
-      `MDHUB_PORT=${port}`,
+      `WORKHUB_PORT=${port}`,
       '',
     ].join('\n'),
     'utf8',
@@ -303,8 +303,8 @@ function childEnv() {
   };
   if (paths.packaged) {
     env.NODE_ENV = 'production';
-    env.MDHUB_DB_V2 = path.join(paths.dataDir, 'data', 'mdhub-v2.db');
-    env.MDHUB_VAULT_DIR = path.join(paths.dataDir, 'data', 'vault');
+    env.WORKHUB_DB_V2 = path.join(paths.dataDir, 'data', 'mdhub-v2.db');
+    env.WORKHUB_VAULT_DIR = path.join(paths.dataDir, 'data', 'vault');
   }
   return env;
 }

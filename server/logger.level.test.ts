@@ -1,13 +1,13 @@
 /**
  * 日志级别的开关行为。
  *
- * 单独一个测试文件：MDHUB_LOG_LEVEL 在模块加载时读取一次，
+ * 单独一个测试文件：WORKHUB_LOG_LEVEL 在模块加载时读取一次，
  * 改环境变量必须发生在 import 之前，所以这里用动态 import 而不是静态 import。
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-process.env.MDHUB_LOG_LEVEL = 'silent';
+process.env.WORKHUB_LOG_LEVEL = 'silent';
 const { logger } = await import('./logger.ts');
 
 /** 捕获 console 输出，返回打印出来的所有行 */
