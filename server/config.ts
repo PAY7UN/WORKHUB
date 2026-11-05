@@ -10,6 +10,7 @@
 import { randomBytes } from 'node:crypto';
 import { logger } from './logger.ts';
 import { envFlag, envValue } from './env.ts';
+import { applyEnvFileFallback } from './envFile.ts';
 
 /** 仅在显式设置 WORKHUB_ALLOW_INSECURE_DEV=1 时才允许使用的开发默认值 */
 const DEV_FALLBACK_SECRET = 'workhub-dev-secret-change-me';
@@ -19,6 +20,25 @@ const DEV_FALLBACK_ADMIN_PASSWORD = 'admin123';
 const MIN_SECRET_LENGTH = 32;
 
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+/**
+ * .env 带 BOM 时的兜底。
+ *
+ * Node 的 --env-file 不认 BOM，会把文件里的第一个变量静默丢掉——
+ * 打包态下丢的通常是 WORKHUB_SECRET，于是这里报「生产环境未配置密钥」，
+ * 而密钥明明就在 .env 里。详见 server/envFile.ts。
+ *
+ * 必须在读密钥之前做，所以放在模块加载期。
+ */
+const envFileRepair = applyEnvFileFallback();
+if (envFileRepair.bomFixed) {
+  logger.warn(
+    `已去掉 ${envFileRepair.file} 开头的 BOM（原文件备份为 ${envFileRepair.backup}）` +
+      (envFileRepair.applied.length
+        ? `，并补齐 ${envFileRepair.applied.length} 个变量：${envFileRepair.applied.join('、')}`
+        : ''),
+  );
+}
 
 const ALLOW_DEV_FALLBACK = envFlag('ALLOW_INSECURE_DEV');
 
@@ -56,6 +76,8 @@ function loadSecret(): string {
     abortStartup('生产环境未配置 WORKHUB_SECRET', [
       '该密钥同时用于 JWT 签名与 API Key 加密，缺失等同于全站权限失守。',
       '请在 .env 或系统环境变量中设置后再启动。',
+      '若 .env 里明明写了却读不到：多半是文件开头带了 BOM 或首行格式不对，' +
+        'Node 会静默丢掉第一个变量（用记事本保存容易带上 BOM）。',
       `生成方式：${GENERATE_HINT}`,
     ]);
   }

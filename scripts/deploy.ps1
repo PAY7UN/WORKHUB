@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   把发布包铺到机器上并注册成服务——首装和「用包升级」走的是同一条路。
 
@@ -57,6 +57,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
+# .env 的解析规则只有一份实现（scripts/lib/env.ps1），部署脚本与安装脚本共用：
+# 同一份 .env，两个脚本读出两个端口是最难查的一类错——服务照常起，
+# 只是停机接口打不通，只能强杀，而报错永远不指向这里。
+$envLib = Join-Path $PSScriptRoot 'lib\env.ps1'
+if (-not (Test-Path -LiteralPath $envLib)) {
+    throw "缺少 .env 解析库：$envLib`n请把整个 scripts 目录一起更新（端口解析规则只有这一份实现）。"
+}
+. $envLib
+
 function Write-Step([string]$Text) { Write-Host "==> $Text" -ForegroundColor Cyan }
 function Write-Info([string]$Text) { Write-Host "    $Text" }
 function Write-Warn([string]$Text) { Write-Host "    $Text" -ForegroundColor Yellow }
@@ -113,17 +122,9 @@ function Test-PackageHash {
     return $true
 }
 
-# 从 .env 里读端口
-# 新名 WORKHUB_PORT，旧名 MDHUB_PORT 也认：改名前写下的 .env 不该就此失效
-function Get-PortFromEnv {
-    param([string]$Dir)
-    $envFile = Join-Path $Dir '.env'
-    if (-not (Test-Path $envFile)) { return 0 }
-    foreach ($line in Get-Content $envFile -ErrorAction SilentlyContinue) {
-        if ($line -match '^\s*(?:WORKHUB|MDHUB)_PORT\s*=\s*(\d+)\s*$') { return [int]$Matches[1] }
-    }
-    return 0
-}
+# 从 .env 里读端口的规则在 scripts/lib/env.ps1（与服务端一致，本文件顶部已加载）。
+# 为什么单独抽出去：install-service.ps1 也要读端口，两份实现迟早分叉——
+# 分叉之后症状是「同一个 .env，两个脚本读出两个端口」，全程没有报错。
 
 # 端口是否已被占着
 function Test-PortInUse {

@@ -164,6 +164,103 @@ namespace WorkHub
         }
     }
 
+    /// <summary>
+    /// 从 dir/.env 里读服务端口（真源在 scripts/lib/env.ps1 与 server/envFile.ts）。
+    ///
+    /// 为什么宿主需要自己读一遍：service.conf 里的端口是**装服务那一刻**从 .env 抄的。
+    /// 之后使用者改了 .env 里的端口，服务端下次启动就听新端口了，
+    /// 宿主还拿着旧端口去调停机接口——请求打不通，只能强杀，
+    /// 而症状是「停不下来」，没人会想到是配置文件过期了。
+    ///
+    /// 规则与服务端一致：
+    /// - 值可以带引号（'...' 或 "..."），带引号时 # 是值的一部分；
+    /// - 不带引号时，行尾 # 之后是注释；
+    /// - 同一个键写多次，后写的赢；
+    /// - 新名 WORKHUB_PORT 优先，旧名 MDHUB_PORT 兜底；
+    /// - 文件带 UTF-8 BOM 也不影响（BOM 后的第一个键照样读得到）。
+    /// </summary>
+    internal static class EnvPort
+    {
+        /// <summary>读出端口；读不到或不是合法端口就返回 null。</summary>
+        public static int? Detect(string dir)
+        {
+            if (string.IsNullOrEmpty(dir)) return null;
+            string path;
+            try { path = Path.Combine(dir, ".env"); }
+            catch { return null; }
+            if (!File.Exists(path)) return null;
+
+            string[] lines;
+            try { lines = File.ReadAllLines(path); }
+            catch { return null; }
+
+            string newPort = null;
+            string oldPort = null;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                // 文件带 BOM 时第一行开头会多一个零宽字符，先去掉
+                if (i == 0 && line.Length > 0 && line[0] == '\uFEFF') line = line.Substring(1);
+                string key;
+                string value;
+                if (!Split(line, out key, out value)) continue;
+                if (key == "WORKHUB_PORT") newPort = value;
+                else if (key == "MDHUB_PORT") oldPort = value;
+            }
+
+            int parsed;
+            if (newPort != null && TryPort(newPort, out parsed)) return parsed;
+            if (oldPort != null && TryPort(oldPort, out parsed)) return parsed;
+            return null;
+        }
+
+        /// <summary>拆一行 KEY=value。拆不出来返回 false。</summary>
+        private static bool Split(string line, out string key, out string value)
+        {
+            key = "";
+            value = "";
+            if (line == null) return false;
+            string trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed.StartsWith("#")) return false;
+            int eq = trimmed.IndexOf('=');
+            if (eq <= 0) return false;
+            key = trimmed.Substring(0, eq).Trim();
+            if (key.Length == 0) return false;
+            value = Unquote(trimmed.Substring(eq + 1).Trim());
+            return true;
+        }
+
+        /// <summary>去引号；没被引号包着时把行尾注释切掉。</summary>
+        private static string Unquote(string raw)
+        {
+            // 值被引号包着时，引号后面的内容就是注释了（跟服务端同一套规则）
+            if (raw.Length >= 2)
+            {
+                char first = raw[0];
+                if (first == '"' || first == '\'')
+                {
+                    int close = raw.IndexOf(first, 1);
+                    if (close > 0) return raw.Substring(1, close - 1);
+                }
+            }
+            int hash = raw.IndexOf('#');
+            if (hash >= 0) raw = raw.Substring(0, hash);
+            return raw.Trim();
+        }
+
+        /// <summary>端口必须是 1..65535 的整数。</summary>
+        private static bool TryPort(string text, out int port)
+        {
+            port = 0;
+            if (text == null) return false;
+            int parsed;
+            if (!int.TryParse(text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out parsed)) return false;
+            if (parsed <= 0 || parsed >= 65536) return false;
+            port = parsed;
+            return true;
+        }
+    }
+
     /// <summary>把 node 的输出写进日志文件。</summary>
     internal sealed class LogSink : IDisposable
     {
@@ -565,10 +662,55 @@ namespace WorkHub
             Stopped.Set();
         }
 
-        /// <summary>调服务端的停机接口。</summary>
+        /// <summary>
+        /// 调服务端的停机接口。
+        ///
+        /// 候选端口按顺序试：先 service.conf 里那个（装服务时抄下来的），
+        /// 再是 .env 里现在的那个（使用者改过端口时以它为准）。
+        /// 少了第二个候选，改了端口之后就只能强杀——事务被腰斩，
+        /// 而症状是「停不下来」，跟「配置过期了」八竿子打不着。
+        /// </summary>
         private void RequestShutdown()
         {
-            string url = "http://127.0.0.1:" + cfg.Port.ToString(CultureInfo.InvariantCulture) + "/api/manage/shutdown";
+            Exception last = null;
+            foreach (int port in CandidatePorts())
+            {
+                try
+                {
+                    ShutdownOn(port);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    log.Write("warn", "在端口 " + port.ToString(CultureInfo.InvariantCulture) + " 上请求停机失败：" + ex.Message);
+                }
+            }
+            if (last != null) throw last;
+        }
+
+        /// <summary>候选端口：配置里的优先，.env 里的兜底（去重）。</summary>
+        private List<int> CandidatePorts()
+        {
+            List<int> ports = new List<int>();
+            if (cfg.Port > 0) ports.Add(cfg.Port);
+            try
+            {
+                int? fromEnv = EnvPort.Detect(cfg.Dir);
+                if (fromEnv.HasValue && !ports.Contains(fromEnv.Value)) ports.Add(fromEnv.Value);
+            }
+            catch (Exception ex)
+            {
+                log.Write("warn", "读 .env 里的端口出错：" + ex.Message);
+            }
+            if (ports.Count == 0) ports.Add(8787);
+            return ports;
+        }
+
+        /// <summary>在指定端口上请求停机。</summary>
+        private void ShutdownOn(int port)
+        {
+            string url = "http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture) + "/api/manage/shutdown";
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = "POST";
             request.Timeout = 5000;
@@ -577,7 +719,7 @@ namespace WorkHub
             request.Headers.Add("x-workhub-token", cfg.Token);
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             {
-                log.Write("info", "停机接口返回 " + (int)response.StatusCode);
+                log.Write("info", "停机接口返回 " + (int)response.StatusCode + "（端口 " + port.ToString(CultureInfo.InvariantCulture) + "）");
             }
         }
 

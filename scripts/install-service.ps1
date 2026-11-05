@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   把 WorkHub 服务端注册成开机自启的常驻服务。
 
@@ -55,6 +55,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+
+# .env 的解析规则只有一份实现（scripts/lib/env.ps1），安装脚本与部署脚本共用：
+# 这里读到的端口会写进服务配置，宿主拿它调停机接口——
+# 读错端口就意味着「停不下来，只能强杀」，而且症状不在部署时出现。
+$envLib = Join-Path $PSScriptRoot 'lib\env.ps1'
+if (-not (Test-Path -LiteralPath $envLib)) {
+    throw "缺少 .env 解析库：$envLib`n请把整个 scripts 目录一起更新（端口解析规则只有这一份实现）。"
+}
+. $envLib
 
 function Write-Step([string]$Text) { Write-Host "==> $Text" -ForegroundColor Cyan }
 function Write-Info([string]$Text) { Write-Host "    $Text" }
@@ -126,17 +135,8 @@ function Find-Csc {
     throw '找不到 csc.exe（.NET Framework 编译器）。请确认系统装有 .NET Framework 4.x'
 }
 
-# 从 .env 里读端口
-# 新名 WORKHUB_PORT，旧名 MDHUB_PORT 也认：改名前写下的 .env 不该就此失效
-function Get-PortFromEnv {
-    param([string]$Dir)
-    $envFile = Join-Path $Dir '.env'
-    if (-not (Test-Path $envFile)) { return 0 }
-    foreach ($line in Get-Content $envFile -ErrorAction SilentlyContinue) {
-        if ($line -match '^\s*(?:WORKHUB|MDHUB)_PORT\s*=\s*(\d+)\s*$') { return [int]$Matches[1] }
-    }
-    return 0
-}
+# 从 .env 里读端口的规则在 scripts/lib/env.ps1（与服务端一致，本文件顶部已加载）。
+# 读到的端口会写进服务配置，宿主拿它调停机接口——读错就意味着停不下来。
 
 function Test-Health {
     param([int]$ServicePort, [string]$Token = '', [datetime]$Since = [datetime]::MinValue, [int]$TimeoutSec = 30)

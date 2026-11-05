@@ -49,6 +49,22 @@ export function resolveVaultDir(env: NodeJS.ProcessEnv = process.env): string {
   return envValueFrom(env, 'VAULT_DIR') || DEFAULT_VAULT_DIR;
 }
 
+/**
+ * 解析运行期日志目录：升级日志、升级结果摘要都落这儿。
+ *
+ * 默认是代码目录下的 logs/，但那只是「没有更好的选择时」的位置：
+ * 打包态（托盘拉起）里代码在安装目录下，Windows 上普通用户写不进去——
+ * 于是升级日志写不出来，升级结果摘要也存不下来，界面上只能看到「升级失败」。
+ *
+ * 托盘知道哪个目录可写（工作目录），所以它会把这个位置用环境变量告诉服务端，
+ * 于是升级记录跟服务日志待在一起：使用者只要看一个 logs 目录。
+ *
+ * 优先级跟其他路径一致：WORKHUB_LOG_DIR → MDHUB_LOG_DIR → 默认。
+ */
+export function resolveLogDir(env: NodeJS.ProcessEnv = process.env): string {
+  return envValueFrom(env, 'LOG_DIR') || join(APP_ROOT, 'logs');
+}
+
 export interface DbMigration {
   /** 迁移前的路径 */
   from: string;

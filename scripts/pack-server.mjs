@@ -59,6 +59,15 @@ const INCLUDE = ['server', 'shared', 'dist', 'scripts', 'package.json', '.env.ex
 const EXCLUDE_DIRS = new Set(['node_modules', 'data', 'logs', '.git', 'release', 'coverage', '.vite']);
 const EXCLUDE_FILES = new Set(['.env', '.workhub-files.txt']);
 
+/**
+ * 测试文件不进包。
+ *
+ * 测试代码对目标机毫无用处（还会在包里带上一堆跑测试的脚本），
+ * 而且包内容与文件清单必须严格一致——多带一个文件，清单里就多一条，
+ * 升级时的「删掉新版里已经没有的旧文件」就多一条判断。
+ */
+const TEST_FILE_RE = /\.test\.[cm]?[jt]s$/;
+
 function parseArgs(argv) {
   const args = { skipBuild: false, runtime: true, deps: true };
   for (let i = 0; i < argv.length; i += 1) {
@@ -85,6 +94,7 @@ function listFiles(dir, base = dir) {
       out.push(...listFiles(join(dir, entry.name), base));
     } else if (entry.isFile()) {
       if (EXCLUDE_FILES.has(entry.name)) continue;
+      if (TEST_FILE_RE.test(entry.name)) continue;
       out.push(relative(base, join(dir, entry.name)).split('\\').join('/'));
     }
   }

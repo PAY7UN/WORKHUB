@@ -27,7 +27,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { logger, displayPath } from './logger.ts';
 import { envValueFrom } from './env.ts';
-import { APP_ROOT } from './paths.ts';
+import { APP_ROOT, resolveLogDir } from './paths.ts';
 import { currentVersion, planRestartFallback } from './host.ts';
 
 /** 代码目录：server/ 的上一级 */
@@ -69,9 +69,14 @@ export function upgradeInProgress(root = appRoot()): boolean {
   return existsSync(upgradeFlagPath(root));
 }
 
-/** 上次升级的结果摘要 */
-export function lastUpgradePath(root = appRoot()): string {
-  return join(root, 'logs', '.last-upgrade.json');
+/**
+ * 上次升级的结果摘要。
+ *
+ * 落在运行期日志目录，而不是代码目录：打包态下代码在安装目录里，
+ * 普通用户写不进去，摘要就存不下来（升级界面上只能看到「失败」）。
+ */
+export function lastUpgradePath(): string {
+  return join(resolveLogDir(), '.last-upgrade.json');
 }
 
 /**
@@ -345,18 +350,18 @@ export interface UpgradeRecord {
   message?: string;
 }
 
-export function writeUpgradeRecord(record: UpgradeRecord, root = appRoot()): void {
+export function writeUpgradeRecord(record: UpgradeRecord): void {
   try {
-    mkdirSync(join(root, 'logs'), { recursive: true });
-    writeFileSync(lastUpgradePath(root), JSON.stringify(record, null, 2), 'utf8');
+    mkdirSync(resolveLogDir(), { recursive: true });
+    writeFileSync(lastUpgradePath(), JSON.stringify(record, null, 2), 'utf8');
   } catch {
     // 记不下来也不能影响升级本身
   }
 }
 
-export function readUpgradeRecord(root = appRoot()): UpgradeRecord | null {
+export function readUpgradeRecord(): UpgradeRecord | null {
   try {
-    const raw = readFileSync(lastUpgradePath(root), 'utf8');
+    const raw = readFileSync(lastUpgradePath(), 'utf8');
     return JSON.parse(raw) as UpgradeRecord;
   } catch {
     return null;
@@ -491,7 +496,7 @@ export async function checkForUpdate(
     source: { kind: source.kind, url: source.url },
     latest,
     updateAvailable: latest?.updateAvailable ?? false,
-    lastUpgrade: readUpgradeRecord(root),
+    lastUpgrade: readUpgradeRecord(),
     error,
   };
 }
@@ -563,7 +568,6 @@ export async function startUpgrade(
   const plan = planUpgradeRestart();
   writeUpgradeRecord(
     { version: prepared.version, from: version, status: 'downloading', startedAt: Date.now() },
-    root,
   );
   try {
     launchUpdater({
@@ -611,8 +615,11 @@ export function launchUpdater(options: {
   if (!existsSync(script)) {
     throw new Error(`找不到更新器脚本：${displayPath(script)}`);
   }
-  mkdirSync(join(root, 'logs'), { recursive: true });
-  const logPath = join(root, 'logs', 'upgrade.log');
+  // 升级日志落在运行期日志目录（通常是可写的工作目录），不是代码目录：
+  // 打包态的代码目录在安装目录下，普通用户写不进去，日志会直接写不出来。
+  const logDir = resolveLogDir();
+  mkdirSync(logDir, { recursive: true });
+  const logPath = join(logDir, 'upgrade.log');
 
   const args = [
     script,

@@ -81,8 +81,11 @@ const FALLBACK_LOG = join(tmpdir(), 'workhub-tray-update-fallback.log');
  *
  * tray.config.json 尤其要保：使用者的远端地址、令牌、快捷键都在里面，
  * 换版本把它冲掉，等于把人的配置抹了。
+ *
+ * .env.bak 是 .env 的备份：.env 丢了的时候，库里的文档全靠这把密钥才能解开，
+ * 冲掉它等于把恢复的路也断了。
  */
-const PROTECTED = new Set(['data', 'logs', '.env', '.git', 'tray.config.json']);
+const PROTECTED = new Set(['data', 'logs', '.env', '.env.bak', '.git', 'tray.config.json']);
 
 process.stdout.on('error', () => {});
 process.stderr.on('error', () => {});

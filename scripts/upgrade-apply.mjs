@@ -34,6 +34,7 @@ import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { envValue } from '../server/env.ts';
+import { parseEnvFile } from '../server/envFile.ts';
 
 const args = {};
 {
@@ -59,7 +60,15 @@ const VERSION = args.version ?? 'unknown';
 const RESTART_MODE = args['restart-mode'] ?? 'self';
 const RESTART_DETAIL = args['restart-detail'] ?? '';
 const SERVICE_PID = Number(args.pid ?? '0');
-const LOG_PATH = resolve(args.log ?? join(ROOT, 'logs', 'upgrade.log'));
+/**
+ * 运行期日志目录。
+ *
+ * 服务端会把这个位置告诉更新器（WORKHUB_LOG_DIR）：打包态的代码目录在安装目录里，
+ * 普通用户写不进去，升级日志落在那儿等于没落。托盘知道哪个目录可写，
+ * 由它指过来，日志就跟服务日志待在一起。
+ */
+const LOG_DIR = envValue('LOG_DIR') ? resolve(envValue('LOG_DIR')) : join(ROOT, 'logs');
+const LOG_PATH = resolve(args.log ?? join(LOG_DIR, 'upgrade.log'));
 
 const BACKUP = join(STAGING, 'backup');
 const FLAG = join(ROOT, '.upgrade-in-progress');
@@ -366,8 +375,11 @@ function resolvePort() {
 
   // 2. .env 里也可能有（服务是用 --env-file 起的，端口写在那儿）
   try {
-    const match = readFileSync(join(ROOT, '.env'), 'utf8').match(/^\s*(?:WORKHUB|MDHUB)_PORT\s*=\s*(\d+)/m);
-    if (match) return Number(match[1]);
+    // 解析规则跟 Node 的 --env-file 一致（引号、行尾注释、BOM 都要认），
+    // 见 server/envFile.ts。写错一个字符，端口就找不到了。
+    const parsed = parseEnvFile(readFileSync(join(ROOT, '.env'), 'utf8'));
+    const port = Number(parsed.WORKHUB_PORT || parsed.MDHUB_PORT || '');
+    if (Number.isFinite(port) && port > 0) return port;
   } catch {
     // 没有 .env
   }
@@ -577,8 +589,8 @@ function startSelf() {
   // 丢进 stdio: 'ignore' 就等于什么线索都没有，只能靠猜。
   let out;
   try {
-    mkdirSync(join(ROOT, 'logs'), { recursive: true });
-    out = openSync(join(ROOT, 'logs', 'service-restart.log'), 'a');
+    mkdirSync(LOG_DIR, { recursive: true });
+    out = openSync(join(LOG_DIR, 'service-restart.log'), 'a');
   } catch {
     out = 'ignore';
   }

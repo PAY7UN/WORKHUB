@@ -20,7 +20,9 @@ const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const { makeTrayImages } = require('./icon.cjs');
-const { dataPaths } = require('./paths.cjs');
+const { dataPaths, dataFiles, dataEnvOverrides, logDirEnv } = require('./paths.cjs');
+const { envValue, resolvePort, parseEnvFile } = require('./env.cjs');
+const { ensureEnvFile: ensureEnvFileFile } = require('./envfile.cjs');
 const {
   fetchStatus,
   fetchLogs,
@@ -65,6 +67,10 @@ let stoppingByUser = false;
 let restarts = 0;
 /** 'running' | 'stopped' */
 let status = 'stopped';
+/** 要在使用者眼前说一句话的事（比如配置丢了），菜单里显示一行 */
+let notice = '';
+/** 配置有问题时不拉起服务：拉了也是白拉（缺密钥的服务起不来） */
+let configBroken = false;
 
 /* --------------------------------- 路径 --------------------------------- */
 
@@ -178,58 +184,82 @@ function loadConfig() {
 /**
  * 读服务端口。
  *
- * 优先级跟 Node 的 `--env-file` 一致：**进程环境变量优先于 .env 文件**。
- * 托盘启动时若环境里已经带着 WORKHUB_PORT，服务端（子进程继承同一份环境）
- * 听的就是那个端口，托盘也得跟着它走，否则托盘指向的地址和服务实际监听的地址对不上，
- * 表现是「菜单显示已停止，可服务明明在跑」。
+ * 规则必须跟服务端看到的完全一致，否则两边会指向不同的端口，
+ * 表现是「菜单显示已停止，可服务明明在跑」（见 server/env.ts 的说明）。
  *
- * 旧名 WORKHUB_PORT 也认（见 server/env.ts 的说明）。
+ * 一致的意思是：**按 Node 的 --env-file 那套规则合并**——
+ * 进程环境里已经设过的变量不被 .env 覆盖，剩下的由 .env 补齐，
+ * 最后新名优先、旧名兜底地取 PORT。
+ *
+ * 旧名 MDHUB_PORT 也认：改名过渡期机器上还留着它是常事，
+ * 服务端认它（server/env.ts），托盘不认就会两边错开。
  */
 function readPortFromEnv(envFile) {
-  const fromEnv = Number(process.env.WORKHUB_PORT || process.env.WORKHUB_PORT);
-  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  let text = '';
   try {
-    const raw = fs.readFileSync(envFile, 'utf8');
-    const match = raw.match(/^\s*(?:WORKHUB|MDHUB)_PORT\s*=\s*(\d+)/m);
-    return match ? Number(match[1]) : DEFAULT_PORT;
+    text = fs.readFileSync(envFile, 'utf8');
   } catch {
-    return DEFAULT_PORT;
+    // 读不到就靠进程环境与默认端口
+  }
+  return resolvePort(process.env, text, DEFAULT_PORT);
+}
+
+/**
+ * .env 里写了托盘管着的路径时，要说一声。
+ *
+ * 数据库、vault、日志目录这三样是托盘说了算的（它把位置用环境变量告诉服务端，
+ * 而环境变量的优先级高于 .env 文件）。.env 里若也写了这些变量，写的人
+ * 以为生效了，其实没有——这种「配置分家」最难查：改了没反应，
+ * 或者数据跑到别的地方去了。
+ */
+function warnIgnoredEnvFilePaths() {
+  let text = '';
+  try {
+    text = fs.readFileSync(paths.envFile, 'utf8');
+  } catch {
+    return;
+  }
+  const parsed = parseEnvFile(text);
+  const ignored = ['WORKHUB_DB_V2', 'MDHUB_DB_V2', 'WORKHUB_VAULT_DIR', 'MDHUB_VAULT_DIR'];
+  for (const key of ignored) {
+    if (!parsed[key]) continue;
+    log(
+      `配置里的 ${key}=${parsed[key]} 不会生效：` +
+        '数据库与 vault 的位置由托盘按工作目录决定（工作目录=' +
+        `${paths.dataDir}）。`,
+    );
   }
 }
 
 /* ------------------------------ 首次运行初始化 ------------------------------ */
 
 /**
- * 打包态首次运行时生成 .env。
+ * 打包态首次运行时准备 .env。
  *
  * 服务端在生产模式下没有 WORKHUB_SECRET / WORKHUB_ADMIN_PASSWORD 就拒绝启动
  * （这是故意的：密钥缺失等于全站权限失守，不能悄悄降级成默认弱口令）。
  * 使用者装完即用，就意味着这两个值得由托盘替他们准备好：
  * 随机密钥 + 随机密码，密码当面告诉他一次。
+ *
+ * 「生成」这一步的坑（.env 带 BOM、.env 没了但库还在）由 tray/envfile.cjs 处理，
+ * 那儿有回归测试盯着——出事的话代价是使用者的文档解不开，不能靠人肉发现。
  */
 async function ensureEnvFile() {
-  if (!paths.packaged) return { password: null };
-  if (fs.existsSync(paths.envFile)) return { password: null };
-
-  const secret = randomBytes(32).toString('hex');
-  const password = randomBytes(9).toString('base64url');
+  if (!paths.packaged) return { password: null, error: null };
+  const { dbPath } = dataFiles(paths.dataDir);
   const port = await pickFreePort(DEFAULT_PORT);
-  fs.mkdirSync(path.dirname(paths.envFile), { recursive: true });
-  fs.writeFileSync(
-    paths.envFile,
-    [
-      '# WorkHub 本地版配置（首次启动自动生成）',
-      '# 主密钥：用于 JWT 签名与 API Key 加密，切勿泄露或分享',
-      `WORKHUB_SECRET=${secret}`,
-      '# 管理员初始密码：仅首次建库时写入账号，之后改这里不会改密码',
-      `WORKHUB_ADMIN_PASSWORD=${password}`,
-      '# 监听端口（托盘按它拼出「打开网页」的地址）',
-      `WORKHUB_PORT=${port}`,
-      '',
-    ].join('\n'),
-    'utf8',
-  );
-  return { password, port };
+  const result = ensureEnvFileFile({
+    envFile: paths.envFile,
+    dbPath,
+    port,
+    log,
+    makeCredentials: () => ({
+      secret: randomBytes(32).toString('hex'),
+      password: randomBytes(9).toString('base64url'),
+    }),
+  });
+  if (result.error) log(result.error);
+  return result;
 }
 
 /** 端口有没有被占着 */
@@ -282,32 +312,39 @@ function envFileArgs() {
     return [`--env-file=${paths.envFile}`];
   }
   const [major, minor] = process.versions.node.split('.').map(Number);
-  if (major > 22 || (major === 22 && minor >= 9)) return ['--env-file-if-exists=.env'];
+  // 用绝对路径：相对路径是相对子进程的工作目录算的，
+  // 哪天工作目录变了，.env 就找不到了（而服务照旧起不来，报错还不提 .env）。
+  if (major > 22 || (major === 22 && minor >= 9)) {
+    return [`--env-file-if-exists=${paths.envFile}`];
+  }
   return fs.existsSync(paths.envFile) ? [`--env-file=${paths.envFile}`] : [];
 }
 
 /**
  * 子进程的环境变量。
  *
- * 打包态要显式把数据库和 vault 掰到用户目录：服务端默认是按代码目录定位它们的，
+ * 数据的位置要显式掰到工作目录：服务端默认按代码目录定位数据库与 vault，
  * 而打包后代码在安装目录里（只读），普通用户写不进去。
+ * 详见 paths.cjs 的 dataEnvOverrides。
  */
 function childEnv() {
-  const env = {
+  return {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
     WORKHUB_PARENT_PID: String(process.pid),
+    ...dataEnvOverrides(paths, process.env),
+    ...logDirEnv(paths),
   };
-  if (paths.packaged) {
-    env.NODE_ENV = 'production';
-    env.WORKHUB_DB_V2 = path.join(paths.dataDir, 'data', 'workhub-v2.db');
-    env.WORKHUB_VAULT_DIR = path.join(paths.dataDir, 'data', 'vault');
-  }
-  return env;
 }
 
 async function startService() {
   if (child) return;
+  // 配置缺失时别拉：缺密钥的服务起不来，反复拉只会刷一屏报错，
+  // 还会让人以为「程序坏了」，其实只是 .env 不见了。
+  if (configBroken) {
+    log('配置缺失，未拉起服务（先处理 .env）');
+    return;
+  }
   stoppingByUser = false;
 
   // 端口被占着就别硬拉了：多半是已经有一个 WorkHub 在跑（或别的程序占了端口）。
@@ -445,12 +482,16 @@ function refreshMenu() {
   const running = status === 'running';
   const template = [
     { label: statusLabel(), enabled: false },
+  ];
+  // 有些事光写日志没人看得到（比如配置丢了），摆到菜单里
+  if (notice) template.push({ label: notice, enabled: false });
+  template.push(
     { type: 'separator' },
     {
       label: '打开网页',
       click: openTarget,
     },
-  ];
+  );
   if (config.mode === 'local') {
     template.push(
       { type: 'separator' },
@@ -934,7 +975,24 @@ app.whenReady().then(async () => {
 
   // 首次运行：生成 .env（打包态），并把初始密码当面告诉使用者。
   // 放在算 target 前面——端口是刚写进 .env 的，得按它来拼地址。
-  const { password } = await ensureEnvFile();
+  const { password, error } = await ensureEnvFile();
+  if (error) {
+    // 配置没了（比如 .env 被误删/被杀毒软件隔离），而库还在。
+    // 这种不拉起服务：缺密钥的服务根本起不来，起来也是一路报错，
+    // 还容易把使用者引到「重装」这种更糟的方向上去。
+    configBroken = true;
+    notice = '配置缺失：.env 不见了（详见日志）';
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'WorkHub 配置缺失',
+      message: '找不到 .env，数据库还在原处',
+      detail:
+        error +
+        '\n\n托盘不会重建配置——重建的密钥解不开库里的文档。' +
+        '把备份的 .env 放回原路径即可恢复。',
+      buttons: ['知道了'],
+    });
+  }
   if (password) {
     log('首次运行：已生成 .env');
     dialog.showMessageBox({
@@ -961,6 +1019,7 @@ app.whenReady().then(async () => {
   log(`模式=${config.mode} target=${config.target}`);
   log(`代码目录=${paths.codeDir} 工作目录=${paths.dataDir}`);
   if (config.configFile) log(`配置文件=${config.configFile}`);
+  warnIgnoredEnvFilePaths();
 
   const images = makeTrayImages();
   const scale = screen.getPrimaryDisplay().scaleFactor || 1;
