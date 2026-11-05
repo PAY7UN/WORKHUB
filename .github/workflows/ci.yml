@@ -94,6 +94,13 @@ jobs:
       - name: 打托盘包并自检
         shell: pwsh
         run: |
+          # 打包失败时把日志尾巴写进注解：注解在 API 里是公开可读的，
+          # 不用翻几百 MB 的 CI 日志才知道是哪一步炸的。
           $env:WORKHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
-          npm run pack:tray
+          npm run pack:tray 2>&1 | Tee-Object -FilePath 'tray-build.log'
+          if ($LASTEXITCODE -ne 0) {
+            $tail = ((Get-Content 'tray-build.log' -Tail 40) -join "`n") -replace "`n", '%0A'
+            Write-Host "::error title=托盘打包失败::$tail"
+            exit $LASTEXITCODE
+          }
           npm run pack:check

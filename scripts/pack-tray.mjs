@@ -127,6 +127,10 @@ async function buildPayload() {
  *
  * 用子进程而不是库函数：一次失败后要换源重试，重试必须是干净的状态，
  * 同一个进程里再跑一遍 builder，缓存和临时目录都是上一轮留下的脏东西。
+ *
+ * 子进程的输出边转发边留一份尾巴：打包失败时把最后几十行打出来——
+ * electron-builder 的报错都在输出末尾，不留尾巴的话，
+ * 一份几百 MB 的下载失败在 CI 日志里就只剩一行「退出码 1」，谁也看不出是哪一步炸的。
  */
 async function runBuilderOnce(configFile, { electron, binaries }) {
   const require = createRequire(import.meta.url);
@@ -139,13 +143,27 @@ async function runBuilderOnce(configFile, { electron, binaries }) {
   const cli = require.resolve('electron-builder/out/cli/cli.js');
   const child = spawn(process.execPath, [cli, '--config', configFile], {
     env,
-    stdio: 'inherit',
+    stdio: ['inherit', 'pipe', 'pipe'],
   });
+  const tail = [];
+  const keep = (chunk) => {
+    tail.push(chunk.toString('utf8'));
+    // 只留最后 40 行，够看出是哪一步炸的
+    while (tail.length > 40) tail.shift();
+  };
+  child.stdout.on('data', (d) => { process.stdout.write(d); keep(d); });
+  child.stderr.on('data', (d) => { process.stderr.write(d); keep(d); });
+
   const code = await new Promise((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (c) => resolve(c ?? 1));
   });
-  if (code !== 0) throw new Error(`electron-builder 退出码 ${code}`);
+  if (code !== 0) {
+    const last = tail.join('').split(/\r?\n/).filter((l) => l.trim()).slice(-25);
+    const err = new Error(`electron-builder 退出码 ${code}`);
+    err.detail = last.join('\n');
+    throw err;
+  }
 }
 
 /** 国内镜像：electron 发行包与打包工具的国内分发站 */
@@ -185,38 +203,51 @@ async function runBuilder() {
   // 打包源选谁：谁离得近用谁。
   //
   // 原来是无条件走国内镜像，那在本机是对的（官方源下不动），
-  // 在 GitHub Actions 的 runner 上却是错的：runner 在境外，
-  // 镜像站要么连不上、要么慢到超时，发版流水线就卡在托盘打包这步。
+  // 在 GitHub Actions 的 runner 上却靠不住：runner 在境外，
+  // 镜像站要么连不上、要么慢到超时。
   //
   // 现在按环境挑：CI 用官方源，本地用镜像；
   // 用户显式设了 ELECTRON_MIRROR / ELECTRON_BUILDER_BINARIES_MIRROR 就听用户的。
-  // 再兜一层：首选的源拉不下来就换另一个源重试一次，
-  // 「换个源重试」总比「发不出去」强。
+  //
+  // 再兜两层：
+  // 1）同一个源重试。打包要先下 electron 发行包（上百 MB）和 nsis 打包工具，
+  //    下载超时、连接被重置这类抖动是常事，重试一次常常就成了。
+  //    重试不是瞎试：electron 的下载缓存留在机器上，第二次能接着用。
+  // 2）首选源实在不行就换另一个源。「换个源重试」总比「发不出去」强。
   const explicit = {
     electron: process.env.ELECTRON_MIRROR ?? null,
     binaries: process.env.ELECTRON_BUILDER_BINARIES_MIRROR ?? null,
   };
   const official = { electron: null, binaries: null };
   const mirror = { electron: CN_MIRROR, binaries: CN_BINARIES };
-  const attempts = [];
+  const plans = [];
   if (explicit.electron || explicit.binaries) {
-    attempts.push(explicit);
+    plans.push({ source: explicit, tries: 2 });
   } else if (process.env.CI) {
-    attempts.push(official, mirror);
+    plans.push({ source: official, tries: 3 }, { source: mirror, tries: 1 });
   } else {
-    attempts.push(mirror, official);
+    plans.push({ source: mirror, tries: 2 }, { source: official, tries: 1 });
   }
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let lastError = null;
-  for (const attempt of attempts) {
-    const label = attempt.electron ? '国内镜像' : '官方源';
-    console.log(`  打包源：${label}`);
-    try {
-      await runBuilderOnce(configFile, attempt);
-      return;
-    } catch (err) {
-      lastError = err;
-      console.warn(`  ${label} 打包失败：${err.message}`);
+  for (const plan of plans) {
+    const label = plan.source.electron ? '国内镜像' : '官方源';
+    for (let i = 1; i <= plan.tries; i += 1) {
+      console.log(`  打包源：${label}（第 ${i}/${plan.tries} 次）`);
+      try {
+        await runBuilderOnce(configFile, plan.source);
+        return;
+      } catch (err) {
+        lastError = err;
+        console.warn(`  ${label} 第 ${i} 次打包失败：${err.message}`);
+        if (err.detail) console.warn(`  失败时的输出末尾：\n${err.detail}`);
+        if (i < plan.tries) {
+          const wait = 10_000 * i;
+          console.warn(`  ${wait / 1000} 秒后重试同一个源`);
+          await sleep(wait);
+        }
+      }
     }
   }
   throw lastError ?? new Error('electron-builder 没能出包');
