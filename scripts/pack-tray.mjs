@@ -141,10 +141,26 @@ async function runBuilderOnce(configFile, { electron, binaries }) {
   else delete env.ELECTRON_BUILDER_BINARIES_MIRROR;
 
   const cli = require.resolve('electron-builder/out/cli/cli.js');
-  const child = spawn(process.execPath, [cli, '--config', configFile], {
-    env,
-    stdio: ['inherit', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    process.execPath,
+    [
+      cli,
+      '--config',
+      configFile,
+      // 必须显式说「不发布」。
+      // electron-builder 26 有个隐式发布的行为：检出的是 tag（detached HEAD）时，
+      // 它以为这一趟就是要发版，安装包打完了还要往 GitHub 上传一份——
+      // 没有 token 就整步失败，包明明打好了也白搭。
+      // 它的日志原话就是「Please use --publish explicitly」。
+      // 发布包由发版流水线挂到 Release 上，用不着 electron-builder 自己发。
+      '--publish',
+      'never',
+    ],
+    {
+      env,
+      stdio: ['inherit', 'pipe', 'pipe'],
+    },
+  );
   const tail = [];
   const keep = (chunk) => {
     tail.push(chunk.toString('utf8'));
