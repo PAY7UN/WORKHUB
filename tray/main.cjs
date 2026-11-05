@@ -155,13 +155,22 @@ function log(message) {
 
 /**
  * 找配置文件。按「离用户最近的优先」排：
- * 托盘目录 → 可执行文件旁边（打包后）→ 用户配置目录。
+ * 托盘目录 → 可执行文件旁边（打包后）→ 用户数据目录 → 旧的用户配置目录。
+ *
+ * 用户数据目录就是 .env、数据库、日志待的那个目录（%LOCALAPPDATA%\WorkHub）：
+ * 配置和数据放一处，使用者找东西时只要认一个目录。
+ * 早期版本把配置放在 %APPDATA%\WorkHub——跟数据目录分在两处，
+ * 「我的东西到底在哪」成了个问题；那个位置仍然认（认到就搬过来），
+ * 但不再往那儿写。
  */
 function loadConfig() {
+  const dataDir = paths?.dataDir ?? '';
+  const legacy = path.join(process.env.APPDATA || '', 'WorkHub', 'tray.config.json');
   const candidates = [
     path.join(app.getAppPath(), 'tray.config.json'),
     path.join(path.dirname(process.execPath), 'tray.config.json'),
-    path.join(process.env.APPDATA || '', 'WorkHub', 'tray.config.json'),
+    ...(dataDir ? [path.join(dataDir, 'tray.config.json')] : []),
+    legacy,
   ];
   for (const file of candidates) {
     try {
@@ -172,6 +181,7 @@ function loadConfig() {
       const parsed = JSON.parse(raw);
       const merged = { ...DEFAULTS, ...parsed };
       merged.configFile = file;
+      if (file === legacy) migrateLegacyConfig(file, dataDir);
       return merged;
     } catch (err) {
       if (err.code === 'ENOENT') continue;
@@ -179,6 +189,44 @@ function loadConfig() {
     }
   }
   return { ...DEFAULTS, configFile: '' };
+}
+
+/**
+ * 把旧位置的配置搬到数据目录。
+ *
+ * 搬而不是删：搬完旧文件还在，万一新位置有问题还能回头找。
+ * 新位置已经有配置了就不搬——那说明使用者自己放了一份，以他的为准。
+ */
+function migrateLegacyConfig(from, dataDir) {
+  if (!dataDir) return;
+  const to = path.join(dataDir, 'tray.config.json');
+  try {
+    if (fs.existsSync(to)) return;
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.copyFileSync(from, to);
+    log(`配置已从旧位置搬到数据目录：${to}`);
+  } catch (err) {
+    log(`配置搬迁失败（不影响使用）：${err?.message ?? err}`);
+  }
+}
+
+/**
+ * 打开数据目录。
+ *
+ * .env、数据库、vault、日志、tray.config.json 全在这儿。
+ * 使用者问「我的东西存哪了」，答案就一个目录，不用解释五个地方。
+ */
+function openDataDir() {
+  const dir = paths?.dataDir;
+  if (!dir) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    shell.openPath(dir).then((err) => {
+      if (err) log(`打开数据目录失败：${err}`);
+    });
+  } catch (err) {
+    log(`打开数据目录失败：${err?.message ?? err}`);
+  }
 }
 
 /**
@@ -506,6 +554,7 @@ function refreshMenu() {
         click: stopService,
       },
       { type: 'separator' },
+      { label: '打开数据目录', click: openDataDir },
       { label: '检查更新', click: () => void checkForUpdates() },
     );
     // 查到新版本后才多出这一条：没新版本时点「立即更新」没意义
@@ -770,12 +819,17 @@ function currentVersion() {
  *
  * 开发态不行：托盘跑在仓库里，程序目录是 node_modules/electron，
  * 「更新」意味着把整个 Electron 装一份新的进去——那不是更新，那是搞破坏。
+ *
+ * 打包态靠托盘自己的 Electron 当更新器的运行时：把它旁边的运行时文件
+ * （ICU 数据、V8 快照这些）复制一份到临时目录，更新器就在那份副本上跑。
+ * 少了 ICU 数据，复制出来的 exe 一启动就退出——那还不如一开始就拦住，
+ * 直接告诉使用者手动下载。
  */
 function selfUpdateBlockedReason() {
   if (!app.isPackaged) return '开发态不支持自更新（要更新请下载新版本重新安装）';
-  const nodeExe = path.join(paths.codeDir, 'runtime', 'node.exe');
-  if (!fs.existsSync(nodeExe)) {
-    return '这个安装包里没有自带 Node 运行时，自动更新用不了，请手动下载新版本';
+  const appDir = path.dirname(process.execPath);
+  if (!fs.existsSync(path.join(appDir, 'icudtl.dat'))) {
+    return '这个安装包不完整（缺运行时文件），自动更新用不了，请手动下载新版本';
   }
   return null;
 }
@@ -871,7 +925,6 @@ async function runTrayUpdate() {
       execPath: process.execPath,
       execArgs: [],
       scriptPath,
-      nodeExePath: path.join(paths.codeDir, 'runtime', 'node.exe'),
       logPath: path.join(paths.logsDir, 'tray-update.log'),
       currentVersion: currentVersion(),
       config,

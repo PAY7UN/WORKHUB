@@ -19,6 +19,7 @@ const {
   compareVersions,
   fetchTrayManifest,
   locateAppRoot,
+  prepareUpdaterRuntime,
   resolveUpdateSource,
   sha256File,
   verifyChecksum,
@@ -191,6 +192,54 @@ test('找程序根：解压出来直接是 exe，或多套一层目录', () => {
     const unknown = path.join(base, 'unknown');
     fs.mkdirSync(unknown, { recursive: true });
     assert.equal(locateAppRoot(unknown), unknown);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('更新器运行时：把托盘旁边的运行时文件复制一份出去用', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'workhub-updater-runtime-'));
+  try {
+    // 假装这就是装好的托盘目录
+    const appDir = path.join(base, 'app');
+    fs.mkdirSync(path.join(appDir, 'resources'), { recursive: true });
+    fs.writeFileSync(path.join(appDir, 'WorkHub.exe'), 'exe');
+    fs.writeFileSync(path.join(appDir, 'icudtl.dat'), 'icu');
+    fs.writeFileSync(path.join(appDir, 'v8_context_snapshot.bin'), 'snapshot');
+    fs.writeFileSync(path.join(appDir, 'resources', 'app.asar'), 'asar');
+
+    const staging = path.join(base, 'staging');
+    fs.mkdirSync(staging, { recursive: true });
+    const { updaterExe, updaterDir } = prepareUpdaterRuntime(
+      staging,
+      appDir,
+      path.join(appDir, 'WorkHub.exe'),
+    );
+
+    // 更新器得能在托盘目录之外跑起来
+    assert.equal(path.dirname(updaterExe), updaterDir);
+    assert.notEqual(path.dirname(updaterExe), appDir);
+    assert.ok(fs.existsSync(updaterExe));
+    // 运行时文件得一起复制过去：少一个（ICU 数据）那个 exe 就起不来
+    assert.ok(fs.existsSync(path.join(updaterDir, 'icudtl.dat')));
+    assert.ok(fs.existsSync(path.join(updaterDir, 'v8_context_snapshot.bin')));
+    // 目录不复制：asar 有几百 MB，node 模式也读不了它
+    assert.ok(!fs.existsSync(path.join(updaterDir, 'resources')));
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('更新器运行时：托盘程序没复制成功就报错（别默默更新失败）', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'workhub-updater-runtime-bad-'));
+  try {
+    const appDir = path.join(base, 'app');
+    fs.mkdirSync(appDir, { recursive: true });
+    const staging = path.join(base, 'staging');
+    assert.throws(
+      () => prepareUpdaterRuntime(staging, appDir, path.join(appDir, 'WorkHub.exe')),
+      /复制更新器运行时失败/,
+    );
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }

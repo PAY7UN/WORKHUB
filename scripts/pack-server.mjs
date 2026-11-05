@@ -14,6 +14,8 @@
  * - 带一份文件清单（.workhub-files.txt）：升级时靠它算出「新版里已经
  *   没有的旧文件」并删掉。不删的话，改名加版本号的老文件会永远留在
  *   目录里，那种 bug 极难查。
+ * - 顶层只有一个目录：解压出来是「一个 workhub 文件夹」，
+ *   而不是 server、shared、dist、node_modules 一股脑摊在解压目录根部。
  * - 附带 sha256：更新器下载后要核对，传输损坏或半截文件不能直接用。
  *
  * 打包前会自动重建前端产物（dist/）并编译服务端（server/*.js）：
@@ -29,6 +31,7 @@ import { ensureFrontendBuilt } from './lib/frontend-build.mjs';
 import { buildServer } from './lib/server-build.mjs';
 import { copyRuntimeDeps, pruneNativeDeps } from './lib/runtime-deps.mjs';
 import { ensureNodeRuntime } from './lib/node-runtime.mjs';
+import { zipDirectory } from './lib/zip.mjs';
 import {
   copyFileSync,
   existsSync,
@@ -120,23 +123,14 @@ function run(command, args, options = {}) {
   });
 }
 
-/** 打 zip：Windows 用 PowerShell 自带的 Compress-Archive，其它系统用 zip */
-async function zipDirectory(stagingDir, zipPath) {
-  if (process.platform === 'win32') {
-    // 直接点名每个顶层项，不用通配符。
-    // readdirSync 本来就把 .workhub-files.txt 列出来了——再单独加一遍，
-    // Compress-Archive 会因为「重复路径」整个失败。
-    const items = readdirSync(stagingDir).map((name) => join(stagingDir, name));
-    await run('powershell', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `Compress-Archive -Path ${items.map((p) => `'${p}'`).join(',')} -DestinationPath '${zipPath}' -Force`,
-    ]);
-    return;
-  }
-  await run('zip', ['-q', '-r', zipPath, '.'], { cwd: stagingDir });
-}
+/**
+ * 包里那层顶层目录的名字。
+ *
+ * 解压出来是一个文件夹，而不是一堆文件摊在解压目录根部——
+ * 使用者面对的是「一个 WorkHub」，双击里面的东西就能用；
+ * 升级时新旧两版也不会混在同一个目录里。
+ */
+const PACKAGE_DIR = 'workhub';
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -174,11 +168,14 @@ async function main() {
     console.log('  （上次的暂存目录清不掉，换个名字重来）');
   }
   mkdirSync(staging, { recursive: true });
+  // 包内容统一放在 staging/workhub/ 下：打出来的 zip 顶层就是这一个目录
+  const pkgRoot = join(staging, PACKAGE_DIR);
+  mkdirSync(pkgRoot, { recursive: true });
 
   const files = [];
   for (const name of INCLUDE) {
     const from = join(ROOT, name);
-    const to = join(staging, name);
+    const to = join(pkgRoot, name);
     if (!statSync(from).isDirectory()) {
       copyFileSync(from, to);
       files.push(name);
@@ -204,11 +201,11 @@ async function main() {
     console.log('收集运行时依赖…');
     copyRuntimeDeps({
       root: ROOT,
-      target: staging,
+      target: pkgRoot,
       log: (msg) => console.log(`  ${msg}`),
     });
-    pruneNativeDeps(join(staging, 'node_modules'));
-    for (const rel of listFiles(join(staging, 'node_modules'))) {
+    pruneNativeDeps(join(pkgRoot, 'node_modules'));
+    for (const rel of listFiles(join(pkgRoot, 'node_modules'))) {
       files.push(`node_modules/${rel}`);
     }
   } else {
@@ -220,11 +217,11 @@ async function main() {
   if (args.runtime) {
     console.log('准备自带 Node 运行时…');
     const exe = await ensureNodeRuntime({
-      target: join(staging, 'runtime'),
+      target: join(pkgRoot, 'runtime'),
       log: (msg) => console.log(`  ${msg}`),
     });
     if (exe) {
-      for (const rel of listFiles(join(staging, 'runtime'))) {
+      for (const rel of listFiles(join(pkgRoot, 'runtime'))) {
         files.push(`runtime/${rel}`);
       }
     }
@@ -234,12 +231,12 @@ async function main() {
 
   // 文件清单：升级时靠它清理新版里已经没有的旧文件
   const manifest = [...files].sort().join('\n');
-  writeFileSync(join(staging, '.workhub-files.txt'), `${manifest}\n`, 'utf8');
+  writeFileSync(join(pkgRoot, '.workhub-files.txt'), `${manifest}\n`, 'utf8');
 
   mkdirSync(outDir, { recursive: true });
   const zipPath = join(outDir, `workhub-server-${version}.zip`);
   rmSync(zipPath, { force: true });
-  await zipDirectory(staging, zipPath);
+  await zipDirectory(pkgRoot, zipPath, { baseName: PACKAGE_DIR });
 
   const hash = createHash('sha256');
   hash.update(readFileSync(zipPath));

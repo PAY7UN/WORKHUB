@@ -8,19 +8,21 @@
  *
  * 打包态的目录分工（tray/main.cjs 的 resolvePaths 里是同一套逻辑）：
  *   安装目录（只读）：托盘 + payload
- *   用户目录（可写）：.env、数据库、vault、日志
+ *   用户目录（可写）：.env、数据库、vault、日志、tray.config.json
+ *
+ * 运行时只有一套：托盘的 Electron 本身就是 Node（ELECTRON_RUN_AS_NODE=1），
+ * 服务跑在里面，自更新的更新器也在里面跑——所以 payload 里不再附带 node.exe。
  *
  * 用法：npm run pack:tray [-- --skip-build]
  */
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { ensureFrontendBuilt } from './lib/frontend-build.mjs';
 import { buildServer } from './lib/server-build.mjs';
-import { ensureNodeRuntime } from './lib/node-runtime.mjs';
 import { zipDirectory, writeSha256 } from './lib/zip.mjs';
 import {
   copyRuntimeDeps,
@@ -97,21 +99,18 @@ async function buildPayload() {
   });
   console.log(`  运行时依赖 ${deps.length} 个`);
 
-  // 自带一份 Node 运行时：托盘自更新的更新器要用它。
+  // 这里不再自带一份 Node 运行时。
   //
-  // 更新器必须跑在托盘目录之外——它一跑起来就把那个目录里的文件锁住了，
-  // 覆盖自己就变成了不可能。而托盘自己的 exe 不能单独复制出去用：
-  // Electron 的 exe 旁边还散着一堆运行时文件（快照、ICU 数据、各类 dll），
-  // 少一个都起不来。纯 node.exe 复制过去就能跑，还不用改打包结构。
+  // 托盘本来就是 Electron——它的 exe 加上 ELECTRON_RUN_AS_NODE=1 就是一个
+  // 完整的 Node。再塞一份 node.exe 进 payload，等于让使用者的机器上有两套
+  // 运行环境：安装包凭空大 80 MB，免安装包也大 80 MB。
   //
-  // 服务本身不用它（服务跑在 Electron 的 node 模式里），但缺了它托盘就没法自更新。
-  const runtimeExe = await ensureNodeRuntime({
-    target: join(PAYLOAD, 'runtime'),
-    log: (msg) => console.log(`  ${msg}`),
-  });
-  if (!runtimeExe) {
-    console.warn('  ! 没有自带运行时，托盘将无法自动更新（可用 WORKHUB_NODE_DIR 指定本机 Node）');
-  }
+  // 自更新的更新器要跑在托盘目录之外（它一跑起来就把那个目录锁住了，
+  // 覆盖自己就变成了不可能）。解决办法是更新时把托盘 exe 旁边的运行时文件
+  // （ICU 数据、V8 快照等）复制一份到临时目录，用它跑更新器——
+  // 见 tray/update.cjs 的 prepareUpdaterRuntime。复制只在更新时发生。
+  //
+  // 服务进程也不需要它：服务跑在 Electron 的 node 模式里。
 }
 
 /**
@@ -288,7 +287,6 @@ function collectArtifacts() {
  * 重点是那几个「缺了就跑不起来」的：
  * - dist/index.html：服务端要托管它，页面才打得开；
  * - scripts/upgrade-apply.mjs：缺了它，打包态点「升级」会报找不到更新器；
- * - runtime/node.exe：缺了它，托盘没法自动更新；
  * - node_modules：服务端的运行时依赖（express、better-sqlite3 等）。
  */
 function printPayloadSummary() {
@@ -305,10 +303,6 @@ function printPayloadSummary() {
     const ok = existsSync(join(PAYLOAD, rel));
     console.log(`  ${ok ? 'OK  ' : '缺失'} ${rel}  （${why}）`);
   }
-  const runtimeOk = existsSync(join(PAYLOAD, 'runtime', 'node.exe'));
-  console.log(
-    `  ${runtimeOk ? 'OK  ' : '缺失'} runtime/node.exe  （托盘自动更新用的更新器运行时）`,
-  );
   const deps = join(PAYLOAD, 'node_modules');
   const depCount = existsSync(deps) ? readdirSync(deps).length : 0;
   console.log(`  顶层目录：${entries.join('、')}`);
@@ -321,15 +315,22 @@ function printPayloadSummary() {
  * 这就是「托盘更新」的原料：发布时把它挂到 tag 上，
  * 托盘的更新器按这个名字找到它、下载、解压、覆盖自己。
  *
- * 内容是 electron-builder 打出来的免安装目录（win-unpacked）：
- * 解压出来就是一个 WorkHub.exe，双击就能跑——像可执行程序一样用，
- * 不用装、不写注册表。想放到 U 盘里带走也行。
+ * 内容是 electron-builder 打出来的免安装目录（win-unpacked）。
+ * 打包前把它改名为 workhub，于是 zip 里的顶层就是这一个目录：
+ * 解压出来是「一个 workhub 文件夹」，双击里面的 WorkHub.exe 就能跑——
+ * 像可执行程序一样用，不用装、不写注册表。想放到 U 盘里带走也行。
+ *
+ * 为什么非得收这一层：解压工具默认把包里的东西直接倒进当前目录，
+ * 摊开的话使用者面对的是一堆 dll 和 resources/，认不出哪个才是入口。
  */
 async function packPortableZip() {
-  const portableDir = join(OUT, 'win-unpacked');
-  if (!existsSync(portableDir)) {
-    throw new Error(`免安装目录不存在：${portableDir}`);
+  const unpacked = join(OUT, 'win-unpacked');
+  if (!existsSync(unpacked)) {
+    throw new Error(`免安装目录不存在：${unpacked}`);
   }
+  const portableDir = join(OUT, 'workhub');
+  rmSync(portableDir, { recursive: true, force: true });
+  renameSync(unpacked, portableDir);
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
   const version = pkg.version ?? '0.0.0';
   const fileName = `workhub-tray-${version}.zip`;
@@ -337,7 +338,7 @@ async function packPortableZip() {
   mkdirSync(dest, { recursive: true });
   const zipPath = join(dest, fileName);
   rmSync(zipPath, { force: true });
-  await zipDirectory(portableDir, zipPath);
+  await zipDirectory(portableDir, zipPath, { baseName: 'workhub' });
   const sha256 = writeSha256(zipPath, fileName);
   const sizeMb = (readFileSync(zipPath).length / 1024 / 1024).toFixed(1);
   return { fileName, zipPath, sha256, sizeMb };
@@ -377,7 +378,7 @@ const portable = await packPortableZip();
 console.log('\n打包完成：');
 for (const file of artifacts) console.log(`  - release/${file}`);
 console.log(`  - release/${portable.fileName}（免安装，${portable.sizeMb} MB，解压即用）`);
-console.log(`  - 免安装目录：${join(OUT, 'win-unpacked')}`);
+console.log(`  - 免安装目录：${join(OUT, 'workhub')}`);
 console.log(`\n免安装包校验（sha256）：${portable.sha256}`);
 console.log('把它挂到 GitHub Release（资产名保持 workhub-tray-<版本>.zip）就能被托盘自动更新认到。');
 

@@ -8,6 +8,7 @@
  * - 运行时依赖在包里（node_modules），不是靠目标机现场装；
  * - 自带 Node 在包里（runtime/node.exe），不是靠目标机装；
  * - 文件清单在包里（.workhub-files.txt），升级时才算得出该删哪些旧文件；
+ * - 顶层只有一层目录：解压出来是一个文件夹，不是文件摊在根部；
  * - 旁边的 .sha256 对得上——传输损坏的包不能拿去升级。
  *
  * 少一样，零环境部署就是空话；而且这种缺失往往要到目标机上才暴露。
@@ -23,6 +24,19 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * 包里那层顶层目录的名字。
+ *
+ * 两个包（服务端、托盘）结构一致：解压出来是「一个文件夹」，
+ * 而不是一堆文件摊在解压目录根部。检查时按同一个前缀找。
+ */
+const PACKAGE_DIR = 'workhub';
+
+/** 包内路径（相对于那层顶层目录） */
+function inPackage(rel) {
+  return `${PACKAGE_DIR}/${rel}`;
+}
 
 /** 包里必须有的东西 */
 const REQUIRED = [
@@ -42,14 +56,15 @@ const RUNTIME = 'runtime/node.exe';
  * 托盘免安装包里必须有的东西。
  *
  * 托盘包的卖点是「解压即用，像可执行程序一样」，
- * 而且托盘自己要能自动更新——那需要更新器脚本和更新器运行时都在包里。
- * 少一样，更新就是一句空话。
+ * 而且托盘自己要能自动更新——那需要更新器脚本在包里，
+ * 更新器跑起来用的运行时是托盘自己的 Electron（复制一份到临时目录用），
+ * 所以包里不再单独附带一份 node.exe。
  */
 const TRAY_REQUIRED = [
   ['WorkHub.exe', '托盘本体'],
   ['resources/app.asar', '托盘代码'],
   ['apply-update.cjs', '更新器脚本（在 exe 旁边，不在 asar 里）'],
-  ['resources/payload/runtime/node.exe', '更新器运行时'],
+  ['icudtl.dat', '托盘的运行时文件（更新器复制它当自己的运行时）'],
   ['resources/payload/server/index.js', '服务端入口（编译产物）'],
   ['resources/payload/dist/index.html', '前端构建产物'],
 ];
@@ -138,8 +153,8 @@ try {
  * 检查托盘免安装包。
  *
  * 重点是那两样「托盘自己更新要用的东西」：
- * 更新器脚本（apply-update.cjs）和更新器运行时（payload/runtime/node.exe）。
- * 缺了脚本，更新器找不到自己；缺了运行时，更新器连启动都做不到——
+ * 更新器脚本（apply-update.cjs）和托盘的运行时文件（ICU 数据、V8 快照）。
+ * 缺了脚本，更新器找不到自己；缺了运行时文件，更新器连启动都做不到——
  * 这两种缺失在使用者机器上才暴露，而那时候旧版本已经被替换掉了。
  */
 function checkTrayPackage(zipPath) {
@@ -150,8 +165,13 @@ function checkTrayPackage(zipPath) {
   const entries = listEntries(zipPath);
   const names = new Set(entries.map((entry) => entry.replace(/\\/g, '/').replace(/^\.\//, '')));
 
+  // 顶层只有一层目录：解压出来是一个文件夹，不是文件摊在根部
+  const strays = [...names].filter((name) => !name.startsWith(`${PACKAGE_DIR}/`));
+  if (strays.length === 0) ok(`顶层只有 ${PACKAGE_DIR}/ 一个目录`);
+  else fail(`顶层散着 ${strays.length} 个文件（应该全部收在 ${PACKAGE_DIR}/ 里）`);
+
   for (const [need, why] of TRAY_REQUIRED) {
-    if (names.has(need)) ok(`有 ${need}  （${why}）`);
+    if (names.has(inPackage(need))) ok(`有 ${need}  （${why}）`);
     else fail(`托盘包里少了 ${need}  （${why}）`);
   }
 
@@ -175,28 +195,33 @@ function main() {
   const entries = listEntries(zipPath);
   const names = new Set(entries.map((entry) => entry.replace(/\\/g, '/')));
 
+  // 0. 顶层只有一层目录：解压出来是一个文件夹，不是文件摊在根部
+  const strays = [...names].filter((name) => !name.startsWith(`${PACKAGE_DIR}/`));
+  if (strays.length === 0) ok(`顶层只有 ${PACKAGE_DIR}/ 一个目录`);
+  else fail(`顶层散着 ${strays.length} 个文件（应该全部收在 ${PACKAGE_DIR}/ 里）`);
+
   // 1. 该有的都在
   for (const need of REQUIRED) {
-    if (names.has(need)) ok(`有 ${need}`);
+    if (names.has(inPackage(need))) ok(`有 ${need}`);
     else fail(`包里少了 ${need}`);
   }
 
   // 2. 运行时依赖在包里
   for (const dep of REQUIRED_DEPS) {
-    const found = [...names].some((name) => name.startsWith(`node_modules/${dep}/`));
+    const found = [...names].some((name) => name.startsWith(inPackage(`node_modules/${dep}/`)));
     if (found) ok(`有依赖 node_modules/${dep}`);
     else fail(`包里少了依赖 node_modules/${dep}`);
   }
 
   // 3. 自带 Node（带了就必须有；没带就明说，不能闷声发出去）
-  const hasRuntime = names.has(RUNTIME);
+  const hasRuntime = names.has(inPackage(RUNTIME));
   if (hasRuntime) ok(`有自带运行时 ${RUNTIME}`);
   else console.log('· 这个包不带自带运行时（目标机需要自行安装 Node）');
 
   // 4. 文件清单得跟包里的东西对得上：清单决定升级时删哪些旧文件，
   //    清单里缺了自带运行时，它就会被当成「新版里已经没有的旧文件」删掉——
   //    而那台机器上只有这一份 Node，删了服务就再也起不来了。
-  const manifest = readEntryContent(zipPath, '.workhub-files.txt');
+  const manifest = readEntryContent(zipPath, inPackage('.workhub-files.txt'));
   if (!manifest.trim()) {
     fail('读不出文件清单 .workhub-files.txt 的内容');
   } else {

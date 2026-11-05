@@ -24,7 +24,7 @@ const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { createWriteStream, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } = require('node:fs');
 const { readFile } = require('node:fs/promises');
-const { dirname, join } = require('node:path');
+const { basename, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
@@ -335,29 +335,43 @@ async function checkTrayUpdate(options = {}) {
 /* --------------------------- 起更新器（替换文件） --------------------------- */
 
 /**
- * 准备更新器要用的可执行文件。
+ * 准备更新器要用的运行时。
  *
  * 更新器必须跑在**托盘目录之外**：
  * 它自己就站在被替换的目录里，一跑起来就把那个目录里的文件锁住了，
  * 覆盖自己就变成了不可能。
  *
- * 所以先把 payload 自带的 node.exe 复制一份到临时目录再用。
- * 不用托盘自己的 exe，是因为 Electron 的 exe 旁边还散着一堆运行时文件
- * （快照、ICU 数据、各类 dll），单独复制一个 exe 是跑不起来的；
- * 而纯 node.exe 复制过去就能跑，还顺带避免了「更新器锁住自己的 exe」。
+ * 用什么运行时？托盘自己的 exe。
+ * Electron 的 exe 加上 ELECTRON_RUN_AS_NODE=1 就是一个完整的 Node，
+ * 把 exe 旁边的运行时文件（ICU 数据、V8 快照等）一起复制过去就能跑起来。
+ * 这里复制的是**全部顶层文件**：少拷一个就可能起不来（缺 ICU 数据会直接
+ * 报错退出），而多拷几个 dll/pak 只是多花几百毫秒。
+ * 目录不复制：resources/、locales/ 里的东西 node 模式用不上，
+ * resources/app.asar 就有几百 MB，抄过去纯属浪费。
+ *
+ * 为什么不再额外带一份 node.exe：
+ * 托盘本来就有 Node（就是 Electron 自己），再带一份等于让使用者机器上有
+ * 两套运行环境——安装包凭空大 80 MB，免安装包也大 80 MB。
+ * 复制运行时文件只在更新时发生（几秒），换来的是安装目录里只剩一套环境。
  */
-function prepareUpdaterRuntime(stagingDir, nodeExePath) {
-  if (!nodeExePath || !existsSync(nodeExePath)) {
-    throw new Error('这个安装包里没有自带 Node 运行时，自动更新用不了');
-  }
+function prepareUpdaterRuntime(stagingDir, appDir, execPath) {
   const updaterDir = join(stagingDir, 'updater');
   mkdirSync(updaterDir, { recursive: true });
-  const dest = join(updaterDir, 'node.exe');
-  copyFileSync(nodeExePath, dest);
-  // 官方包里 node.exe 依赖 node.dll，缺了会起不来
-  const dll = join(dirname(nodeExePath), 'node.dll');
-  if (existsSync(dll)) copyFileSync(dll, join(updaterDir, 'node.dll'));
-  return dest;
+  const exeName = basename(execPath);
+  for (const entry of readdirSync(appDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    try {
+      copyFileSync(join(appDir, entry.name), join(updaterDir, entry.name));
+    } catch (err) {
+      // 某个文件正被占用（托盘自己还开着）拷不动，不该让整个更新失败：
+      // 真正要用的那几个拷成功就行
+    }
+  }
+  const updaterExe = join(updaterDir, exeName);
+  if (!existsSync(updaterExe)) {
+    throw new Error('复制更新器运行时失败：托盘程序没复制成功');
+  }
+  return { updaterExe, updaterDir };
 }
 
 /**
@@ -373,7 +387,6 @@ async function applyTrayUpdate(options) {
     execPath,
     execArgs = [],
     scriptPath,
-    nodeExePath,
     logPath,
     currentVersion = '0.0.0',
     config = {},
@@ -398,10 +411,15 @@ async function applyTrayUpdate(options) {
     throw new Error(`已经是最新版本了（${currentVersion}）`);
   }
 
-  const updaterExe = prepareUpdaterRuntime(prepared.stagingDir, nodeExePath);
+  const { updaterExe, updaterDir } = prepareUpdaterRuntime(prepared.stagingDir, appDir, execPath);
+
+  // 跑复制出来的那份更新器脚本：原目录里那份正在被读，跑副本就不会锁住它
+  const updaterScript = existsSync(join(updaterDir, 'apply-update.cjs'))
+    ? join(updaterDir, 'apply-update.cjs')
+    : scriptPath;
 
   const updaterArgs = [
-    scriptPath,
+    updaterScript,
     '--root',
     appDir,
     '--staging',
@@ -422,7 +440,8 @@ async function applyTrayUpdate(options) {
   // 环境变量要「删掉」而不是「置空」：置空的话下游看到的还是一个
   // 设过的空字符串，「有没有被托管」这类判断就说不清了。
   const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
+  // 让复制出来的托盘 exe 以纯 Node 模式跑——它现在就是更新器的运行时
+  env.ELECTRON_RUN_AS_NODE = '1';
   delete env.WORKHUB_PARENT_PID;
 
   const child = spawn(updaterExe, updaterArgs, {
@@ -455,6 +474,7 @@ module.exports = {
   extractZip,
   fetchTrayManifest,
   locateAppRoot,
+  prepareUpdaterRuntime,
   prepareTrayUpdate,
   readAppVersion,
   resolveUpdateSource,

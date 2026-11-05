@@ -283,6 +283,10 @@ function relaunch() {
     // 设过的空字符串，「有没有被托管」这件事就说不清了。
     const env = { ...process.env };
     delete env.WORKHUB_PARENT_PID;
+    // 更新器自己是以纯 Node 模式跑的（ELECTRON_RUN_AS_NODE=1）。
+    // 这个标记绝对不能传给新托盘：传过去它就变成 Node 进程，
+    // 窗口和托盘图标都起不来——使用者看到的就是「更新完托盘没了」。
+    delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(EXEC, execArgs, {
       detached: true,
       stdio: 'ignore',

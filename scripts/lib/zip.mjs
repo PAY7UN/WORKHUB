@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname } from 'node:path';
 
 /** 跑一个外部命令，失败就抛错（带上 stderr） */
 export function run(command, args, options = {}) {
@@ -33,22 +33,48 @@ export function run(command, args, options = {}) {
 /**
  * 把目录打成 zip。
  *
- * Windows 用 PowerShell 自带的 Compress-Archive，其它系统用 zip。
- * zip 里的结构是「目录里的顶层项」——不是「目录本身」：
- * 解压出来直接就是内容，不用再点进一层文件夹。
+ * Windows 用系统自带的 tar（bsdtar），其它系统用 zip。
+ *
+ * 传了 baseName，zip 里就会有一层以它命名的顶层目录：
+ * 解压出来是「一个文件夹」，而不是一堆文件摊在解压目录的根部。
+ *
+ * 为什么非要这一层：
+ * 解压工具默认把包里的东西直接倒进当前目录。摊开的话，使用者面对的是
+ * 十几个不知道是什么的目录（server、shared、dist、node_modules、runtime…），
+ * 装到一半才发现认错了目录也说不清；升级时新旧两版混在一起更麻烦。
+ * 收进一个文件夹之后，解压出来就是一个「WorkHub」，双击里面的东西就能用。
+ *
+ * baseName 必须等于目录自身的名字——条目名的顶层就是它，名字对不上就早点
+ * 报错，别等打完包才发现结构不对。
+ *
+ * 为什么不用 PowerShell 的 Compress-Archive：
+ * 它写在 Windows 上会把条目名里的分隔符写成反斜杠（workhub\server\index.js）。
+ * zip 规范要求用正斜杠，Linux 上的 unzip 会把反斜杠当成文件名的一部分，
+ * 解出来是一堆叫「workhub\server\index.js」的文件——服务器部署直接坏掉，
+ * 而且这种包在 Windows 上看着完全正常，只有到了目标机器上才暴露。
  */
-export async function zipDirectory(stagingDir, zipPath) {
+export async function zipDirectory(stagingDir, zipPath, options = {}) {
+  const baseName = options.baseName ?? '';
+  if (baseName && basename(stagingDir) !== baseName) {
+    throw new Error(
+      `压缩包顶层目录名对不上：目录叫 ${basename(stagingDir)}，要的是 ${baseName}`,
+    );
+  }
   if (process.platform === 'win32') {
-    // 直接点名每个顶层项，不用通配符。
-    // readdirSync 本来就把清单文件列出来了——再单独加一遍，
-    // Compress-Archive 会因为「重复路径」整个失败。
-    const items = readdirSync(stagingDir).map((name) => join(stagingDir, name));
-    await run('powershell', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `Compress-Archive -Path ${items.map((p) => `'${p}'`).join(',')} -DestinationPath '${zipPath}' -Force`,
-    ]);
+    // Windows 10 自带 tar（bsdtar），-a 让它按扩展名选 zip 格式
+    if (baseName) {
+      // 在父目录里打包这个目录：条目名的顶层就是它
+      await run('tar', ['-a', '-cf', zipPath, '-C', dirname(stagingDir), baseName]);
+      return;
+    }
+    // 点名每个顶层项（不用 '.'，那样条目名会带一层 './'）
+    const items = readdirSync(stagingDir);
+    await run('tar', ['-a', '-cf', zipPath, '-C', stagingDir, '--', ...items]);
+    return;
+  }
+  if (baseName) {
+    // 在父目录里打包这个目录：条目名就带上了它
+    await run('zip', ['-q', '-r', zipPath, baseName], { cwd: dirname(stagingDir) });
     return;
   }
   await run('zip', ['-q', '-r', zipPath, '.'], { cwd: stagingDir });

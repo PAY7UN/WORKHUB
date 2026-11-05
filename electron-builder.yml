@@ -1,7 +1,8 @@
 # electron-builder 配置：Windows 托盘工具
 #
 # 产物：release/WorkHub-Setup-<版本>.exe（安装程序）
-# 另有 release/win-unpacked/ 是免安装目录，可直接运行验证。
+# 免安装包是 release/workhub-tray-<版本>.zip：打包脚本把免安装目录改名为 workhub
+# 之后打成 zip，所以 zip 顶层只有这一个目录（解压出来是「一个文件夹」）。
 appId: com.workhub.tray
 productName: WorkHub
 copyright: WorkHub
@@ -36,8 +37,9 @@ extraResources:
 
 # 托盘自更新的更新器脚本：放在 exe 旁边（不在 asar 里）。
 #
-# 为什么不能塞进 asar：更新器是用纯 Node 跑的（payload 自带的 node.exe），
-# 它要读自己的脚本、还要在托盘退出后覆盖这个目录里的文件。
+# 为什么不能塞进 asar：更新器是纯 Node 跑的（托盘自己的 Electron，
+# 用 ELECTRON_RUN_AS_NODE=1），它要读自己的脚本、还要在托盘退出后
+# 覆盖这个目录里的文件。
 # asar 里的文件是虚拟的，Node 之外的工具（以及覆盖操作）都够不着。
 extraFiles:
   - from: tray/apply-update.cjs
@@ -51,11 +53,20 @@ win:
   artifactName: WorkHub-Setup-${version}.${ext}
 
 nsis:
-  # 一键安装：使用者双击就完事，不用研究装哪
-  oneClick: true
+  # 辅助安装程序：给使用者一个「选择安装位置」的页面。
+  # 一键安装（oneClick）没有这一页，文件只能落在固定目录，
+  # 想装到别的盘的人只能自己去搬——搬完快捷方式和卸载入口都可能对不上。
+  oneClick: false
   perMachine: false
-  allowToChangeInstallationDirectory: false
+  allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: WorkHub
   # 卸载时保留用户数据（.env / 数据库），重装不丢东西
   deleteAppDataOnUninstall: false
+
+# 只留中文和英文两种界面语言。
+# Electron 默认把 50 多种语言包全塞进 locales/，装完在安装目录里铺一层
+# 用不上的 .pak 文件——既占地方（十几 MB），又让人以为装坏了。
+electronLanguages:
+  - zh-CN
+  - en-US
