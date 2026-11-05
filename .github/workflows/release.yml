@@ -8,6 +8,11 @@ name: Release
 on:
   release:
     types: [published]
+  # 推 tag 即发版：发版不需要谁的 PAT，工作流用自带的 GITHUB_TOKEN 建 Release 并挂包。
+  # 手动建好 Release 再发布（上面那条）也照样能走，两条路殊途同归。
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -26,6 +31,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 全量历史：没有 .github/release-notes/<tag>.md 时，说明文件由提交记录生成，
+          # 只拉一层的话 git log 只剩一条提交，说明就成了一句话。
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -37,7 +46,7 @@ jobs:
       - name: 版本对得上吗
         shell: pwsh
         env:
-          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.event.ref_name }}
         run: |
           $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $tag = $env:TAG
@@ -62,10 +71,30 @@ jobs:
       - name: 包合格吗
         run: npm run pack:check
 
+      - name: 准备 Release 说明
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.event.ref_name }}
+        run: |
+          # 有 .github/release-notes/<tag>.md 就用它，没有就用提交记录兜底：
+          # Release 正文空着不好，但也不能因为找不到说明文件就发不出去。
+          $notes = Join-Path '.github\release-notes' "$env:TAG.md"
+          if (Test-Path $notes) {
+            Copy-Item $notes 'release-notes.md'
+            Write-Host "用仓库里的说明：$notes"
+          } else {
+            git log --pretty=format:'- %s (%h)' -n 50 | Out-File -Encoding utf8 'release-notes.md'
+            Write-Host '没有对应的说明文件，改用提交记录生成'
+          }
+
       - name: 挂到 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          tag_name: ${{ github.event.inputs.tag || github.event.release.tag_name || github.event.ref_name }}
+          body_path: release-notes.md
+          # 同一个 tag 重发一次（推 tag 建完 Release、又在网页上点一次发布）时，
+          # 资产名会撞车；覆盖掉旧的，别让这一步把整条流水线带崩。
+          overwrite_files: true
           # 资产名是自动升级的约定：服务端认 workhub-server-<版本>.zip，
           # 托盘认 workhub-tray-<版本>.zip。名字对不上就等于没发，
           # 而且用户那边看不出任何异常：界面只说「没有新版本」。
