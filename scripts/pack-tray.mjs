@@ -12,6 +12,7 @@
  *
  * 用法：npm run pack:tray [-- --skip-build]
  */
+import { spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -122,6 +123,36 @@ async function buildPayload() {
  */
 
 /**
+ * 跑一次 electron-builder。
+ *
+ * 用子进程而不是库函数：一次失败后要换源重试，重试必须是干净的状态，
+ * 同一个进程里再跑一遍 builder，缓存和临时目录都是上一轮留下的脏东西。
+ */
+async function runBuilderOnce(configFile, { electron, binaries }) {
+  const require = createRequire(import.meta.url);
+  const env = { ...process.env };
+  if (electron) env.ELECTRON_MIRROR = electron;
+  else delete env.ELECTRON_MIRROR;
+  if (binaries) env.ELECTRON_BUILDER_BINARIES_MIRROR = binaries;
+  else delete env.ELECTRON_BUILDER_BINARIES_MIRROR;
+
+  const cli = require.resolve('electron-builder/out/cli/cli.js');
+  const child = spawn(process.execPath, [cli, '--config', configFile], {
+    env,
+    stdio: 'inherit',
+  });
+  const code = await new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (c) => resolve(c ?? 1));
+  });
+  if (code !== 0) throw new Error(`electron-builder 退出码 ${code}`);
+}
+
+/** 国内镜像：electron 发行包与打包工具的国内分发站 */
+const CN_MIRROR = 'https://npmmirror.com/mirrors/electron/';
+const CN_BINARIES = 'https://npmmirror.com/mirrors/electron-builder-binaries/';
+
+/**
  * 调 electron-builder 出安装包。
  *
  * 配置以仓库里的 electron-builder.yml 为准（唯一真源），
@@ -151,15 +182,44 @@ async function runBuilder() {
   const configFile = join(STAGE, 'builder.config.json');
   writeFileSync(configFile, JSON.stringify(config, null, 2), 'utf8');
 
-  // 国内网络下从镜像拉 electron 发行包与打包工具（可用环境变量覆盖）
-  process.env.ELECTRON_MIRROR =
-    process.env.ELECTRON_MIRROR ?? 'https://npmmirror.com/mirrors/electron/';
-  process.env.ELECTRON_BUILDER_BINARIES_MIRROR =
-    process.env.ELECTRON_BUILDER_BINARIES_MIRROR ??
-    'https://npmmirror.com/mirrors/electron-builder-binaries/';
+  // 打包源选谁：谁离得近用谁。
+  //
+  // 原来是无条件走国内镜像，那在本机是对的（官方源下不动），
+  // 在 GitHub Actions 的 runner 上却是错的：runner 在境外，
+  // 镜像站要么连不上、要么慢到超时，发版流水线就卡在托盘打包这步。
+  //
+  // 现在按环境挑：CI 用官方源，本地用镜像；
+  // 用户显式设了 ELECTRON_MIRROR / ELECTRON_BUILDER_BINARIES_MIRROR 就听用户的。
+  // 再兜一层：首选的源拉不下来就换另一个源重试一次，
+  // 「换个源重试」总比「发不出去」强。
+  const explicit = {
+    electron: process.env.ELECTRON_MIRROR ?? null,
+    binaries: process.env.ELECTRON_BUILDER_BINARIES_MIRROR ?? null,
+  };
+  const official = { electron: null, binaries: null };
+  const mirror = { electron: CN_MIRROR, binaries: CN_BINARIES };
+  const attempts = [];
+  if (explicit.electron || explicit.binaries) {
+    attempts.push(explicit);
+  } else if (process.env.CI) {
+    attempts.push(official, mirror);
+  } else {
+    attempts.push(mirror, official);
+  }
 
-  const { build } = await import('electron-builder');
-  await build({ config: configFile });
+  let lastError = null;
+  for (const attempt of attempts) {
+    const label = attempt.electron ? '国内镜像' : '官方源';
+    console.log(`  打包源：${label}`);
+    try {
+      await runBuilderOnce(configFile, attempt);
+      return;
+    } catch (err) {
+      lastError = err;
+      console.warn(`  ${label} 打包失败：${err.message}`);
+    }
+  }
+  throw lastError ?? new Error('electron-builder 没能出包');
 }
 
 /** 把安装包拷回仓库的 release/，方便取用 */
