@@ -287,6 +287,20 @@ npm run service:uninstall
 - **托盘托管和服务托管别同时开。** 两个都想拉起同一个端口，谁后起来谁撞
   `EADDRINUSE`（服务端会重试 10 秒，然后放弃）。
 
+### 改 PowerShell 脚本前先知道两条
+
+1. **`.ps1` 必须存成「UTF-8 带 BOM」。** Windows 自带的 PowerShell 5.1 读 `.ps1` 时，
+   文件开头没有 BOM 就按**系统 ANSI 代码页**解码。中文 Windows（代码页 936）上，
+   UTF-8 里的中文会被拆成乱码，某些字节序列还正好落成引号或反引号——
+   脚本直接**解析失败**，一行都跑不起来，报错还是 `Missing closing '}'`，
+   完全指不到病根（很容易被误判成「脚本被改坏了」，其实是文件编码不对）。
+   `scripts/lib/ps-encoding.test.mjs` 盯着这条，顺带用 PowerShell 自己的解析器
+   把每个 `.ps1` 过一遍，语法错也一并报出来。
+2. **`.env` 的解析规则只有一份实现**（`scripts/lib/env.ps1`），
+   `deploy.ps1` 与 `install-service.ps1` 都从那儿取端口。
+   别在脚本里另写一份——两份实现迟早分叉，而分叉之后的症状是
+   「服务照常起，只是停不下来，只能强杀」。
+
 ## 托盘工具（Windows）
 
 一个托盘图标 + 一个菜单，不做完整界面。一套代码两种模式：
@@ -308,7 +322,33 @@ npm run tray      # 开发态启动（Electron 自带运行时）
   配置文件按「离用户最近」找：托盘目录 → **exe 旁边** → `%APPDATA%\WorkHub`。
   把配置放在 exe 旁边、再把 `appDir` 指到同一个目录，就是一套**便携部署**：
   程序、配置、数据库、日志全在一个文件夹里，整个拷到别的机器照样跑。
-  托盘自更新时这些文件在保护名单（`data` / `logs` / `.env` / `tray.config.json`）里，不会被覆盖掉。
+  托盘自更新时这些文件在保护名单（`data` / `logs` / `.env` / `.env.bak` / `tray.config.json`）里，不会被覆盖掉。
+
+#### 工作目录（`appDir`）管着哪些东西
+
+`appDir` 是**工作目录**，下面这些全都跟着它走，开发态与打包态都一样：
+
+| 东西 | 位置 | 说明 |
+| --- | --- | --- |
+| `.env` | `<工作目录>\.env` | 密钥、管理员初始密码、端口 |
+| 数据库 | `<工作目录>\data\workhub-v2.db` | 服务端默认按代码目录定位，托盘会显式掰过来 |
+| vault | `<工作目录>\data\vault` | 同上 |
+| 日志 | `<工作目录>\logs\` | 服务日志、托盘日志、升级日志、升级结果摘要 |
+
+掰过来这件事托盘是用环境变量（`WORKHUB_DB_V2` / `WORKHUB_VAULT_DIR` / `WORKHUB_LOG_DIR`）告诉服务端的，
+环境变量优先于 `.env` 文件——所以 `.env` 里别再写这两个路径，写了也不生效（托盘会在日志里说一声）。
+
+几个跟部署有关的细节：
+
+- **`.env` 会被备份成 `.env.bak`**：`.env` 丢了（误删、被杀毒软件隔离、同步工具排除）时，
+  托盘会拿备份恢复，**不会**重新生成密钥——新密钥解不开库里已有的文档，而且不报错。
+- **`.env` 丢了、备份也没了，但数据库还在**：托盘不会重建配置，而是明确告诉你缺什么。
+  确认数据可以舍弃的话，删掉数据库文件再来一次。
+- **`.env` 开头带 BOM 会被自动去掉**：Node 的 `--env-file` 不认 BOM，会静默丢掉文件里的**第一个**变量
+  （通常是密钥），服务端于是报「生产环境未配置密钥」——而密钥明明就在文件里。
+  记事本、PowerShell 5.1 保存出来的文件都带 BOM，服务端与托盘两侧都有兜底。
+- **端口**：托盘与服务端按同一套规则读（进程环境优先于 `.env`，新名 `WORKHUB_PORT` 优先、旧名 `MDHUB_PORT` 兜底），
+  免得两边指向不同的端口——那种情况表现是「菜单说停了，服务明明在跑」。
 
 ### 像可执行程序一样调用
 
@@ -554,7 +594,7 @@ npm run admin:password -- --generate
 | --- | --- | --- |
 | `WORKHUB_SECRET` | 无（缺失则拒绝启动） | JWT 签名、Agent Key 加密主密钥，以及**文档加密主密钥的种子**（`MASTER_KEY = sha256(WORKHUB_SECRET)`），**生产必须配置**；本地需写入 `.env` 或设置 `WORKHUB_ALLOW_INSECURE_DEV=1`。改动它会让已加密文档的密文永久无法解密 |
 | `WORKHUB_ADMIN_PASSWORD` | 本地随机生成 | 管理员**初始**密码，仅首次建库时写入；已有库请用 `npm run admin:password` 或侧边栏修改，改动此变量对已有库无效 |
-| `WORKHUB_PORT` | `8787` | 服务端端口。默认值来自 `shared/constants.ts` 的 `DEFAULT_API_PORT`；改端口时记得连 `tray/main.cjs`、`scripts/install-service.ps1`、`scripts/service/WorkHubService.cs` 这三处镜像一起改（它们读不到 TS，各留了注释指回真源） |
+| `WORKHUB_PORT` | `8787` | 服务端端口。默认值来自 `shared/constants.ts` 的 `DEFAULT_API_PORT`；`.env` 里改它，托盘、部署脚本、Windows 服务宿主读的都是同一个值（宿主调停机接口时也会按新端口找服务） |
 | `WORKHUB_WEB_PORT` | `8080` | 前端 dev server 端口（监听 `0.0.0.0`，供局域网访问） |
 | `WORKHUB_DB_V2` | `data/workhub-v2.db` | 数据库路径（索引库）。`WORKHUB_DB` 是 v1 时代的旧变量，仅作兼容兜底；改名前的 `MDHUB_DB_V2` / `MDHUB_DB` 同样认 |
 | `WORKHUB_VAULT_DIR` | `data/vault` | 仓库目录：正文文件实际存放的位置 |
@@ -568,6 +608,28 @@ npm run admin:password -- --generate
 | `WORKHUB_UPDATE_URL` | 无 | 升级包直链。设了直接从这个地址下载，不走仓库发布页 |
 | `WORKHUB_UPDATE_TOKEN` | 无 | 下载升级包用的 Bearer 令牌（私有仓库或私有清单用） |
 | `WORKHUB_RESTART_CMD` | 无 | 升级后由谁把服务拉起来的自定义命令。不设则按托管方式判断：托盘 / Windows 服务宿主 / systemd / pm2 / docker / 都没人管时由更新器自拉起 |
+
+### `.env` 的解析规则
+
+值可以带引号（`'...'` 或 `"..."`），带引号时 `#` 是值的一部分；
+不带引号时行尾 `#` 之后是注释；同一个键写多次后写的赢；
+`WORKHUB_` 优先、`MDHUB_` 兜底；**文件带 UTF-8 BOM 也能读**
+（BOM 后面的第一个键照样读得到——Node 自带的 `--env-file` 恰恰认不出 BOM，
+会静默丢掉第一个变量，所以服务端、托盘都自己解析，不靠 `--env-file` 兜底）。
+
+这套规则在四个地方各有一份实现，改动必须一起改：
+
+| 实现 | 在哪 |
+| --- | --- |
+| 服务端 | `server/envFile.ts` |
+| 托盘 | `tray/env.cjs` |
+| 部署/安装脚本 | `scripts/lib/env.ps1` |
+| Windows 服务宿主 | `scripts/service/WorkHubService.cs` |
+
+`scripts/lib/env.test.mjs`（PowerShell ↔ Node）与 `scripts/lib/env-csharp.test.mjs`
+（C# ↔ Node）会拿同一批样本逐条比对，有一份对不上就报错。
+因为端口读错的后果不是「某个功能不好使」，而是：服务照常起在它自己的端口上，
+停机接口打不通，只能强杀——而报错永远不指向「端口读错了」。
 
 ## 日志
 
