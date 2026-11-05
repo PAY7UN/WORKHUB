@@ -46,15 +46,27 @@ jobs:
       - name: 版本对得上吗
         shell: pwsh
         env:
-          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.event.ref_name }}
+          # tag 名的三个来源，按优先级排：
+          #   手动触发时的输入 → Release 事件里的 tag → 推 tag 事件里的 ref 名
+          # 注意是 github.ref_name，不是 github.event.ref_name：
+          # ref_name 是 github 上下文的属性，事件负载里没有这一项，
+          # 写成 github.event.ref_name 只会取到空值，版本闸门会以为「不知道要发哪个 tag」。
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}
         run: |
-          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          # 用 ReadAllText 而不是 Get-Content：前者按 BOM 探测编码、无 BOM 时按 UTF-8 读，
+          # 后者在 Windows PowerShell 5.1 下默认按 ANSI 读，package.json 里的中文会被读坏，
+          # 坏掉的 JSON 解析不出来，这一步就停在「看不出版本号」上。
+          $pkg = ([System.IO.File]::ReadAllText('package.json') | ConvertFrom-Json).version
           $tag = $env:TAG
+          # 再兜一层：万一上面的表达式没取到，直接从 ref 里抠（推 tag 事件一定是这个形状）
+          if (-not $tag -and $env:GITHUB_REF -like 'refs/tags/*') {
+            $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          }
           if (-not $tag) { throw '不知道要发到哪个 tag' }
           if ($pkg -ne ($tag -replace '^v', '')) {
             throw "tag 是 $tag，但 package.json 里是 $pkg；对不上就别发——自动升级是按包名里的版本号认版本的"
           }
-          Write-Host "版本一致：$pkg"
+          Write-Host "版本一致：$pkg（tag $tag）"
 
       - name: 打服务端升级包（自带 Node 运行时）
         shell: pwsh
@@ -74,7 +86,7 @@ jobs:
       - name: 准备 Release 说明
         shell: pwsh
         env:
-          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.event.ref_name }}
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}
         run: |
           # 有 .github/release-notes/<tag>.md 就用它，没有就用提交记录兜底：
           # Release 正文空着不好，但也不能因为找不到说明文件就发不出去。
@@ -90,7 +102,7 @@ jobs:
       - name: 挂到 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.event.release.tag_name || github.event.ref_name }}
+          tag_name: ${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}
           body_path: release-notes.md
           # 同一个 tag 重发一次（推 tag 建完 Release、又在网页上点一次发布）时，
           # 资产名会撞车；覆盖掉旧的，别让这一步把整条流水线带崩。
