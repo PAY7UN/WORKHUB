@@ -19,6 +19,7 @@ export type {
   DocSearchHit,
   DocTree,
   GuestIdentity,
+  PolishTask,
   RagScope,
   RagScopeMode,
   Reminder,
@@ -29,7 +30,32 @@ export type {
   User,
 } from '../../shared/types';
 
-export { ACCESS_AUDIT_LABELS, ACCESS_CAPABILITY_LABELS } from '../../shared/types';
+export {
+  ACCESS_AUDIT_LABELS,
+  ACCESS_CAPABILITY_LABELS,
+} from '../../shared/types';
+
+export type {
+  SkillCategory,
+  SkillMode,
+  SkillParamOption,
+  SkillParamSpec,
+  SkillParamType,
+  SkillSessionSpec,
+  SkillSpec,
+  SkillSummary,
+} from '../../shared/skills';
+
+export { SKILL_CATEGORY_ORDER } from '../../shared/skills';
+
+export type {
+  AgentAction,
+  AgentActionKind,
+  AgentChatRequest,
+  AgentChatResult,
+  AgentEvent,
+  AgentRole,
+} from '../../shared/agent';
 
 // 权限定义
 export type Permission =

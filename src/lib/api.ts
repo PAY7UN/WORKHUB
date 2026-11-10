@@ -23,6 +23,7 @@ import type {
   RepoStat,
   User,
 } from '../../shared/types';
+import type { AgentEvent } from '../../shared/agent';
 import { saveBlob } from '../utils';
 import { readStore, removeStore, writeStore } from './storage';
 
@@ -603,6 +604,23 @@ export const api = {
   ) => askStream(question, history, handlers, scope),
 
   /**
+   * 对话式 agent：让它自己动手把事做完。
+   *
+   * 与 ask 的区别是它会自己调能力、必要时拆给别人做，中途还能反问用户。
+   * 服务端逐个推 agent 事件（谁在干活、调了什么能力、结果是什么），
+   * 最后推 done 给出结论。
+   */
+  chat: (
+    message: string,
+    history: { role: 'user' | 'assistant'; content: string }[],
+    handlers: {
+      onEvent: (event: AgentEvent) => void;
+      onDone: (result: { answer: string; usedSkills: string[]; asked: boolean }) => void;
+      signal: AbortSignal;
+    },
+  ) => chatStream(message, history, handlers),
+
+  /**
    * 提交润色任务，立即返回任务 id，不等待生成结束。
    *
    * 生成在服务端后台推进，用户关闭弹窗或刷新页面都不影响任务；
@@ -867,6 +885,45 @@ export interface AgentSource {
 export interface AgentScopeInfo {
   /** 参与本次检索的仓库名；为空表示范围由管理员的配置决定 */
   scopeRepos: string[];
+}
+
+/**
+ * 对话式 agent 的事件流。
+ *
+ * 服务端推两类事件：
+ * - agent：谁在干活、说了什么、调了哪份能力、结果如何；
+ * - done：结论、动过的能力、是不是在反问用户。
+ */
+async function chatStream(
+  message: string,
+  history: { role: 'user' | 'assistant'; content: string }[],
+  handlers: {
+    onEvent: (event: AgentEvent) => void;
+    onDone: (result: { answer: string; usedSkills: string[]; asked: boolean }) => void;
+    signal: AbortSignal;
+  },
+): Promise<void> {
+  await postEventStream(
+    '/agent/chat',
+    { message, history },
+    { onDelta: () => {}, signal: handlers.signal },
+    '对话',
+    (event, raw) => {
+      if (event === 'agent') {
+        try {
+          handlers.onEvent(JSON.parse(raw) as AgentEvent);
+        } catch {
+          /* 忽略解析失败 */
+        }
+      } else if (event === 'done') {
+        try {
+          handlers.onDone(JSON.parse(raw) as { answer: string; usedSkills: string[]; asked: boolean });
+        } catch {
+          /* 忽略解析失败 */
+        }
+      }
+    },
+  );
 }
 
 async function askStream(

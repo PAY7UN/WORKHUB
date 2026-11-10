@@ -40,6 +40,8 @@ workhub/
 │  ├─ manageTokens.ts 机器令牌：发放、校验、列出、撤销、清理（库里只存哈希）
 │  ├─ manageToken.ts 机器令牌的命令行入口（npm run manage:token，支持 --json）
 │  ├─ logger.ts     统一日志出口：分级、脱敏、路径脱敏，兼带最近 500 行的内存缓冲
+│  ├─ agent/        对话式 agent：runtime.ts 跑循环，roles.ts 定角色与工具白名单
+│  ├─ skills/       能力的加载、注册与执行：loader / registry / runners
 │  ├─ storage/v2/   v2 存储层：schema 建库迁移、vault 正文文件、search 检索、janitor 清道夫
 │  └─ *.test.ts     node --test 用例（password / loginThrottle / logger / docCrypto / docAccess /
 │                   accessGrant / dingtalk / manage / updater / import / fileOriginal / storage）
@@ -326,6 +328,20 @@ npm run tray      # 开发态启动（Electron 自带运行时）
   程序、配置、数据库、日志全在一个文件夹里，整个拷到别的机器照样跑。
   托盘自更新时这些文件在保护名单（`data` / `logs` / `.env` / `.env.bak` / `tray.config.json`）里，不会被覆盖掉。
   托盘菜单里有「打开数据目录」，直接跳到那个文件夹。
+- **数据位置可以自己挑**：菜单里的「更改数据目录…」会打开系统目录选择框，
+  选好之后托盘把 `.env`、数据库、vault、日志一起搬过去，记住新位置，再重启一次托盘。
+  几条规矩（都是踩过才知道的）：
+  - 服务在跑的时候不搬——SQLite 的库文件正被占着，搬过去的是半截文件，而且不报错。
+  - 目标目录里已经有一份数据时先问一句；确认覆盖的话，原有的数据先挪成 `.replaced-…` 备份，**不直接删**。
+  - **搬而不删**：旧目录里的东西留着，出了事能回头找；删旧数据是使用者的决定。
+  - 「搬到哪儿了」记在**锚点**上（exe 旁边；装到 Program Files 写不了就退到 `%LOCALAPPDATA%\WorkHub`），
+    不记在数据目录里——数据目录正是被改的那一方，配置跟着它走等于没记。
+- **`%APPDATA%\workhub-tray` 不是数据目录**：那是 Electron（Chromium）的运行时目录，
+  里面的 `ShaderCache` / `GrShaderCache` / `GPUPersistentCache` 是显卡着色器缓存，
+  `Local State` 是 Chromium 的状态，`lockfile` 是单实例锁——删了会自己长回来，删的时候托盘别在跑。
+  真正的数据一直在 `%LOCALAPPDATA%\WorkHub`。
+  现在托盘把 Chromium 的运行时目录也收进工作目录（`<工作目录>\electron`），
+  于是**所有文件只落在一个文件夹里**；升级前留下的那个 `%APPDATA%\workhub-tray` 空壳可以直接删掉。
 
 #### 工作目录（`appDir`）管着哪些东西
 
@@ -337,6 +353,7 @@ npm run tray      # 开发态启动（Electron 自带运行时）
 | 数据库 | `<工作目录>\data\workhub-v2.db` | 服务端默认按代码目录定位，托盘会显式掰过来 |
 | vault | `<工作目录>\data\vault` | 同上 |
 | 日志 | `<工作目录>\logs\` | 服务日志、托盘日志、升级日志、升级结果摘要 |
+| Chromium 运行时 | `<工作目录>\electron\` | 着色器缓存、单实例锁等（打包态才有；开发态留在 Electron 默认位置，免得污染仓库） |
 
 掰过来这件事托盘是用环境变量（`WORKHUB_DB_V2` / `WORKHUB_VAULT_DIR` / `WORKHUB_LOG_DIR`）告诉服务端的，
 环境变量优先于 `.env` 文件——所以 `.env` 里别再写这两个路径，写了也不生效（托盘会在日志里说一声）。
@@ -842,6 +859,52 @@ npm run admin:password -- --generate
 面板底部能看到「当前检索范围」，问完还会回传服务端实际用到的仓库名，
 两处对不上就说明落点变了。仓库名互相包含时只认更长的那个
 （同时存在「项目」与「项目甲」，问的显然是后者）。
+
+## 对话式 Agent（AI 助手）
+
+「文档分析 Agent」是**问答**：你圈定检索范围，它答。
+「对话式 Agent」是**干活**：你说清要什么，它自己决定调什么能力、要不要拆给别人做、
+中间缺信息就反问你，做完给一份结论。两者共用同一份模型配置与同一套权限。
+
+它的入口是右下角的「AI 助手」浮标：任何页面都能唤起，不用先切换到某个工作区。
+
+### 四个角色
+
+| 角色 | 干什么 | 能调的能力 |
+| --- | --- | --- |
+| 总控 | 接住你的话，判断自己干还是派出去，最后给结论 | 全部 + 可委派 |
+| 网页 | 按 URL 取回网页与接口，抽成可读正文 | `web.fetch` |
+| 数据 | 把表格与接口数据算清楚 | `web.fetch`、`data.analyze` |
+| 文档 | 在站内文档、笔记、附件里找资料 | `doc.search`、`doc.list`、`repo.list`、`attachment.list`、`agent.ask` |
+
+工具白名单是**边界**不是建议：网页 agent 读不到库里加密文档的正文，文档 agent 发不出网络请求。
+
+### 循环长什么样
+
+```
+想 → 做一个动作 → 看结果 → 再想 → …… → 收工
+```
+
+动作只有四种：`tool`（调能力）、`delegate`（派给别人）、`ask`（反问你）、`answer`（给结论）。
+一次只做一个动作——多动作的模型看起来利索，实际上出错时定位不到是哪一步错了。
+
+模型用「正文 + 一个 JSON 代码块」当协议，而不是官方的 `tool_calls`：
+上游是各家 OpenAI 兼容网关，对 `tools` 的支持参差不齐；而正文还有额外好处——
+它就是给人看的进展说明，白捡。
+
+### 两份新能力
+
+| 能力 | 做什么 |
+| --- | --- |
+| `web.fetch` | 给 URL，拿到能读的内容：HTML 抽正文（去脚本、样式、导航），JSON 解析成结构化数据。只放行 http/https，单次最多读 2 MB |
+| `data.analyze` | 给表格或接口数据，算清楚：每列画像、按列分组汇总、按条件筛选、排序取前 N。**程序算数，模型只负责解读** |
+
+两者能串起来：取回的 JSON 直接喂给 `data.analyze`，不用把数据在对话里倒来倒去。
+
+### 数字为什么不让模型自己算
+
+模型心算平均值会错，会把两行数据数成三行。所以 `data.analyze` 负责出数字，
+模型只负责把数字说成人话。列名写错时它会直接报错并列出可用的列名，而不是给一张空表。
 
 ## 钉钉同步（到点提醒）
 

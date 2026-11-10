@@ -73,6 +73,40 @@ export interface DbMigration {
 }
 
 /**
+ * 内置能力目录：随代码发布的一份份能力（每份一个子目录）。
+ *
+ * 能力是「说明书 + 执行契约」，用户看得懂、模型读得懂，
+ * 所以它就该躺在磁盘上，而不是写死在代码里等下一次发版。
+ */
+export const DEFAULT_SKILLS_DIR = join(APP_ROOT, 'skills');
+
+/** 用户自建能力目录：往里丢一个目录就多一份能力，不用改代码 */
+export const DEFAULT_USER_SKILLS_DIR = join(APP_ROOT, 'data', 'skills');
+
+/**
+ * 解析用户自建能力目录。
+ *
+ * 单独列一个函数：界面得告诉用户「往哪儿丢文件」，
+ * 这句话不能靠猜，得是服务端算出来的那个真实路径。
+ */
+export function resolveUserSkillsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return envValueFrom(env, 'USER_SKILLS_DIR') || DEFAULT_USER_SKILLS_DIR;
+}
+
+/**
+ * 解析能力目录：内置在前、用户在后。
+ *
+ * 顺序有讲究：后加载的覆盖先加载的（同 id 时用户那份赢），
+ * 所以用户可以拿自己的能力替换掉内置的那份，不用改代码。
+ */
+export function resolveSkillsDirs(env: NodeJS.ProcessEnv = process.env): Array<{ dir: string; source: 'builtin' | 'user' }> {
+  return [
+    { dir: envValueFrom(env, 'SKILLS_DIR') || DEFAULT_SKILLS_DIR, source: 'builtin' as const },
+    { dir: resolveUserSkillsDir(env), source: 'user' as const },
+  ];
+}
+
+/**
  * 数据库改名的迁移计划：磁盘上还是旧文件名时，该挪到新名字下。
  *
  * 为什么非做不可：库文件名从 mdhub-v2.db 换成 workhub-v2.db 之后，

@@ -18,7 +18,6 @@ import type {
   ReminderRepeat,
 } from '../shared/types.ts';
 import { ACCESS_CAPABILITY_LABELS } from '../shared/types.ts';
-import { SYSTEM_PROMPT, buildContext, docToUnit, retrieveDocs, type RetrievalUnit } from '../shared/retrieval.ts';
 import { MAX_POLISH_CHARS, MAX_RUNNING_POLISH_TASKS } from '../shared/polish.ts';
 import { extOf } from '../shared/attachments.ts';
 import { DEFAULT_FILE_MIME, guessMime } from '../shared/files.ts';
@@ -38,6 +37,9 @@ import {
   toView,
 } from './polishTasks.ts';
 import { readUpstreamStream, type UpstreamMessage } from './upstream.ts';
+import { buildAskMessages, retrieveForAsk } from './agentContext.ts';
+import { runAgent } from './agent/runtime.ts';
+import { DEFAULT_AGENT_ROLE_ID, findAgentRole } from './agent/roles.ts';
 import { purgeStashed, stashFile, sweepStashed } from './storage/v2/vault.ts';
 import {
   bulkApproveAccessRequests,
@@ -90,8 +92,6 @@ import {
   readDocCipher,
   readNodeBytes,
   readNodeRawBytes,
-  recallAttachmentIds,
-  recallDocIds,
   renameGuestSession,
   replaceAllDocs,
   revokeAccessGrant,
@@ -116,14 +116,13 @@ import {
   encryptDocContent,
   unwrapDekWithMaster,
 } from './docCrypto.ts';
-import { selectAgentCandidates, normalizeRagScope, resolveAskScope, detectRepoFocus } from './docAccess.ts';
+import { normalizeRagScope } from './docAccess.ts';
 import {
   addAttachment,
   checkAttachmentAllowed,
   getAttachment,
   HARD_MAX_FILE_SIZE,
   listAttachments,
-  loadAttachmentsWithText,
   moveAttachment,
   readAttachmentContent,
   removeAttachment,
@@ -1843,17 +1842,6 @@ app.get('/api/agent/usage', requireAdmin, (_req, res) => {
 
 /* ------------------------------ Agent 问答（SSE） ------------------------------ */
 
-/**
- * 召回时从索引里取多少条。
- *
- * 取的是「索引里最相关的若干条」，不是全站——召回的作用是缩小范围，
- * 而不是把候选集撑满。给得太多只会把要读的正文文件又拉回几百个。
- */
-const RECALL_LIMIT = 40;
-
-/** 召回之后交给精排的候选上限 */
-const CANDIDATE_LIMIT = 40;
-
 app.post('/api/agent/ask', async (req, res) => {
   const cfg = getAgentConfig();
   const isAdmin = req.user?.role === 'admin';
@@ -1866,94 +1854,14 @@ app.post('/api/agent/ask', async (req, res) => {
   const question = String(req.body?.question ?? '').trim();
   if (!question) return fail('问题不能为空');
 
-  // 检索范围：默认取全局配置，允许本次提问临时收窄。
-  //
-  // 收窄只能更严不能更宽：请求里带的范围若比配置更松，按配置的来。
-  // 免得有人改个前端参数就把范围绕过去了——范围是安全边界，
-  // 它的收紧权只在管理员手里。
-  const docs = listAllDocs();
-  const repos = listRepos();
-
-  /**
-   * 本次只看哪几个仓库。
-   *
-   * 优先级：界面上明确选定的仓库 → 问题里点名的仓库 → 默认仓库。
-   *
-   * 「默认仓库」是兜底落点：没点名时不该让模型把各项目的资料混着答，
-   * 否则 A 项目的结论会被 B 项目的资料带偏。
-   * 但管理员若已在设置里划定了范围（仓库白名单或指定文档），
-   * 那份划定本身就是「看哪些仓库」的答案，不再叠加默认落点——
-   * 否则默认仓库不在白名单里时，交集直接为空，Agent 会彻底答不出话。
-   */
-  const requestedScope = normalizeRagScope(req.body?.scope);
-  const explicitRepoIds =
-    requestedScope && requestedScope.mode === 'repos' && requestedScope.repoIds.length > 0
-      ? requestedScope.repoIds
-      : detectRepoFocus(question, repos);
-  const focusRepoIds =
-    explicitRepoIds.length > 0
-      ? explicitRepoIds
-      : cfg.ragScope.mode === 'all' && repos.length > 0
-        ? [defaultRepoId()]
-        : [];
-
-  const scope = resolveAskScope(req.body?.scope, cfg.ragScope, docs, focusRepoIds);
-
-  const repoEnabled = new Map(repos.map((r) => [r.id, r.ragEnabled]));
-  const isRepoEnabled = (repoId: string | null | undefined) =>
-    repoId ? repoEnabled.get(repoId) !== false : true;
-
-  const candidates = selectAgentCandidates(docs, { scope, isRepoEnabled });
-  // 范围是安全边界：索引里命中了还不够，得再过一遍范围才算数。
-  // 「找得到」是检索的事，「准不准看」是范围的事，两件事分开做。
-  const allowedDocIds = new Set(candidates.map((d) => d.id));
-  const docNames = new Map(docs.map((d) => [d.id, d.name]));
-
-  // 召回交给 FTS5 索引：查一遍索引，命中哪几篇就只读哪几篇的正文。
-  // 老做法是每次提问都把全站正文读进内存再逐篇分词——资料一多就慢得没法用。
-  const units: RetrievalUnit[] = [];
-
-  for (const hit of recallDocIds(question, RECALL_LIMIT)) {
-    if (!allowedDocIds.has(hit.id)) continue;
-    const doc = getDoc(hit.id);
-    if (!doc) continue;
-    units.push(docToUnit(doc));
-    if (units.length >= CANDIDATE_LIMIT) break;
-  }
-
-  // 附件正文也是可供检索的资料，只是来源不同，所以同样进索引、同样召回。
-  // 它的可见性完全跟随宿主文档——宿主不在范围内，它的附件也不在。
-  if (scope.includeAttachments) {
-    const attHits = recallAttachmentIds(question, RECALL_LIMIT);
-    for (const item of loadAttachmentsWithText(attHits.map((h) => h.id))) {
-      if (!allowedDocIds.has(item.attachment.docId)) continue;
-      units.push({
-        id: `att:${item.attachment.id}`,
-        name: `${docNames.get(item.attachment.docId) ?? '未知文档'} › ${item.attachment.name}`,
-        content: item.text,
-        kind: 'attachment',
-        docId: item.attachment.docId,
-      });
-      if (units.length >= CANDIDATE_LIMIT) break;
-    }
-  }
-
-  // 候选已经被索引筛到几十篇，这一轮精排很轻：
-  // 在小集合上按词频算相关度，取出真正相关的几篇并给出命中片段。
-  const retrieved = retrieveDocs(question, units, { topK: cfg.topK });
-  const context = buildContext(retrieved, cfg.contextBudget);
+  // 检索与范围判定抽到 server/agentContext.ts：
+  // 任务里的「智能问答」步骤要跑出同样的结果，复制一份必然走样。
+  const retrieval = retrieveForAsk({ question, cfg, rawScope: req.body?.scope });
 
   send('sources', {
-    sources: retrieved.map((r) => ({
-      id: r.unit.id,
-      name: r.unit.name,
-      kind: r.unit.kind,
-      docId: r.unit.docId,
-      score: r.score,
-      snippet: r.snippet,
-    })),
+    sources: retrieval.sources,
     // 本次实际落在哪几个仓库：让界面上显示的检索范围与实际检索一致
-    scopeRepos: repos.filter((r) => focusRepoIds.includes(r.id)).map((r) => r.name),
+    scopeRepos: retrieval.scopeRepos,
   });
 
   const history = Array.isArray(req.body?.history)
@@ -1963,16 +1871,71 @@ app.post('/api/agent/ask', async (req, res) => {
         .map((h) => ({ role: h.role as 'user' | 'assistant', content: h.content.slice(0, 4000) }))
     : [];
 
-  const messages = [
-    {
-      role: 'system',
-      content: context ? `${SYSTEM_PROMPT}\n\n以下是可供分析的文档资料：\n${context}` : SYSTEM_PROMPT,
-    },
-    ...history,
-    { role: 'user', content: question },
-  ];
+  const messages = buildAskMessages(question, retrieval, history);
 
   await streamUpstream({ cfg, messages, res, send, fail });
+});
+
+/* ------------------------------ 对话式 Agent（SSE） ------------------------------ */
+
+/**
+ * 对话式 agent。
+ *
+ * 与上面的 /api/agent/ask 是两种东西，别混：
+ * - ask 是「拿资料回答问题」：一次检索、一次作答，检索范围由用户圈定。
+ * - chat 是「自己动手把事做完」：agent 自己决定调什么能力、要不要拆给别人、
+ *   中间缺信息就反问，做完给结论。
+ *
+ * 权限沿用问答那一套：有 Key、且访客被允许时才放行。
+ */
+app.post('/api/agent/chat', async (req, res) => {
+  const cfg = getAgentConfig();
+  const isAdmin = req.user?.role === 'admin';
+
+  const { send, fail } = openSse(res);
+
+  if (!cfg.apiKey.trim()) return fail('尚未配置 API Key，请联系管理员');
+  if (!isAdmin && !cfg.allowGuest) return fail('管理员尚未开放访客使用 Agent');
+
+  const message = String(req.body?.message ?? '').trim();
+  if (!message) return fail('说点什么吧');
+
+  const role =
+    findAgentRole(String(req.body?.agentId ?? '').trim()) ??
+    findAgentRole(DEFAULT_AGENT_ROLE_ID);
+  if (!role) return fail('没有可用的 agent');
+
+  const history = Array.isArray(req.body?.history)
+    ? (req.body.history as { role: string; content: string }[])
+        .filter((h) => (h.role === 'user' || h.role === 'assistant') && typeof h.content === 'string' && h.content)
+        .slice(-8)
+        .map((h) => ({ role: h.role as 'user' | 'assistant', content: h.content.slice(0, 4000) }))
+    : [];
+
+  const controller = new AbortController();
+  // 必须监听 res 而非 req：req 的 close 在请求体读取完毕时即触发，
+  // 绑在 req 上会在上游返回第一个字节前就把自己取消掉。
+  res.on('close', () => {
+    if (!res.writableEnded) controller.abort();
+  });
+
+  const outcome = await runAgent({
+    role,
+    task: message,
+    history,
+    cfg,
+    userId: nowUserId(req),
+    isAdmin,
+    signal: controller.signal,
+    onEvent: (event) => send('agent', event),
+  });
+
+  send('done', {
+    answer: outcome.text,
+    usedSkills: outcome.usedSkills,
+    asked: outcome.asked,
+  });
+  if (!res.writableEnded) res.end();
 });
 
 /* ------------------------------ 文章润色（SSE，仅管理员） ------------------------------ */
@@ -2388,6 +2351,7 @@ sweepStashed();
 let listenAttempts = 0;
 /** 提出来是为了能关掉它：优雅停机要先停止收新请求 */
 let httpServer: ReturnType<typeof app.listen> | null = null;
+
 function listenForPort(): void {
   const server = app.listen(PORT, '0.0.0.0', () => {
     const cfg = getAgentConfigPublic();

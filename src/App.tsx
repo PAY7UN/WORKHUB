@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Toaster } from 'sonner';
 import { AppProvider } from '@/context/AppContext';
 import { HomePage } from '@/components/app/HomePage';
-import { Workspace } from '@/components/app/Workspace';
+import { AppShell } from '@/components/app/shell/AppShell';
 import { readStore, removeStore, writeStore } from '@/lib/storage';
 
 /**
@@ -51,7 +51,7 @@ function App() {
 
   return (
     <AppProvider>
-      {entered ? <Workspace onGoHome={handleExit} /> : <HomePage onEnter={handleEnter} />}
+      {entered ? <AppShell onGoHome={handleExit} /> : <HomePage onEnter={handleEnter} />}
       <Toaster
         position="top-center"
         richColors

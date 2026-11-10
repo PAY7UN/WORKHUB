@@ -17,6 +17,10 @@
  *
  * 3. **仓库是必填的**。nodes.repo_id NOT NULL：
  *    新模型里没有「未归档」这种状态，每篇文档都有明确的归属。
+ *
+ * 抓包会话、抓包记录、协议范本这三张表曾属于「工作台」，随该模块下线，
+ * SCHEMA 里已不再声明。老库里若还留着它们，原样保留——这里只声明不删除，
+ * 不会去碰用户已有的数据。
  */
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';

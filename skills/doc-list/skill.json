@@ -1,0 +1,13 @@
+{
+  "id": "doc.list",
+  "name": "文档清单",
+  "category": "content",
+  "summary": "列出当前身份可见的全部文档（只含元数据，不含正文）。",
+  "method": "GET",
+  "endpoint": "/docs",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [],
+  "returns": "文档元数据数组：名称、类型、归属仓库、更新时间。"
+}

@@ -1,0 +1,62 @@
+{
+  "id": "web.fetch",
+  "name": "网页请求",
+  "category": "web",
+  "summary": "按 URL 请求网页或接口，取回内容并抽成可读正文。",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [
+    {
+      "key": "url",
+      "label": "地址",
+      "type": "text",
+      "required": true,
+      "placeholder": "https://example.com/api/items",
+      "help": "只支持 http/https。"
+    },
+    {
+      "key": "method",
+      "label": "方法",
+      "type": "select",
+      "required": false,
+      "options": [
+        { "label": "GET", "value": "GET" },
+        { "label": "POST", "value": "POST" },
+        { "label": "PUT", "value": "PUT" },
+        { "label": "PATCH", "value": "PATCH" },
+        { "label": "DELETE", "value": "DELETE" }
+      ]
+    },
+    {
+      "key": "headers",
+      "label": "请求头",
+      "type": "longtext",
+      "required": false,
+      "placeholder": "{\"Authorization\":\"Bearer xxx\"}",
+      "help": "JSON 对象字符串。"
+    },
+    {
+      "key": "body",
+      "label": "请求体",
+      "type": "longtext",
+      "required": false,
+      "help": "GET 请求忽略这一项。"
+    },
+    {
+      "key": "timeoutSec",
+      "label": "超时（秒）",
+      "type": "number",
+      "required": false,
+      "placeholder": "20"
+    },
+    {
+      "key": "maxChars",
+      "label": "正文长度上限",
+      "type": "number",
+      "required": false,
+      "placeholder": "20000"
+    }
+  ],
+  "returns": "状态码与内容形态的摘要，以及抽好的正文（HTML 取标题与正文，JSON 解析成结构化数据）。"
+}

@@ -1,0 +1,22 @@
+{
+  "id": "doc.search",
+  "name": "全文检索",
+  "category": "search",
+  "summary": "按关键词搜文档标题与正文，返回带片段的命中列表。",
+  "method": "GET",
+  "endpoint": "/docs/search",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [
+    {
+      "key": "q",
+      "label": "关键词",
+      "type": "text",
+      "required": true,
+      "placeholder": "例如：发布流程",
+      "help": "空词等于清空结果，不会返回任何命中。"
+    }
+  ],
+  "returns": "命中列表：文档名、所在目录路径、命中片段、命中位置（标题或正文）。"
+}

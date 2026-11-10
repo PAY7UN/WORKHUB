@@ -1,0 +1,21 @@
+{
+  "id": "attachment.list",
+  "name": "附件清单",
+  "category": "content",
+  "summary": "列出某篇文档挂着的附件及其可检索状态。",
+  "method": "GET",
+  "endpoint": "/docs/{docId}/attachments",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [
+    {
+      "key": "docId",
+      "label": "文档 id",
+      "type": "text",
+      "required": true,
+      "placeholder": "例如 d-xxxxxx"
+    }
+  ],
+  "returns": "附件数组：文件名、大小、类型、是否已抽出可检索文本。"
+}

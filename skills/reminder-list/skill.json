@@ -1,0 +1,13 @@
+{
+  "id": "reminder.list",
+  "name": "提醒清单",
+  "category": "notify",
+  "summary": "列出全部提醒及其状态、触发时间与推送结果。",
+  "method": "GET",
+  "endpoint": "/reminders",
+  "adminOnly": true,
+  "composable": true,
+  "mode": "request",
+  "params": [],
+  "returns": "提醒数组：标题、触发时间、重复规则、状态、已推送次数、最近错误。"
+}

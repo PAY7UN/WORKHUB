@@ -1,0 +1,22 @@
+{
+  "id": "my.skill",
+  "name": "我的能力",
+  "category": "system",
+  "summary": "一句话说清这份能力干什么。",
+  "method": "POST",
+  "endpoint": "/my-endpoint",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [
+    {
+      "key": "keyword",
+      "label": "关键词",
+      "type": "text",
+      "required": true,
+      "placeholder": "要传什么",
+      "help": "这一句在鼠标悬停时显示。"
+    }
+  ],
+  "returns": "写清楚返回什么。"
+}

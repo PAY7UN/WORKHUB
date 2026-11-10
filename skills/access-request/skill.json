@@ -1,0 +1,28 @@
+{
+  "id": "access.request",
+  "name": "申请访问加密文档",
+  "category": "access",
+  "summary": "对加密文档提交访问申请，等管理员审批。",
+  "method": "POST",
+  "endpoint": "/docs/{docId}/access-request",
+  "adminOnly": false,
+  "composable": false,
+  "mode": "request",
+  "params": [
+    {
+      "key": "docId",
+      "label": "文档 id",
+      "type": "text",
+      "required": true,
+      "placeholder": "例如 d-xxxxxx"
+    },
+    {
+      "key": "reason",
+      "label": "申请理由",
+      "type": "longtext",
+      "required": true,
+      "placeholder": "说明为什么要看这份加密文档"
+    }
+  ],
+  "returns": "申请单 id 与当前状态（在审 / 已批准 / 已拒绝）。"
+}

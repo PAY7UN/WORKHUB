@@ -1,0 +1,80 @@
+{
+  "id": "data.analyze",
+  "name": "数据分析",
+  "category": "data",
+  "summary": "给表格或接口数据算清楚：画像、分组汇总、筛选、排序取前 N。",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [
+    {
+      "key": "source",
+      "label": "数据",
+      "type": "longtext",
+      "required": false,
+      "placeholder": "https://example.com/api/items 或直接粘 JSON/CSV",
+      "help": "留空则接着上一步的产出算。"
+    },
+    {
+      "key": "format",
+      "label": "格式",
+      "type": "select",
+      "required": false,
+      "options": [
+        { "label": "自动判断", "value": "auto" },
+        { "label": "JSON", "value": "json" },
+        { "label": "CSV", "value": "csv" },
+        { "label": "TSV", "value": "tsv" }
+      ]
+    },
+    {
+      "key": "op",
+      "label": "操作",
+      "type": "select",
+      "required": false,
+      "options": [
+        { "label": "画像", "value": "describe" },
+        { "label": "分组汇总", "value": "groupby" },
+        { "label": "筛选", "value": "filter" },
+        { "label": "排序取前 N", "value": "top" }
+      ]
+    },
+    {
+      "key": "groupBy",
+      "label": "分组列",
+      "type": "text",
+      "required": false,
+      "placeholder": "部门,季度",
+      "help": "多列用逗号隔开。"
+    },
+    {
+      "key": "column",
+      "label": "列",
+      "type": "text",
+      "required": false,
+      "help": "筛选或排序作用的列名。"
+    },
+    {
+      "key": "condition",
+      "label": "条件",
+      "type": "text",
+      "required": false,
+      "placeholder": "gt / contains / asc / desc",
+      "help": "筛选时是比较方式，排序时是 asc 或 desc。"
+    },
+    {
+      "key": "value",
+      "label": "比较值",
+      "type": "text",
+      "required": false
+    },
+    {
+      "key": "limit",
+      "label": "条数",
+      "type": "number",
+      "required": false,
+      "placeholder": "10"
+    }
+  ],
+  "returns": "算好的数字：列画像（类型/缺失/极值/分布）、分组汇总、命中行数与命中行。"
+}

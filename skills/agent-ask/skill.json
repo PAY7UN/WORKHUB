@@ -1,0 +1,21 @@
+{
+  "id": "agent.ask",
+  "name": "智能问答",
+  "category": "ai",
+  "summary": "基于检索到的资料回答一个问题，流式返回正文与引用。",
+  "method": "POST",
+  "endpoint": "/agent/ask",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [
+    {
+      "key": "question",
+      "label": "问题",
+      "type": "longtext",
+      "required": true,
+      "placeholder": "例如：这份项目的发布流程是怎样的？"
+    }
+  ],
+  "returns": "回答正文（流式），以及本次引用的资料列表。"
+}

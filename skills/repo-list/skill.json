@@ -1,0 +1,13 @@
+{
+  "id": "repo.list",
+  "name": "仓库清单",
+  "category": "content",
+  "summary": "列出全部仓库（项目）及各自的文档数、附件数与占用空间。",
+  "method": "GET",
+  "endpoint": "/repos",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [],
+  "returns": "仓库数组 + 统计数组（文档数、附件数、占用字节）。"
+}

@@ -1,26 +1,17 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
-  FileText,
-  Home,
   FilePlus,
   FolderPlus,
   Upload,
-  LogOut,
-  ShieldCheck,
-  LayoutDashboard,
-  Bot,
+  Home,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { Button } from '@/components/ui/button';
-import { AgentPanel } from './AgentPanel';
-import { AdminConsole } from './admin/AdminConsole';
-import { DocTreeView } from './DocTreeView';
-import { FolderView } from './FolderView';
-import { DocEditor } from './DocEditor';
-import { DropPreview } from './DropPreview';
-import { RepoSwitcher } from './RepoSwitcher';
+import { DocTreeView } from '../DocTreeView';
+import { FolderView } from '../FolderView';
+import { DocEditor } from '../DocEditor';
+import { DropPreview } from '../DropPreview';
+import { RepoSwitcher } from '../RepoSwitcher';
 import {
-  AdminLoginDialog,
   CreateDialog,
   RenameDialog,
   DeleteDialog,
@@ -30,25 +21,24 @@ import {
   RepoAssignDialog,
   type UploadBatchResult,
   type UploadProgress,
-} from './Modal';
+} from '../Modal';
 import { api } from '@/lib/api';
-import { readStore, removeStore } from '@/lib/storage';
-import { extOf } from '../../../shared/attachments';
+import { extOf } from '../../../../shared/attachments';
 import type { DocNode } from '@/types';
-import { ROLE_LABELS, ROLE_DESCRIPTIONS } from '@/types';
 import { toast } from 'sonner';
-import { cn } from '@/lib/utils';
 
-interface WorkspaceProps {
-  onGoHome: () => void;
-}
-
-export function Workspace({ onGoHome }: WorkspaceProps) {
+/**
+ * 文档工作区。
+ *
+ * 这里只放「文档」这一件事：文件树、编辑器、文件夹视图，以及围绕它们的
+ * 新建/重命名/删除/移动/上传/加密/换仓库等操作。
+ *
+ * 全局性的东西（身份、管理后台、AI 助手）不在这里——它们属于整个应用，
+ * 挂在 Shell 上，换到工作台时依然在。
+ */
+export function DocsWorkspace() {
   const {
-    currentUser,
     isAdmin,
-    loginAdmin,
-    logoutAdmin,
     docs,
     buildTree,
     loadDocContent,
@@ -60,8 +50,6 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
     visibleDocs,
     encryptDoc,
     decryptDoc,
-    canUseAgent,
-    pendingAccessCount,
     openAdminConsole,
     currentRepoId,
     currentRepo,
@@ -71,29 +59,15 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
   } = useApp();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);  // 仅记录正在编辑的文档 id，文档对象从 docs 实时派生，保证切换/更新时内容同步
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  /** 深链定位只处理一次 */
-  const handledFocusRef = useRef(false);
-
-  /**
-   * 访问申请定位深链：带着 ?access=<申请单号> 落回本站时，
-   * 直接跳到「访问授权」分区并定位那一条申请。
-   *
-   * 只在管理员身份下生效：这条链接要的是「批不批」，
-   * 访客点开也做不了审批，不如让他看见一个打不开的后台。
-   * 没登录成管理员就等着——等管理员登录完，身份一变这个副作用会再跑一次。
-   */
+  // 退出管理员时收起编辑器：访客身份下编辑器里的写入会被服务端拒绝，
+  // 留着一个改不动的编辑界面只会让人以为文档坏了。
   useEffect(() => {
-    if (handledFocusRef.current) return;
-    const requestId = readStore(sessionStorage, 'workhub.focusRequest') ?? '';
-    if (!requestId || !isAdmin) return;
-    handledFocusRef.current = true;
-    removeStore(sessionStorage, 'workhub.focusRequest');
-    openAdminConsole('access', undefined, requestId);
-  }, [isAdmin, openAdminConsole]);
+    if (!isAdmin) setEditingId(null);
+  }, [isAdmin]);
 
   // 当前所在目录 / 正在编辑的文档若已不存在（被删除），派生值自动回退
   const visibleFolderId = useMemo(
@@ -125,8 +99,6 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
   const [renameTarget, setRenameTarget] = useState<DocNode | null>(null);
 
   const [deleteOpen, setDeleteOpen] = useState(false);
-  // Agent 面板
-  const [agentOpen, setAgentOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DocNode | null>(null);
 
   const [moveOpen, setMoveOpen] = useState(false);
@@ -134,8 +106,6 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadParentId, setUploadParentId] = useState<string | null>(null);
-
-  const [adminLoginOpen, setAdminLoginOpen] = useState(false);
 
   // 文档加密：目标文档
   const [encryptTarget, setEncryptTarget] = useState<DocNode | null>(null);
@@ -148,26 +118,30 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
   const tree = useMemo(() => buildTree(currentRepoId || undefined), [buildTree, currentRepoId]);
 
   // 统计某节点下所有后代（用于删除前提示影响范围）
-  const countDescendants = useCallback((id: string) => {
-    const acc = { files: 0, folders: 0 };
-    const walk = (parentId: string) => {
-      docs.forEach((d) => {
-        if (d.parentId !== parentId) return;
-        if (d.type === 'folder') acc.folders += 1;
-        else acc.files += 1;
-        walk(d.id);
-      });
-    };
-    walk(id);
-    return acc;
-  }, [docs]);
+  const countDescendants = useCallback(
+    (id: string) => {
+      const acc = { files: 0, folders: 0 };
+      const walk = (parentId: string) => {
+        docs.forEach((d) => {
+          if (d.parentId !== parentId) return;
+          if (d.type === 'folder') acc.folders += 1;
+          else acc.files += 1;
+          walk(d.id);
+        });
+      };
+      walk(id);
+      return acc;
+    },
+    [docs],
+  );
 
   const deleteTargetStats = useMemo(
     () => (deleteTarget && deleteTarget.type === 'folder' ? countDescendants(deleteTarget.id) : undefined),
-    [deleteTarget, countDescendants]
+    [deleteTarget, countDescendants],
   );
 
   // ---------- 操作 ----------
+
   const handleSelect = (doc: DocNode) => {
     setSelectedId(doc.id);
     if (doc.type === 'folder') {
@@ -216,9 +190,14 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
 
   const handleRename = (name: string) => {
     if (!renameTarget) return;
-    const trimmed = renameTarget.type === 'file' && !name.toLowerCase().endsWith('.md') ? `${name}.md` : name;
+    const trimmed =
+      renameTarget.type === 'file' && !name.toLowerCase().endsWith('.md') ? `${name}.md` : name;
     // 检查同名
-    if (docs.some((d) => d.parentId === renameTarget.parentId && d.name === trimmed && d.id !== renameTarget.id)) {
+    if (
+      docs.some(
+        (d) => d.parentId === renameTarget.parentId && d.name === trimmed && d.id !== renameTarget.id,
+      )
+    ) {
       toast.error('同名文件已存在');
       return;
     }
@@ -235,18 +214,10 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
     // 选中与目录状态也当场收拾掉，不等服务端回话。
     // deleteDoc 内部是乐观删除（先把本地子树摘了），这里的清理要跟上，
     // 否则会有一瞬间的错位：清单里节点没了，选中状态却还指着它。
-    if (selectedId === id) {
-      setSelectedId(null);
-    }
-    if (editingId === id) {
-      setEditingId(null);
-    }
+    if (selectedId === id) setSelectedId(null);
+    if (editingId === id) setEditingId(null);
     // 删除当前所在文件夹时回退到父目录，避免停留在已失效的目录 id 上
-    if (currentFolderId === id) {
-      setCurrentFolderId(parentId);
-    }
-    // 删除失败时不弹成功提示：那会把「服务端未启动 / 无权限」伪装成删除成功，
-    // 用户刷新后文档原样回来，反而更难定位。失败提示由 deleteDoc 内部统一给出。
+    if (currentFolderId === id) setCurrentFolderId(parentId);
     void deleteDoc(id).then((ok) => {
       if (!ok) return;
       toast.success(`已删除「${name}」`);
@@ -455,100 +426,12 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
   const canUpload = hasPermission('doc.upload');
 
   return (
-    <div className="h-screen flex overflow-hidden">
-      {/* 侧边栏 */}
+    <div className="h-full flex overflow-hidden">
+      {/* 侧边栏：文件树 */}
       <aside className="w-64 shrink-0 flex flex-col border-r border-indigo-100/40 dark:border-indigo-900/40 glass">
-        {/* Logo（点击返回主页） */}
-        <div className="p-4 border-b border-indigo-100/40 dark:border-indigo-900/40">
-          <button
-            onClick={onGoHome}
-            className="flex items-center gap-2.5 w-full text-left group cursor-pointer"
-            title="返回主页"
-          >
-            <div className="relative">
-              <div className="absolute inset-0 gradient-bg rounded-xl blur-md opacity-50" />
-              <div className="relative h-9 w-9 rounded-xl gradient-bg flex items-center justify-center shadow-md">
-                <FileText className="h-4.5 w-4.5 text-white" />
-              </div>
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold text-base gradient-text leading-tight group-hover:opacity-80 transition-opacity">
-                WorkHub
-              </div>
-              <div className="text-[10px] text-muted-foreground">现代化文档管理 · 点击返回主页</div>
-            </div>
-          </button>
-        </div>
-
-        {/* 用户信息 / 管理员切换 */}
-        <div className="p-3 border-b border-indigo-100/40 dark:border-indigo-900/40">
-          <div className="flex items-center gap-2.5 p-2 rounded-lg bg-white/40 dark:bg-white/5">
-            <div
-              className="h-8 w-8 rounded-full flex items-center justify-center text-white text-sm font-semibold shrink-0"
-              style={{ backgroundColor: currentUser.color }}
-            >
-              {currentUser.avatar}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium truncate">{currentUser.displayName}</div>
-              <div className="text-[10px] text-muted-foreground truncate">
-                {ROLE_LABELS[currentUser.role]} · {ROLE_DESCRIPTIONS[currentUser.role].split('，')[0]}
-              </div>
-            </div>
-            {isAdmin ? (
-              <>
-                {/* 管理入口只留一个。
-                    以前这里是三个挤在一起的小图标（授权、密码、改密），
-                    光看图标认不出哪个是哪件事；现在统一进「管理后台」，
-                    按功能分区在后台里找。 */}
-                <div className="relative">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => openAdminConsole('overview')}
-                    className="h-7 px-2 text-[11px] hover:bg-indigo-100/60 hover:text-indigo-600 dark:hover:bg-indigo-950/30"
-                    title="管理后台：概览、访问授权、加密文档、AI Agent、账号安全"
-                  >
-                    <LayoutDashboard className="h-3.5 w-3.5 mr-1" />
-                    管理
-                  </Button>
-                  {pendingAccessCount > 0 && (
-                    <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-medium text-white">
-                      {pendingAccessCount}
-                    </span>
-                  )}
-                </div>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => {
-                    logoutAdmin();
-                    setEditingId(null);
-                    toast.success('已退出管理员，当前为访客模式');
-                  }}
-                  className="h-7 w-7 hover:bg-red-100/60 hover:text-red-600 dark:hover:bg-red-950/30"
-                  title="退出管理员"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                </Button>
-              </>
-            ) : (
-              <Button
-                size="sm"
-                onClick={() => setAdminLoginOpen(true)}
-                className="h-7 px-2 text-[11px] gradient-bg hover:opacity-90"
-                title="切换为管理员"
-              >
-                <ShieldCheck className="h-3 w-3 mr-1" />
-                管理员
-              </Button>
-            )}
-          </div>
-        </div>
-
         {/* 操作按钮：三档操作同排分段，静止态统一，强调只在 hover 出现 */}
         {canCreate && (
-          <div className="border-b border-indigo-100/40 px-3 pb-3 pt-2.5 dark:border-indigo-900/40">
+          <div className="border-b border-indigo-100/40 px-3 pb-3 pt-3 dark:border-indigo-900/40">
             <div className="flex overflow-hidden rounded-lg border border-slate-200/70 bg-white/60 transition-colors dark:border-slate-700/50 dark:bg-white/5">
               <button
                 type="button"
@@ -603,15 +486,10 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
           </div>
           <DocTreeView tree={tree} {...treeProps} />
         </div>
-
-        {/* 原「载入示例文档」入口已移除。
-            它会把全部真实文档清空换成示例内容，仅靠 confirm() 兜底；
-            本项目已承载真实文档，这类破坏性入口不应出现在界面上。
-            对应的服务端接口与实现也已一并删除，不留后门。 */}
       </aside>
 
       {/* 主内容区 */}
-      <main className="flex-1 min-w-0 flex flex-col">
+      <div className="flex-1 min-w-0 flex flex-col">
         {editingDoc ? (
           <DocEditor doc={editingDoc} onClose={() => setEditingId(null)} />
         ) : (
@@ -633,7 +511,7 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
             onRequestRepo={(n) => setRepoTarget(n)}
           />
         )}
-      </main>
+      </div>
 
       {/* 弹窗 */}
       <CreateDialog
@@ -682,15 +560,6 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
         maxFileSize={currentRepo?.maxFileSize}
         onUpload={handleUploadBatch}
       />
-      <AdminLoginDialog
-        open={adminLoginOpen}
-        onOpenChange={setAdminLoginOpen}
-        onLogin={async (pwd) => {
-          const result = await loginAdmin(pwd);
-          if (result.ok) toast.success('已切换为管理员模式');
-          return result;
-        }}
-      />
       {/* 仓库归属：跨仓库迁移（含整棵子树） */}
       <RepoAssignDialog
         open={repoTarget !== null}
@@ -712,44 +581,6 @@ export function Workspace({ onGoHome }: WorkspaceProps) {
           void loadDocContent(docId);
         }}
       />
-
-      {/* 管理后台：按功能分区（概览 / 访问授权 / 加密文档 / AI Agent / 账号安全） */}
-      <AdminConsole />
-
-      {/* 文档分析 Agent（配置入口在面板右上角齿轮） */}
-      <AgentPanel open={agentOpen} onOpenChange={setAgentOpen} />
-
-      {/* 右下角悬浮入口：常显，面板展开时隐藏避免遮挡 */}
-      {!agentOpen && (
-        <button
-          type="button"
-          onClick={() => setAgentOpen(true)}
-          title={
-            canUseAgent
-              ? '基于可见文档的智能问答'
-              : isAdmin
-                ? '尚未配置 API Key，点击进入配置'
-                : '管理员尚未开放或未配置 Agent'
-          }
-          className={cn(
-            'fixed bottom-5 right-5 z-40 flex items-center gap-2 h-11 pl-3.5 pr-4 rounded-full',
-            'text-sm font-medium text-white shadow-lg shadow-indigo-500/25',
-            'transition-all duration-200 hover:scale-105 active:scale-95',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60',
-            canUseAgent
-              ? 'bg-gradient-to-br from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600'
-              : 'bg-slate-400/80 hover:bg-slate-500 dark:bg-slate-600/80 dark:hover:bg-slate-500',
-          )}
-        >
-          <Bot className="h-5 w-5 shrink-0" />
-          <span className="whitespace-nowrap">AI 助手</span>
-          {!canUseAgent && (
-            <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-normal leading-none">
-              未就绪
-            </span>
-          )}
-        </button>
-      )}
     </div>
   );
 }

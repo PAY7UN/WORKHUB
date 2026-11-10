@@ -33,6 +33,10 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         output: {
           manualChunks(id: string) {
+            // Rollup 给 CJS 包生成的互操作助手（react / react-dom 都靠它取默认导出）。
+            // 它必须和 react 待在同一块：一旦它落进 vendor，vendor 与 vendor-react
+            // 就互相 import，构建时会出现循环依赖警告，运行时还可能撞上 TDZ。
+            if (id.includes("commonjsHelpers")) return "vendor-react"
             if (!id.includes("node_modules")) return undefined
             // 代码编辑器：最重的一块，而且只在打开编辑器时才需要
             if (id.includes("@codemirror") || id.includes("@lezer")) return "vendor-codemirror"

@@ -1,0 +1,13 @@
+{
+  "id": "agent.status",
+  "name": "Agent 状态",
+  "category": "system",
+  "summary": "查看当前身份能不能用 Agent，以及缺什么条件。",
+  "method": "GET",
+  "endpoint": "/agent/status",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [],
+  "returns": "可用性、原因、模型名、是否已配置 API Key、是否开放访客。"
+}

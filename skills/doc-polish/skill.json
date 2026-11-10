@@ -1,0 +1,28 @@
+{
+  "id": "doc.polish",
+  "name": "文档润色",
+  "category": "ai",
+  "summary": "按指令重写一段正文，返回润色后的全文。",
+  "method": "POST",
+  "endpoint": "/agent/polish",
+  "adminOnly": true,
+  "composable": false,
+  "mode": "request",
+  "params": [
+    {
+      "key": "content",
+      "label": "原文",
+      "type": "longtext",
+      "required": true,
+      "placeholder": "粘贴要润色的正文"
+    },
+    {
+      "key": "instruction",
+      "label": "润色要求",
+      "type": "text",
+      "required": true,
+      "placeholder": "例如：改写成对外发布的公告口吻"
+    }
+  ],
+  "returns": "润色后的全文，以及相对原文的改动行数。"
+}
