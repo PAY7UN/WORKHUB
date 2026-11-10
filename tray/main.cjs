@@ -32,6 +32,13 @@ const {
   startUpdate,
 } = require('./manage.cjs');
 const { applyTrayUpdate, checkTrayUpdate } = require('./update.cjs');
+const {
+  isSameDir,
+  hasExistingData,
+  migrateData,
+  pickConfigTarget,
+  writeConfigPatch,
+} = require('./datadir.cjs');
 
 // 默认端口。托盘应用目录里没有 shared/（shared/ 在服务 payload 里，路径不通），
 // 所以这里是镜像值。真源在 shared/constants.ts 的 DEFAULT_API_PORT，改端口时一起改。
@@ -119,10 +126,14 @@ function resolvePaths() {
     // 安装目录：代码 + 前端产物 + 依赖，只读
     const codeDir = path.join(process.resourcesPath, 'payload');
     // 用户目录：.env / 数据库 / vault / 日志，可写
-    const dataDir = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'WorkHub');
+    const defaultDataDir = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'WorkHub');
     return {
       codeDir,
-      ...dataPaths(dataDir),
+      // 默认数据目录：不受 appDir 影响。它是「配置写到哪儿」的退路锚点——
+      // 配置跟着数据跑的话，「数据搬到哪儿了」这条记录本身就无处安放。
+      defaultDataDir,
+      exeDir: path.dirname(process.execPath),
+      ...dataPaths(defaultDataDir),
       entry: resolveEntry(codeDir),
       runner: path.join(codeDir, 'run-server.cjs'),
       packaged: true,
@@ -132,11 +143,42 @@ function resolvePaths() {
   const repoRoot = path.resolve(app.getAppPath(), '..');
   return {
     codeDir: repoRoot,
+    defaultDataDir: repoRoot,
+    exeDir: path.dirname(process.execPath),
     ...dataPaths(repoRoot),
     entry: resolveEntry(repoRoot),
     runner: path.join(__dirname, 'run-server.cjs'),
     packaged: false,
   };
+}
+
+/**
+ * 把 Chromium 的运行时文件收进工作目录。
+ *
+ * Electron 默认把 userData 放在 %APPDATA%\<应用名>。托盘叫 workhub-tray，
+ * 于是使用者会在 AppData\Roaming\workhub-tray 里看到几个看不懂的文件夹
+ * （着色器缓存、Local State、单实例锁文件），还以为那是 WorkHub 的数据。
+ *
+ * 那里面确实没有 WorkHub 的数据（数据在 %LOCALAPPDATA%\WorkHub），
+ * 但「我的东西在哪儿」这件事本来就该只有一个答案：
+ * 把 userData 指到工作目录下面，所有文件就都在同一个文件夹里了。
+ *
+ * 必须在 app ready 之前调用：ready 之后 setPath 不作数（Electron 会报错）。
+ */
+function applyUserDataPath() {
+  // 开发态不挪：工作目录就是仓库根，Chromium 的缓存落进去会污染版本库
+  // （还得专门加一条 .gitignore），开发者在仓库里看到一堆缓存目录只会困惑。
+  if (!app.isPackaged) return;
+  if (!paths?.dataDir) return;
+  const target = path.join(paths.dataDir, 'electron');
+  try {
+    fs.mkdirSync(target, { recursive: true });
+    app.setPath('userData', target);
+  } catch (err) {
+    // 指不了就算了：userData 里只有缓存与锁文件，指不了不影响托盘干活，
+    // 别在这儿把程序搞挂。
+    log(`Chromium 运行时目录没能挪到工作目录（${err?.message ?? err}），仍用默认位置`);
+  }
 }
 
 /* --------------------------------- 配置 --------------------------------- */
@@ -170,7 +212,9 @@ function loadConfig() {
     path.join(app.getAppPath(), 'tray.config.json'),
     path.join(path.dirname(process.execPath), 'tray.config.json'),
     ...(dataDir ? [path.join(dataDir, 'tray.config.json')] : []),
-    legacy,
+    // 旧位置只认打包态：那是旧安装版留下的东西，开发态去读它，
+    // 工作目录会被旧机器上的配置带偏（开发日志、测试库全跑到别处去）。
+    ...(app.isPackaged ? [legacy] : []),
   ];
   for (const file of candidates) {
     try {
@@ -226,6 +270,125 @@ function openDataDir() {
     });
   } catch (err) {
     log(`打开数据目录失败：${err?.message ?? err}`);
+  }
+}
+
+/**
+ * 改数据目录：让使用者自己挑一个地方放数据。
+ *
+ * 步骤：选目录 → 停服务 → 搬数据 → 记住新位置 → 重启托盘。
+ *
+ * 每一步都有坑，说明白：
+ *
+ * 1. **服务在跑的时候不能搬**。SQLite 的库文件正被占着，
+ *    搬过去的是半截文件——而且不报错，服务起来照样能用，
+ *    直到某天库里的东西少了几篇才被发现。
+ * 2. **「记住新位置」不能写在数据目录里**。数据目录正是被改的那一方，
+ *    配置跟着它跑就等于没记：下次启动读到的是「数据还在老地方」。
+ *    所以写在锚点上（exe 旁边，装到 Program Files 写不了就退到默认数据目录）。
+ * 3. **搬不是移**。旧目录里的东西留着，出了事能回头找。
+ *    删旧数据是使用者的决定，不是托盘替他做的。
+ */
+async function changeDataDir() {
+  if (!paths?.dataDir) return;
+  const picked = await dialog.showOpenDialog({
+    title: '选择数据存放位置',
+    defaultPath: paths.dataDir,
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return;
+  const target = path.resolve(picked.filePaths[0]);
+
+  if (isSameDir(target, paths.dataDir)) {
+    dialog.showMessageBox({
+      type: 'info',
+      title: '数据目录',
+      message: '数据已经在这个位置了。',
+      detail: paths.dataDir,
+      buttons: ['好'],
+    });
+    return;
+  }
+
+  // 目标里已经有一份数据：先问清楚。覆盖别人的库不是能默认做的事。
+  let overwrite = false;
+  if (hasExistingData(target)) {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: '目标目录里已经有数据',
+      message: `${target}\n\n这里已经有一份 WorkHub 的数据。`,
+      detail:
+        '选「覆盖」会把这里原有的数据先挪到备份名（.replaced-…），再换成当前目录的数据。' +
+        '旧文件会留着，不会直接删。',
+      buttons: ['取消', '覆盖'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (response !== 1) return;
+    overwrite = true;
+  }
+
+  // 服务在跑就不能搬（见上面的说明 1）。
+  const alive = await probe();
+  if (alive && !child) {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: '服务正在运行',
+      message: '服务正在运行，换位置前得先停掉它',
+      detail: '这个服务不是托盘拉起来的，托盘停不了它。请先自己停掉服务，再来改数据目录。',
+      buttons: ['好'],
+    });
+    return;
+  }
+  if (child) await stopServiceAndWait();
+
+  const moved = migrateData(paths.dataDir, target, { overwrite, log });
+  if (moved.errors.length) {
+    dialog.showMessageBox({
+      type: 'error',
+      title: '换位置失败',
+      message: '数据没能搬过去',
+      detail: `${moved.errors.join('\n')}\n\n原来的数据还在原处，位置也没改。`,
+      buttons: ['好'],
+    });
+    return;
+  }
+
+  // 记住新位置。锚点不跟着数据跑，所以这条记录不会跟着一起搬家。
+  const configFile = pickConfigTarget({
+    exeDir: app.isPackaged ? paths.exeDir : '',
+    fallbackDir: paths.defaultDataDir,
+  });
+  const written = writeConfigPatch(configFile, { appDir: target });
+  if (!written.ok) {
+    dialog.showMessageBox({
+      type: 'error',
+      title: '换位置失败',
+      message: '新位置没记住',
+      detail:
+        `${written.error}\n\n数据已经搬到 ${target}，但托盘下次启动还会用旧位置。` +
+        `请手动把 ${configFile} 里的 appDir 改成 ${target}。`,
+      buttons: ['好'],
+    });
+    return;
+  }
+  // 新目录里的那份配置也一并改掉：两份配置说的不是同一个地方，
+  // 哪天锚点那份丢了，程序就会照着新目录里这份回到老地方去。
+  writeConfigPatch(path.join(target, 'tray.config.json'), { appDir: target });
+  log(`数据目录已改为 ${target}（配置写在 ${configFile}）`);
+
+  const { response } = await dialog.showMessageBox({
+    type: 'info',
+    title: '数据目录已更改',
+    message: `数据目录：${target}`,
+    detail: '托盘要重启一次才能用上新位置（服务也会跟着重新起来）。',
+    buttons: ['好', '现在重启'],
+    defaultId: 1,
+    cancelId: 0,
+  });
+  if (response === 1) {
+    app.relaunch();
+    app.quit();
   }
 }
 
@@ -555,6 +718,7 @@ function refreshMenu() {
       },
       { type: 'separator' },
       { label: '打开数据目录', click: openDataDir },
+      { label: '更改数据目录…', click: () => void changeDataDir() },
       { label: '检查更新', click: () => void checkForUpdates() },
     );
     // 查到新版本后才多出这一条：没新版本时点「立即更新」没意义
@@ -984,6 +1148,22 @@ function quit() {
 /* --------------------------------- 启动 --------------------------------- */
 
 /**
+ * 路径与配置要在 app ready 之前算出来。
+ *
+ * 原因只有一个：Chromium 的运行时目录（userData）必须在 ready 前指定，
+ * 晚了就指不动——%APPDATA% 下会照旧多出一个 workhub-tray 目录。
+ * 而要知道工作目录在哪儿，就得先读配置（appDir 可能是配出来的）。
+ */
+paths = resolvePaths();
+config = loadConfig();
+// 工作目录可配（便携运行、测试都可能用到），默认按运行形态取。
+// 要连 .env 与日志的位置一起换：只改 dataDir 的话，数据库会落到新目录，
+// 而密钥还在旧目录——服务用旧密钥跑起来，表面一切正常，
+// 实际这是两份配置拼起来的部署，换台机器就露馅。
+if (config.appDir) Object.assign(paths, dataPaths(path.resolve(config.appDir)));
+applyUserDataPath();
+
+/**
  * 单实例锁。
  *
  * 托盘是常驻程序：使用者从快捷方式、快捷键、开机启动再拉它一次，
@@ -1007,13 +1187,26 @@ app.setAppUserModelId('com.workhub.tray');
 
 app.whenReady().then(async () => {
   if (!hasInstanceLock) return;
-  paths = resolvePaths();
-  config = loadConfig();
-  // 工作目录可配（便携运行、测试都可能用到），默认按运行形态取。
-  // 要连 .env 与日志的位置一起换：只改 dataDir 的话，数据库会落到新目录，
-  // 而密钥还在旧目录——服务用旧密钥跑起来，表面一切正常，
-  // 实际这是两份配置拼起来的部署，换台机器就露馅。
-  if (config.appDir) Object.assign(paths, dataPaths(path.resolve(config.appDir)));
+  // 工作目录配了一个不存在的路径，得先说一声。
+  // 不说的话，服务会在那儿凭空造一个空库，用户看到的是「文档全没了」——
+  // 而真相只是盘没插上、目录被删了，或者临时目录被清掉了。
+  if (config.appDir && !fs.existsSync(paths.dataDir)) {
+    log(`配置里的工作目录不存在：${paths.dataDir}`);
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: '工作目录不见了',
+      message: `配置里指定的工作目录不存在：\n${paths.dataDir}`,
+      detail:
+        '可能是盘没插上、目录被删了，或者临时目录被清掉了。' +
+        '服务会在这个位置新建一个空的数据目录——原来放在那儿的文档不会自己回来。' +
+        '要换个位置的话，选「更改数据目录」。',
+      buttons: ['先这样', '更改数据目录'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (response === 1) await changeDataDir();
+  }
+
   // 服务入口：配置里写了就用配置的；没写（或写的那个不存在）按约定探测
   if (config.entry) {
     const configured = path.isAbsolute(config.entry)

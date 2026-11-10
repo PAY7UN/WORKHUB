@@ -9,7 +9,7 @@
   "_说明": {
     "mode": "local = 本机自己跑服务；remote = 只连远端服务器",
     "target": "留空则本地模式按 .env 里的 WORKHUB_PORT 推 http://127.0.0.1:端口；remote 模式必填",
-    "appDir": "工作目录（.env / 数据库 / 日志放这儿）。留空：打包态用 %LOCALAPPDATA%\\WorkHub，开发态用仓库根",
+    "appDir": "工作目录（.env / 数据库 / 日志放这儿）。留空：打包态用 %LOCALAPPDATA%\\WorkHub，开发态用仓库根。也可以从托盘菜单的「更改数据目录…」里选，托盘会帮你搬数据并记住新位置",
     "entry": "服务入口。相对路径按代码目录拼；打包态代码目录在安装目录里，一般不用改",
     "token": "remote 模式的机器令牌（服务器上用 npm run manage:token -- issue \"<用途>\" 发放）。也可用环境变量 WORKHUB_MANAGE_TOKEN 代替",
     "hotkey": "全局快捷键：按一下就打开网页（不用找托盘图标）。写空字符串表示不要注册。组合键被别的程序占了也不影响托盘，只是快捷键失效",

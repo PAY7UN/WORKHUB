@@ -51,6 +51,8 @@ logs/
 # 托盘工具的机器相关配置：端口、代码目录、令牌都随机器而异，不该进版本库
 # （样例见 tray/tray.config.example.json）
 tray/tray.config.json
+# 开发态的数据目录就是仓库根，配置会落到根目录（不写前导斜杠会连带忽略 tray/ 那份）
+/tray.config.json
 
 # 发布包产物目录（out/payload、out/release.json 之类）
 /out/
