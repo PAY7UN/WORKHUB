@@ -33,26 +33,15 @@ jobs:
       - name: 单元测试
         shell: bash
         run: |
-          set -o pipefail
-          npm test 2>&1 | tee /tmp/unit-test.log
-          status=${PIPESTATUS[0]}
+          # 先落盘再看退出码：GitHub 的 bash 步骤默认 set -e，
+          # `npm test | tee` 管道一失败脚本就退出了，后面的诊断根本跑不到。
+          status=0
+          npm test > /tmp/unit-test.log 2>&1 || status=$?
+          cat /tmp/unit-test.log
           if [ "$status" -ne 0 ]; then
             # 失败原因写进注解：注解在 API 里是公开可读的，
             # 不用翻几百 MB 的 CI 日志才知道是哪条用例挂了、为什么挂。
-            python3 - <<'PY'
-          import pathlib
-          import re
-
-          log = pathlib.Path('/tmp/unit-test.log').read_text(errors='replace')
-          lines = log.splitlines()
-          picked = []
-          for i, line in enumerate(lines):
-              if re.match(r'^(not ok|✖)', line):
-                  picked.extend(lines[i:i + 14])
-                  picked.append('---')
-          message = '\n'.join(picked[:160]).replace('%', '%25').replace('\r', '')
-          print('::error title=单元测试失败::' + message.replace('\n', '%0A'))
-          PY
+            node scripts/ci/test-failure-summary.mjs /tmp/unit-test.log
           fi
           exit $status
 
