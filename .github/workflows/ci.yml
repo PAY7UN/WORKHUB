@@ -31,7 +31,30 @@ jobs:
         run: npm run lint
 
       - name: 单元测试
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/unit-test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # 失败原因写进注解：注解在 API 里是公开可读的，
+            # 不用翻几百 MB 的 CI 日志才知道是哪条用例挂了、为什么挂。
+            python3 - <<'PY'
+          import pathlib
+          import re
+
+          log = pathlib.Path('/tmp/unit-test.log').read_text(errors='replace')
+          lines = log.splitlines()
+          picked = []
+          for i, line in enumerate(lines):
+              if re.match(r'^(not ok|✖)', line):
+                  picked.extend(lines[i:i + 14])
+                  picked.append('---')
+          message = '\n'.join(picked[:160]).replace('%', '%25').replace('\r', '')
+          print('::error title=单元测试失败::' + message.replace('\n', '%0A'))
+          PY
+          fi
+          exit $status
 
       - name: 编译服务端（发布态入口）
         run: npm run build:server

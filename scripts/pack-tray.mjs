@@ -175,11 +175,26 @@ async function runBuilderOnce(configFile, { electron, binaries }) {
     child.on('close', (c) => resolve(c ?? 1));
   });
   if (code !== 0) {
-    const last = tail.join('').split(/\r?\n/).filter((l) => l.trim()).slice(-25);
     const err = new Error(`electron-builder 退出码 ${code}`);
-    err.detail = last.join('\n');
+    err.detail = summarizeFailure(tail.join(''));
     throw err;
   }
+}
+
+/**
+ * 从打包输出里挑出「能看出哪儿炸了」的那几行。
+ *
+ * electron-builder 末尾常跟着一长串 duplicate dependency references 告警：
+ * 一行能有几万字符，把真正的错误（⨯ 开头那几行）整个盖住。
+ * 摘要时先把噪音剔掉，不够行数了再退回原始尾部。
+ */
+const NOISE_LINE = /duplicate dependency references/;
+
+function summarizeFailure(output) {
+  const lines = output.split(/\r?\n/).map((l) => (l.length > 300 ? `${l.slice(0, 300)}…` : l));
+  const meaningful = lines.filter((l) => l.trim() && !NOISE_LINE.test(l));
+  const source = meaningful.length >= 6 ? meaningful : lines;
+  return source.filter((l) => l.trim()).slice(-25).join('\n');
 }
 
 /** 国内镜像：electron 发行包与打包工具的国内分发站 */
