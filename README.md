@@ -166,6 +166,17 @@ npm run pack:check
 发版有现成的工作流（`.github/workflows/release.yml`）：Release 一发布，
 它会在 Windows 上打这个包、自检，再把包挂到 Release 上。
 
+发版这一段有两道「不许少发」的闸门：
+
+- 上传前**清点资产**（`scripts/ci/check-release-assets.mjs`）：
+  这一版该有的五个文件（服务端包 + 校验值、托盘包 + 校验值、安装程序）
+  少一个就当场失败，不让「少发」变成「发得挺顺」；
+- 上传后**回头核对**（`scripts/ci/verify-release-assets.mjs`）：
+  直接问 GitHub 这份 Release 上到底挂了哪些资产，不信流水线自己的结论。
+
+这两道闸门是被真实事故逼出来的：v0.3.0 少挂了托盘的 `.sha256`，
+打包与校验全过、流水线全绿，只有把 Release 的资产清单拉下来对一遍才发现。
+
 ### 铺到机器上：首装和升级走同一条路
 
 ```powershell

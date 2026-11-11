@@ -110,6 +110,14 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      # 上传之前先把清单点一遍：少一样就当场失败。
+      # 上传那一步是按通配符找文件的，匹配不上就当没这回事——
+      # 流水线照样绿，可发出去的东西缺了自动更新要用的 .sha256。
+      - name: 清点发布资产
+        shell: pwsh
+        run: |
+          node scripts/ci/check-release-assets.mjs
+
       - name: 准备 Release 说明
         shell: pwsh
         env:
@@ -134,6 +142,10 @@ jobs:
           # 同一个 tag 重发一次（推 tag 建完 Release、又在网页上点一次发布）时，
           # 资产名会撞车；覆盖掉旧的，别让这一步把整条流水线带崩。
           overwrite_files: true
+          # 通配符匹配不上就报错：少挂一个资产曾经就这么悄悄发生过
+          # （v0.3.0 少了托盘的 .sha256，流水线全绿，Release 上却是缺的）。
+          # 现在匹配不上就当失败处理，不让「少发」变成「发得挺顺」。
+          fail_on_unmatched_files: true
           # 资产名是自动升级的约定：服务端认 workhub-server-<版本>.zip，
           # 托盘认 workhub-tray-<版本>.zip。名字对不上就等于没发，
           # 而且用户那边看不出任何异常：界面只说「没有新版本」。
@@ -143,3 +155,13 @@ jobs:
             release/workhub-tray-*.zip
             release/workhub-tray-*.zip.sha256
             release/WorkHub-Setup-*.exe
+
+      # 上传完再问一遍 GitHub：这份 Release 上到底有哪些资产。
+      # 不信流水线自己的结论——把 Release 的资产清单拉下来对一遍才算数。
+      - name: 核对 Release 上的资产
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}
+        run: |
+          node scripts/ci/verify-release-assets.mjs $env:TAG
