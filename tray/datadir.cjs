@@ -17,6 +17,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const { isSameDir, isWindowsStyle } = require('./pathutil.cjs');
 
 /**
  * 跟着工作目录走的东西。
@@ -30,25 +31,6 @@ const DATA_ITEMS = ['.env', '.env.bak', 'data', 'logs', 'tray.config.json'];
 const CONFIG_NAME = 'tray.config.json';
 
 /**
- * 两个目录是不是同一个。
- *
- * 判重必须按解析后的绝对路径比：同一个目录写成 `D:\WorkHub` 与 `D:\WorkHub\.`
- * 是同一个，写成 `D:\workhub` 与 `D:\WorkHub` 在 Windows 上也是同一个。
- * 不判重就可能「把目录搬进它自己」——递归复制自己会把自己撑爆。
- *
- * @param {string} a
- * @param {string} b
- * @returns {boolean}
- */
-function isSameDir(a, b) {
-  if (!a || !b) return false;
-  const ra = path.resolve(a);
-  const rb = path.resolve(b);
-  if (process.platform === 'win32') return ra.toLowerCase() === rb.toLowerCase();
-  return ra === rb;
-}
-
-/**
  * 目录能不能写。
  *
  * 用来挑配置的锚点：装到 Program Files 的用户写不了 exe 旁边的文件，
@@ -58,6 +40,10 @@ function isSameDir(a, b) {
  * @returns {boolean}
  */
 function canWrite(dir) {
+  if (!dir) return false;
+  // Windows 形态的路径只有在 Windows 上才有意义：
+  // 在别的系统上它不是本机路径，硬写会莫名其妙建出一个带盘符的目录。
+  if (isWindowsStyle(dir) && process.platform !== 'win32') return false;
   try {
     fs.mkdirSync(dir, { recursive: true });
     const probe = path.join(dir, `.write-probe-${process.pid}`);

@@ -10,6 +10,9 @@
  *
  * 输出的就是一行 GitHub 工作流命令：
  *   ::error title=单元测试失败::<内容>
+ *
+ * 名字别用 test- 前缀：node --test 会把 test-*.mjs 也收进测试集，
+ * 这个脚本跑起来没有用例、退出码非零，会把整次测试带沟里。
  */
 import { readFileSync } from 'node:fs';
 

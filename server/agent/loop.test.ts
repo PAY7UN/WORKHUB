@@ -18,6 +18,9 @@ import { join } from 'node:path';
 const workDir = mkdtempSync(join(tmpdir(), 'workhub-agent-loop-'));
 process.env.WORKHUB_DB_V2 = join(workDir, 'agent.db');
 process.env.USER_SKILLS_DIR = join(workDir, 'user-skills');
+// 服务端的配置在 import 时就校验密钥（缺了直接拒绝启动）。
+// CI 上没有 .env，本地也未必有：测试自己给一把，别依赖运行者的环境。
+process.env.WORKHUB_SECRET ??= 'workhub-agent-test-secret-0123456789abcdef';
 
 const { runAgent } = await import('./runtime.ts');
 const { findAgentRole } = await import('./roles.ts');

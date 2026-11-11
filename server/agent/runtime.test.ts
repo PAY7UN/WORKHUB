@@ -17,6 +17,9 @@ import { join } from 'node:path';
 
 const workDir = mkdtempSync(join(tmpdir(), 'workhub-agent-test-'));
 process.env.WORKHUB_DB_V2 = join(workDir, 'agent.db');
+// 服务端的配置在 import 时就校验密钥（缺了直接拒绝启动）。
+// CI 上没有 .env，本地也未必有：测试自己给一把，别依赖运行者的环境。
+process.env.WORKHUB_SECRET ??= 'workhub-agent-test-secret-0123456789abcdef';
 
 const { parseAction } = await import('./runtime.ts');
 const { VisibleTextFilter } = await import('../../shared/jsonBlock.ts');

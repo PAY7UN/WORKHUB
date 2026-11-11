@@ -41,7 +41,7 @@ jobs:
           if [ "$status" -ne 0 ]; then
             # 失败原因写进注解：注解在 API 里是公开可读的，
             # 不用翻几百 MB 的 CI 日志才知道是哪条用例挂了、为什么挂。
-            node scripts/ci/test-failure-summary.mjs /tmp/unit-test.log
+            node scripts/ci/unit-failure-summary.mjs /tmp/unit-test.log
           fi
           exit $status
 

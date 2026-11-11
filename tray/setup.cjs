@@ -13,6 +13,7 @@
  */
 const path = require('node:path');
 const fs = require('node:fs');
+const { isInsideDir, isSameDir, apiFor } = require('./pathutil.cjs');
 
 /**
  * 开机自启动能不能设。
@@ -61,57 +62,6 @@ function setAutoStart(app, enabled) {
   } catch (err) {
     return { ok: false, enabled: false, reason: err?.message ?? String(err) };
   }
-}
-
-/**
- * 按路径自己的形态选解析规则。
- *
- * 托盘是 Windows 应用，使用者填的路径一定是 Windows 形态（盘符 + 反斜杠），
- * 但这组单测在 Linux 上也跑（CI 的 check job 跑在 ubuntu 上），那边的临时目录是 POSIX 形态。
- * 一律用宿主的 path 解析，两边都会错：
- * POSIX 上 path.resolve('D:\\WorkHub') 会当成相对路径拼到 cwd 后面，
- * win32.resolve('/tmp/xxx') 又会变成 'C:\tmp\xxx'。
- *
- * 所以按形态选：带盘符或反斜杠的按 Windows 规则，其余按宿主规则。
- */
-function pathFlavor(value) {
-  const text = String(value ?? '');
-  const windows = /^[a-zA-Z]:[\\/]/.test(text) || text.includes('\\');
-  return { api: windows ? path.win32 : path, windows };
-}
-
-/**
- * 把路径归一化成「拿来比较」的样子。
- *
- * Windows 上要折叠大小写（D:\Data 和 d:\data 是一个地方），
- * POSIX 上大小写敏感，折叠了就是两个不同的目录。
- */
-function normalizeForCompare(value) {
-  const { api, windows } = pathFlavor(value);
-  let resolved = api.resolve(String(value ?? '')).replace(/[\\/]+$/, '');
-  if (windows) resolved = resolved.toLowerCase();
-  return { resolved, sep: api.sep, windows };
-}
-
-/**
- * 同一个目录吗（Windows 上大小写不敏感，D:\Data 和 d:\data 是一个地方）。
- */
-function isSamePath(a, b) {
-  if (!a || !b) return false;
-  return normalizeForCompare(a).resolved === normalizeForCompare(b).resolved;
-}
-
-/**
- * 目录是不是另一个目录的子目录。
- *
- * 要比「同一个」更严：程序目录里的子目录同样是雷区。
- */
-function isInsideDir(child, parent) {
-  if (!child || !parent) return false;
-  const c = normalizeForCompare(child);
-  const p = normalizeForCompare(parent);
-  if (c.resolved === p.resolved) return true;
-  return c.resolved.startsWith(p.resolved + p.sep);
 }
 
 /**
@@ -174,7 +124,7 @@ function checkDataDir(dir, options = {}) {
 function normalizeSetupChoice(choice = {}) {
   const dir = String(choice.dataDir ?? '').trim();
   if (!dir) return { dataDir: '', autoStart: Boolean(choice.autoStart) };
-  const { api } = pathFlavor(dir);
+  const api = apiFor(dir);
   return {
     // 只规整写法，不折叠大小写：配置里存的是使用者填的原样路径，
     // 大小写折叠是「比较时」的事（见 normalizeForCompare）
@@ -187,7 +137,7 @@ module.exports = {
   checkDataDir,
   isAutoStartEnabled,
   isAutoStartSupported,
-  isSamePath,
+  isSamePath: isSameDir,
   isInsideDir,
   normalizeSetupChoice,
   setAutoStart,
