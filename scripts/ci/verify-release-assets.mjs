@@ -14,11 +14,15 @@
  *
  * 需要 GITHUB_TOKEN（或 GH_TOKEN）；没令牌就跳过——本地跑没令牌是正常的。
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+// 这两个可以指到别处：单测要在临时目录里摆「缺件」「体积不符」的样子。
+// 真实发布时用的还是默认的那两个。
+const RELEASE_DIR = process.env.WORKHUB_RELEASE_DIR ?? join(ROOT, 'release');
+const RELEASE_API = process.env.WORKHUB_RELEASE_API ?? 'https://api.github.com';
 
 function readVersion() {
   return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
@@ -59,7 +63,7 @@ async function main() {
     return;
   }
 
-  const url = `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`;
+  const url = `${RELEASE_API}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`;
   const response = await fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -91,7 +95,32 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('\nRelease 上的资产齐全。');
+  // 光有名字不够：还要看体积对不对。
+  // v0.3.0 的托盘包传到 GitHub 上时就是一个被截断的残包——
+  // 名字对、扩展名对，只有体积和内容对不上。
+  const mismatched = [];
+  for (const asset of release.assets ?? []) {
+    const localPath = join(RELEASE_DIR, asset.name);
+    if (!existsSync(localPath)) {
+      console.log(`· 本地没有 ${asset.name}，比不了体积`);
+      continue;
+    }
+    const localSize = statSync(localPath).size;
+    if (localSize !== asset.size) {
+      mismatched.push(`${asset.name}：本地 ${localSize} 字节，Release 上 ${asset.size} 字节`);
+    }
+  }
+  if (mismatched.length > 0) {
+    annotate(
+      'Release 上的文件对不上',
+      `Release ${tag} 上有 ${mismatched.length} 个文件跟本地打出来的不一样：\n${mismatched.join('\n')}\n` +
+        '多半是上传过程中坏掉了——这种包发出去就是坏的。',
+    );
+    console.error('\nRelease 上的文件跟本地打出来的不一样：这次发版不算完成。');
+    process.exit(1);
+  }
+
+  console.log('\nRelease 上的资产齐全，体积也跟本地打出来的一致。');
 }
 
 await main();
