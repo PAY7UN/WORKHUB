@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>WorkHub 首次使用</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --card: #ffffff;
+        --fg: #1f2430;
+        --muted: #6b7280;
+        --line: #e3e6eb;
+        --primary: #4f46e5;
+        --primary-hover: #4338ca;
+        --danger: #b91c1c;
+        --danger-bg: #fef2f2;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181d;
+          --card: #1f222a;
+          --fg: #e8eaed;
+          --muted: #9aa1ad;
+          --line: #2e323b;
+          --primary: #7c73ff;
+          --primary-hover: #8f88ff;
+          --danger: #fca5a5;
+          --danger-bg: #2a1c1c;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        user-select: none;
+      }
+      .card {
+        width: 100%;
+        max-width: 520px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 24px 26px 20px;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 19px;
+        font-weight: 600;
+      }
+      .lead {
+        margin: 0 0 20px;
+        color: var(--muted);
+      }
+      .field {
+        margin-bottom: 18px;
+      }
+      .label {
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: stretch;
+      }
+      input[type="text"] {
+        flex: 1;
+        min-width: 0;
+        padding: 8px 10px;
+        font: inherit;
+        color: var(--fg);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      input[type="text"]:focus {
+        outline: none;
+        border-color: var(--primary);
+      }
+      button {
+        font: inherit;
+        padding: 8px 14px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: var(--card);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--primary);
+        color: var(--primary);
+      }
+      .hint {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12.5px;
+      }
+      .error {
+        margin-top: 6px;
+        color: var(--danger);
+        background: var(--danger-bg);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12.5px;
+      }
+      .check {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin-bottom: 20px;
+      }
+      .check input {
+        margin-top: 3px;
+      }
+      .check .label {
+        margin-bottom: 2px;
+        font-weight: 500;
+      }
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        border-top: 1px solid var(--line);
+        padding-top: 16px;
+      }
+      .primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+        padding: 8px 20px;
+      }
+      .primary:hover {
+        background: var(--primary-hover);
+        border-color: var(--primary-hover);
+        color: #fff;
+      }
+      .primary:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>欢迎使用 WorkHub</h1>
+      <p class="lead">开始之前先定两件事：数据放在哪儿，要不要开机自动运行。</p>
+
+      <div class="field">
+        <div class="label">数据存放位置</div>
+        <div class="row">
+          <input id="dir" type="text" spellcheck="false" />
+          <button id="pick" type="button">选择…</button>
+        </div>
+        <div class="hint">数据库、文档正文与日志都放在这个文件夹里；程序目录只放程序文件。</div>
+        <div id="dirError" class="error" hidden></div>
+      </div>
+
+      <div class="check">
+        <input id="autostart" type="checkbox" />
+        <div>
+          <div class="label">开机自动启动 WorkHub</div>
+          <div class="hint">登录 Windows 后自动在后台运行，随时能在托盘菜单里关掉。</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="skip" type="button">先用默认的</button>
+        <button id="ok" class="primary" type="button">开始使用</button>
+      </div>
+    </div>
+
+    <script>
+      const dirInput = document.getElementById('dir');
+      const errorBox = document.getElementById('dirError');
+      const okButton = document.getElementById('ok');
+
+      function showError(message) {
+        errorBox.textContent = message;
+        errorBox.hidden = !message;
+      }
+
+      function showPath(value) {
+        dirInput.value = value || '';
+        showError('');
+      }
+
+      // 主进程在创建窗口时把初值塞进来
+      window.addEventListener('DOMContentLoaded', () => {
+        window.workhubSetup.init().then((init) => {
+          showPath(init.dataDir);
+          document.getElementById('autostart').checked = Boolean(init.autoStart);
+        });
+      });
+
+      document.getElementById('pick').addEventListener('click', async () => {
+        const picked = await window.workhubSetup.chooseDir(dirInput.value);
+        if (picked) showPath(picked);
+      });
+
+      dirInput.addEventListener('input', () => showError(''));
+
+      document.getElementById('skip').addEventListener('click', async () => {
+        const result = await window.workhubSetup.submit({
+          dataDir: '',
+          autoStart: false,
+          useDefault: true,
+        });
+        if (result && result.ok === false) showError(result.reason);
+      });
+
+      okButton.addEventListener('click', async () => {
+        const result = await window.workhubSetup.submit({
+          dataDir: dirInput.value,
+          autoStart: document.getElementById('autostart').checked,
+        });
+        if (result && result.ok === false) showError(result.reason);
+      });
+    </script>
+  </body>
+</html>

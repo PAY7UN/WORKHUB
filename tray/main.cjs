@@ -32,6 +32,8 @@ const {
   startUpdate,
 } = require('./manage.cjs');
 const { applyTrayUpdate, checkTrayUpdate } = require('./update.cjs');
+const { showSetupWizard } = require('./wizard.cjs');
+const { isAutoStartEnabled, setAutoStart } = require('./setup.cjs');
 const {
   isSameDir,
   hasExistingData,
@@ -56,6 +58,7 @@ const DEFAULTS = {
   token: '', // remote 模式的机器令牌
   hotkey: 'Control+Alt+W', // 全局快捷键：按一下就打开网页
   update: {}, // 托盘自更新源（manifest / url / repo），留空则走 GitHub Releases
+  setupDone: false, // 首次运行向导问过了没有（问过就不再打扰）
 };
 
 let config = null;
@@ -390,6 +393,100 @@ async function changeDataDir() {
     app.relaunch();
     app.quit();
   }
+}
+
+/* --------------------------- 首次运行与开机自启 --------------------------- */
+
+/**
+ * 首次运行向导：服务起来之前，先问两件事——数据放哪儿、要不要开机自启动。
+ *
+ * 为什么要有这一步：
+ * - 数据目录默认落在 %LOCALAPPDATA%，但很多人会把数据放在另一块盘上。
+ *   装完再改，得先去托盘菜单里翻「更改数据目录」——那时候服务已经在跑，
+ *   库里已经有一堆初始数据，搬起来是另一件事（还得先停服务）。
+ * - 开机自启动是个「要不要」的问题。安装时没人问过，默认永远是不开，
+ *   于是每个人都得自己去任务管理器里加一遍。
+ *
+ * 只在打包态问，且只问一次：
+ * - 开发态每次都弹会烦死开发者；
+ * - 已经有配置文件说明是重装或升级——数据目录是人家自己挑的，别再问一遍。
+ */
+async function runFirstRunWizard() {
+  if (!app.isPackaged) return;
+  if (config.setupDone) return;
+  if (config.configFile) {
+    config.setupDone = true;
+    return;
+  }
+
+  const choice = await showSetupWizard({
+    defaultDataDir: paths.defaultDataDir,
+    exeDir: paths.exeDir,
+    autoStart: isAutoStartEnabled(app),
+  });
+  // 用户关了窗口：按默认配置继续，别卡在这儿不让人用
+  if (!choice) {
+    log('首次运行向导被关闭，按默认配置继续');
+    return;
+  }
+
+  // 数据目录：换了就换过去。此刻还没有数据要搬——第一次运行本来就没有。
+  if (choice.dataDir && !isSameDir(choice.dataDir, paths.dataDir)) {
+    Object.assign(paths, dataPaths(choice.dataDir));
+    // Chromium 的运行时目录跟着换（指不动就算了：那儿只有缓存和锁文件）
+    applyUserDataPath();
+    log(`数据目录已按向导的选择定为：${paths.dataDir}`);
+  }
+
+  const autostart = setAutoStart(app, choice.autoStart);
+  if (!autostart.ok) {
+    log(`开机自启动没设上：${autostart.reason}`);
+    if (choice.autoStart) {
+      dialog.showMessageBox({
+        type: 'warning',
+        title: '开机自启动',
+        message: '没能设置开机自启动',
+        detail: `${autostart.reason}\n\n可以之后在托盘菜单里再试一次。`,
+        buttons: ['好'],
+      });
+    }
+  }
+
+  // 记住「问过了」：不写这一笔，下次启动又要弹一遍。
+  // 顺带把数据目录也记下来——锚点不跟着数据跑，这条记录才立得住。
+  const configFile = pickConfigTarget({
+    exeDir: paths.exeDir,
+    fallbackDir: paths.defaultDataDir,
+  });
+  const written = writeConfigPatch(configFile, { setupDone: true, appDir: paths.dataDir });
+  if (!written.ok) {
+    log(`配置写不进去（向导会再问一次）：${written.error}`);
+    return;
+  }
+  config = { ...config, ...written.config, configFile };
+}
+
+/**
+ * 开关开机自启动（托盘菜单里的勾选项）。
+ *
+ * 状态问的是系统而不是我们自己记的：使用者可能自己在任务管理器里把它关掉了，
+ * 这时菜单里的勾还亮着，就是在骗人。
+ */
+async function toggleAutoStart(enabled) {
+  const result = setAutoStart(app, enabled);
+  if (!result.ok) {
+    log(`开机自启动没设上：${result.reason}`);
+    dialog.showMessageBox({
+      type: 'warning',
+      title: '开机自启动',
+      message: '没能设置开机自启动',
+      detail: result.reason,
+      buttons: ['好'],
+    });
+  } else {
+    log(enabled ? '已设为开机自动启动' : '已取消开机自动启动');
+  }
+  refreshMenu();
 }
 
 /**
@@ -740,7 +837,17 @@ function refreshMenu() {
       { label: '升级服务器', click: () => void confirmRemoteUpdate() },
     );
   }
-  template.push({ type: 'separator' }, { label: '退出', click: quit });
+  template.push(
+    { type: 'separator' },
+    {
+      label: '开机自动启动',
+      type: 'checkbox',
+      checked: isAutoStartEnabled(app),
+      click: (item) => void toggleAutoStart(item.checked),
+    },
+    { type: 'separator' },
+    { label: '退出', click: quit },
+  );
   tray.setContextMenu(Menu.buildFromTemplate(template));
   tray.setToolTip(statusLabel());
 }
@@ -1078,9 +1185,13 @@ async function runTrayUpdate() {
   }
 
   const appDir = path.dirname(process.execPath);
-  const scriptPath = fs.existsSync(path.join(appDir, 'apply-update.cjs'))
-    ? path.join(appDir, 'apply-update.cjs')
-    : path.join(__dirname, 'apply-update.cjs');
+  // 更新器脚本的位置：现在收在 resources\update\ 下（安装目录根层只留入口和运行时），
+  // 老版本直接放在根目录——两个位置都认，老安装升级时才找得到自己那份。
+  const scriptPath = [
+    path.join(appDir, 'resources', 'update', 'apply-update.cjs'),
+    path.join(appDir, 'apply-update.cjs'),
+    path.join(__dirname, 'apply-update.cjs'),
+  ].find((candidate) => fs.existsSync(candidate)) ?? path.join(appDir, 'resources', 'update', 'apply-update.cjs');
 
   log(`开始更新托盘：${currentVersion()} → ${trayUpdate?.version ?? '最新'}`);
   try {
@@ -1187,6 +1298,9 @@ app.setAppUserModelId('com.workhub.tray');
 
 app.whenReady().then(async () => {
   if (!hasInstanceLock) return;
+  // 首次运行先问两件事（数据目录、开机自启动）。要在生成 .env 之前问完：
+  // .env、数据库、日志都得落在最终选定的目录里。
+  await runFirstRunWizard();
   // 工作目录配了一个不存在的路径，得先说一声。
   // 不说的话，服务会在那儿凭空造一个空库，用户看到的是「文档全没了」——
   // 而真相只是盘没插上、目录被删了，或者临时目录被清掉了。

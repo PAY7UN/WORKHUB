@@ -39,11 +39,13 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -133,6 +135,50 @@ function run(command, args, options = {}) {
  */
 const PACKAGE_DIR = 'workhub';
 
+/**
+ * 暂存目录放哪儿。
+ *
+ * 以前它就建在发布目录（release/）里，于是每次打包都在发布目录里留下一个
+ * `.pack-staging-*`：Windows 上文件常被杀毒软件或索引服务占着，清不掉，
+ * 历次打包就攒下一堆。别人往 GitHub Release 传产物时，一眼看过去分不清
+ * 哪个是产物、哪个是垃圾——发布目录就该只有能发的东西。
+ *
+ * 挪到系统临时目录：发布目录只留产物，暂存目录清不掉也只是临时目录里的垃圾。
+ */
+const STAGE_ROOT = join(tmpdir(), 'workhub-pack-server');
+
+/**
+ * 清掉发布目录里历次留下的暂存目录。
+ *
+ * 只清 `.pack-staging-*`：别人的文件不动。清不掉就留着，不影响打包，
+ * 但要说出来——悄悄留一堆垃圾目录，下次谁也说不清它是干嘛的。
+ */
+function cleanOldStaging(outDir) {
+  if (!existsSync(outDir)) return { removed: 0, failed: [] };
+  const failed = [];
+  let removed = 0;
+  for (const name of readdirSync(outDir)) {
+    if (!name.startsWith('.pack-staging-')) continue;
+    const target = join(outDir, name);
+    // 先改名再删：Windows 上文件正被占用时（杀毒软件在扫刚写出的 node.exe）
+    // 直接删会失败；改个名就能把它从发布目录里挪出去。
+    let victim = target;
+    try {
+      victim = join(outDir, `${name}.trash`);
+      renameSync(target, victim);
+    } catch {
+      victim = target; // 改名也不行就原地删
+    }
+    try {
+      rmSync(victim, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 });
+      removed += 1;
+    } catch (err) {
+      failed.push(`${name}（${err?.code ?? err?.message ?? err}）`);
+    }
+  }
+  return { removed, failed };
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const outDir = resolve(ROOT, args.out ?? 'release');
@@ -159,13 +205,20 @@ async function main() {
     process.exit(1);
   }
 
-  let staging = join(outDir, `.pack-staging-${version}`);
+  // 发布目录里的历史残留先扫一遍：发布目录该只有能发的东西。
+  const stale = cleanOldStaging(outDir);
+  if (stale.removed > 0) console.log(`  （清掉了 ${stale.removed} 个历史暂存目录）`);
+  for (const name of stale.failed) {
+    console.log(`  （历史暂存目录没清掉，留着了：${name}）`);
+  }
+
+  let staging = join(STAGE_ROOT, `.pack-staging-${version}`);
   // 上一次没清干净的暂存目录：清不掉就换个名字重来，
   // 不能因为一个残留目录就打不成包。
   try {
     rmSync(staging, { recursive: true, force: true });
   } catch {
-    staging = join(outDir, `.pack-staging-${version}-${Date.now()}`);
+    staging = join(STAGE_ROOT, `.pack-staging-${version}-${Date.now()}`);
     console.log('  （上次的暂存目录清不掉，换个名字重来）');
   }
   mkdirSync(staging, { recursive: true });

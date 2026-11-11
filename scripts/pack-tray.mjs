@@ -209,7 +209,11 @@ async function runBuilder() {
   writeFileSync(join(STAGE, 'build', 'icon.ico'), makeIconIco());
   // 依赖要单独一条：electron-builder 的文件过滤器硬编码排除「复制源根部的 node_modules」，
   // 把源目录设成 node_modules 本身，内部的包就不是根目录下的那个了，照拷不误。
+  //
+  // yml 里声明的静态资源（更新器脚本）要留着：那份配置才是唯一真源，
+  // 这里只把「payload 指向哪」换成临时目录里的实际位置。
   config.extraResources = [
+    ...(config.extraResources ?? []).filter((item) => item?.to !== 'payload'),
     { from: PAYLOAD, to: 'payload' },
     { from: join(PAYLOAD, 'node_modules'), to: 'payload/node_modules' },
   ];

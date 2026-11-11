@@ -69,3 +69,6 @@ tray/tray.config.json
 !.vscode/extensions.json
 .idea
 .DS_Store
+
+# 编辑器/助手的本地数据目录（.codebuddy）：项目相关数据，不进版本库
+.codebuddy/

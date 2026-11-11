@@ -371,6 +371,23 @@ function prepareUpdaterRuntime(stagingDir, appDir, execPath) {
   if (!existsSync(updaterExe)) {
     throw new Error('复制更新器运行时失败：托盘程序没复制成功');
   }
+  // 更新器脚本也得跟着走：它自己就站在被替换的目录里，
+  // 不复制一份的话，跑的就是那份「正在被覆盖」的文件。
+  //
+  // 新版本把它收在 resources\update\ 下，老版本直接扔在根目录——
+  // 两个位置都认，老安装升级时才能找到自己那份。
+  for (const candidate of [
+    join(appDir, 'resources', 'update', 'apply-update.cjs'),
+    join(appDir, 'apply-update.cjs'),
+  ]) {
+    if (!existsSync(candidate)) continue;
+    try {
+      copyFileSync(candidate, join(updaterDir, 'apply-update.cjs'));
+    } catch {
+      // 拷不动就退回用原路径（主进程传进来的 scriptPath）
+    }
+    break;
+  }
   return { updaterExe, updaterDir };
 }
 

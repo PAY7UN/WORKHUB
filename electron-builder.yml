@@ -34,16 +34,25 @@ asar: true
 extraResources:
   - from: release/.payload
     to: payload
-
-# 托盘自更新的更新器脚本：放在 exe 旁边（不在 asar 里）。
-#
-# 为什么不能塞进 asar：更新器是纯 Node 跑的（托盘自己的 Electron，
-# 用 ELECTRON_RUN_AS_NODE=1），它要读自己的脚本、还要在托盘退出后
-# 覆盖这个目录里的文件。
-# asar 里的文件是虚拟的，Node 之外的工具（以及覆盖操作）都够不着。
-extraFiles:
+  # 托盘自更新的更新器脚本：放在 resources\update\ 下（不在 asar 里）。
+  #
+  # 为什么不能塞进 asar：更新器是纯 Node 跑的（托盘自己的 Electron，
+  # 用 ELECTRON_RUN_AS_NODE=1），它要读自己的脚本、还要在托盘退出后
+  # 覆盖这个目录里的文件。
+  # asar 里的文件是虚拟的，Node 之外的工具（以及覆盖操作）都够不着。
+  #
+  # 为什么不再直接扔在 exe 旁边：安装目录的根层只该有「入口 + Electron 运行时」，
+  # 我们自己的东西一律收进 resources\——否则根目录里会躺着一个
+  # 使用者看不懂、也不敢删的 js 文件。
   - from: tray/apply-update.cjs
-    to: apply-update.cjs
+    to: update/apply-update.cjs
+
+# 安装目录根层只额外放一份说明：哪些是程序文件、哪些是使用者的数据、
+# 数据默认在哪、怎么改。装完的人打开安装目录第一眼看到的就是它，
+# 不然面对一屏 dll 和 pak，只能靠猜。
+extraFiles:
+  - from: tray/使用说明.txt
+    to: 使用说明.txt
 
 win:
   target:

@@ -69,7 +69,8 @@ const RUNTIME = 'runtime/node.exe';
 const TRAY_REQUIRED = [
   ['WorkHub.exe', '托盘本体'],
   ['resources/app.asar', '托盘代码'],
-  ['apply-update.cjs', '更新器脚本（在 exe 旁边，不在 asar 里）'],
+  ['resources/update/apply-update.cjs', '更新器脚本（在 resources 下，不在 asar 里）'],
+  ['使用说明.txt', '安装目录里的说明（哪些是程序、哪些是数据）'],
   ['icudtl.dat', '托盘的运行时文件（更新器复制它当自己的运行时）'],
   ['resources/payload/server/index.js', '服务端入口（编译产物）'],
   ['resources/payload/dist/index.html', '前端构建产物'],
