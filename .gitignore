@@ -17,6 +17,10 @@ dist-ssr
 *.db-shm
 *.db-wal
 
+# 本地自动生成的密钥（server/localSecret.ts）：它保护着库里的密文，
+# 跟着数据库走，绝不能进版本库。
+.workhub-local-secret
+
 # 服务端编译产物（scripts/build-server.mjs 生成）
 # 产物与源码同目录同名：import.meta.url 推导出的 APP_ROOT 才不会跑偏。
 # 规则逐个列举，不写 /server/*.js：那样会把将来手写的 .js 也一起忽略掉。

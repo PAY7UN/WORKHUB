@@ -32,6 +32,7 @@ import { buildServer } from './lib/server-build.mjs';
 import { copyRuntimeDeps, pruneNativeDeps } from './lib/runtime-deps.mjs';
 import { ensureNodeRuntime } from './lib/node-runtime.mjs';
 import { zipDirectory } from './lib/zip.mjs';
+import { assertNoHardcodedCredentials } from './lib/package-credentials.mjs';
 import {
   copyFileSync,
   existsSync,
@@ -232,6 +233,10 @@ async function main() {
   // 文件清单：升级时靠它清理新版里已经没有的旧文件
   const manifest = [...files].sort().join('\n');
   writeFileSync(join(pkgRoot, '.workhub-files.txt'), `${manifest}\n`, 'utf8');
+
+  // 清单写完再查凭据：清单本身也是包的一部分，一起查
+  // 扫的是暂存目录（文件都在本地磁盘上），比打完包再翻 zip 快得多，也全得多
+  assertNoHardcodedCredentials(pkgRoot);
 
   mkdirSync(outDir, { recursive: true });
   const zipPath = join(outDir, `workhub-server-${version}.zip`);

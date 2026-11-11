@@ -2,22 +2,19 @@
  * 运行期配置：集中读取环境变量，并在模块加载期强制校验。
  *
  * 安全要点：JWT 签名密钥与 API Key 加密主密钥同源（WORKHUB_SECRET）。
- * 一旦它缺失、过弱或取到公开默认值，任何人都能自签管理员令牌接管全站
- * 文档，或直接解密库中的模型密钥。因此这里不在缺失时静默回退，而是
- * 打印可操作的修复指引并终止加载——让不安全配置「起不来」，
- * 而不是「起来了还悄悄降级」。
+ * 一旦它缺失、过弱，或是所有人共用的公开默认值，任何人都能自签管理员令牌
+ * 接管全站文档，或直接解密库中的模型密钥。
+ *
+ * 所以这里**没有写死的密钥**：
+ * - 密钥要么显式配置，要么由服务端本地生成一把随机密钥并落盘（见 localSecret.ts），
+ *   两种来源都不会跟着发布包走，也不会有第二个人猜得到；
+ * - 管理员密码按部署方的要求：初始部署密码就是 admin，登录后自行修改。
+ *   想在部署时就定死自己的密码，照旧在 .env 里写 WORKHUB_ADMIN_PASSWORD。
  */
-import { randomBytes } from 'node:crypto';
 import { logger } from './logger.ts';
 import { envFlag, envValue } from './env.ts';
 import { applyEnvFileFallback } from './envFile.ts';
-
-/** 仅在显式设置 WORKHUB_ALLOW_INSECURE_DEV=1 时才允许使用的开发默认值 */
-const DEV_FALLBACK_SECRET = 'workhub-dev-secret-change-me';
-const DEV_FALLBACK_ADMIN_PASSWORD = 'admin123';
-
-/** 签名密钥最小字符数，低于此值视为弱密钥 */
-const MIN_SECRET_LENGTH = 32;
+import { MIN_SECRET_LENGTH, loadOrCreateLocalSecret } from './localSecret.ts';
 
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
@@ -40,7 +37,13 @@ if (envFileRepair.bomFixed) {
   );
 }
 
-const ALLOW_DEV_FALLBACK = envFlag('ALLOW_INSECURE_DEV');
+/**
+ * 允许在开发态自动生成本地密钥的开关。
+ *
+ * 置 1 表示「本地没配 WORKHUB_SECRET 时，服务端自己生成一把随机密钥并保存到本地」。
+ * 它管的是密钥，不是密码：密码有明确的初始值（见下方 loadAdminPassword）。
+ */
+const ALLOW_LOCAL_CREDENTIALS = envFlag('ALLOW_LOCAL_CREDENTIALS');
 
 /** 生成强随机密钥的提示命令 */
 const GENERATE_HINT =
@@ -54,12 +57,20 @@ function abortStartup(title: string, details: string[]): never {
   throw new Error(`[workhub] 配置校验失败：${title}`);
 }
 
+/** 密钥的来路，用于启动日志 */
+export type SecretOrigin = 'env' | 'local';
+
+interface LoadedSecret {
+  secret: string;
+  origin: SecretOrigin;
+}
+
 /**
  * 读取 JWT 签名与 API Key 加密共用的主密钥。
  * 已配置则校验强度；未配置时，生产环境直接拒绝启动，
- * 本地开发需显式选择「写 .env」或「开启开发开关」之一。
+ * 本地开发可显式要求「本地自动生成一把」（生成后落盘，重启不变）。
  */
-function loadSecret(): string {
+function loadSecret(): LoadedSecret {
   const configured = envValue('SECRET');
 
   if (configured.length > 0) {
@@ -69,7 +80,7 @@ function loadSecret(): string {
         `生成方式：${GENERATE_HINT}`,
       ]);
     }
-    return configured;
+    return { secret: configured, origin: 'env' };
   }
 
   if (IS_PRODUCTION) {
@@ -82,50 +93,68 @@ function loadSecret(): string {
     ]);
   }
 
-  if (ALLOW_DEV_FALLBACK) {
-    logger.warn('警告：正在使用公开的开发默认密钥，严禁用于任何对外环境。');
-    return DEV_FALLBACK_SECRET;
+  if (ALLOW_LOCAL_CREDENTIALS) {
+    // 本地自动生成一把：不是公开默认值，是这台机器自己的随机密钥。
+    // 落盘是必须的——密钥每次都换的话，库里的密文下一次启动就全解不开了。
+    const local = loadOrCreateLocalSecret();
+    if (!local.ok) {
+      abortStartup('本地自动生成的密钥不可用', [
+        local.reason,
+        `密钥文件：${local.path}`,
+        '库里的密文（API Key、加密文档）都由这把密钥保护，换一把就再也解不开。',
+        '请显式配置 WORKHUB_SECRET；确认数据可以舍弃的话，删掉该密钥文件与数据库再启动。',
+      ]);
+    }
+    if (local.created) {
+      logger.warn(`未配置 WORKHUB_SECRET：已在本地生成一把随机密钥并保存到 ${local.path}`);
+      logger.warn('它保护着库里的密文（API Key、加密文档）：删掉它，那些内容将永久无法解密。');
+    }
+    return { secret: local.secret, origin: 'local' };
   }
 
   abortStartup('未配置 WORKHUB_SECRET', [
     '本地开发请二选一：',
     `  1) 在 app/.env 中设置 WORKHUB_SECRET（推荐）：${GENERATE_HINT}`,
-    '  2) 设置 WORKHUB_ALLOW_INSECURE_DEV=1，显式承认这是开发环境',
+    '  2) 设置 WORKHUB_ALLOW_LOCAL_CREDENTIALS=1，由服务端本地生成一把随机密钥（存在数据库旁边）',
   ]);
 }
 
+/** 显式配置的管理员密码（没配就是空串） */
+const CONFIGURED_ADMIN_PASSWORD = envValue('ADMIN_PASSWORD');
+
+/** 初始部署密码：部署方定的固定初始值，登录后自行修改 */
+const DEFAULT_ADMIN_PASSWORD = 'admin';
+
 /**
  * 读取管理员初始密码（仅首次建库时写入 users 表）。
- * 生产环境缺失即拒绝启动；本地缺失时生成一次性随机密码，
- * 避免默认弱口令在开发环境里形成习惯。
+ *
+ * 显式配置的优先；没配置时用初始部署密码 admin——它必须好记，
+ * 因为部署的人要立刻拿它登进去改密码。
+ * 生产环境仍然要求显式配置：对外的实例不该挂着一个人人皆知的初始口令。
  */
 function loadAdminPassword(): string {
-  const configured = envValue('ADMIN_PASSWORD');
-  if (configured.length > 0) return configured;
+  if (CONFIGURED_ADMIN_PASSWORD.length > 0) return CONFIGURED_ADMIN_PASSWORD;
 
   if (IS_PRODUCTION) {
     abortStartup('生产环境未配置 WORKHUB_ADMIN_PASSWORD', [
-      '该密码会在首次初始化时写入 users 表，缺失将退化为公开弱口令。',
-      '请先设置一个强密码再启动。',
+      '初始部署密码是公开的默认值，实例一旦对外就等于把门开着。',
+      '请在 .env 或系统环境变量里设置一个自己的密码再启动。',
     ]);
   }
 
-  if (ALLOW_DEV_FALLBACK) return DEV_FALLBACK_ADMIN_PASSWORD;
-
-  const generated = randomBytes(12).toString('base64url');
-  // notice：密码是「交付」而不是「日志」，不随 WORKHUB_LOG_LEVEL 一起被静默
-  logger.notice(`未配置 WORKHUB_ADMIN_PASSWORD，已生成一次性管理员密码：${generated}`);
-  logger.notice('该密码仅在此处显示一次，请立即记录到密码管理器。');
-  logger.notice('提醒：启动日志里含这行密码，转贴日志前请先把它删掉。');
-  return generated;
+  return DEFAULT_ADMIN_PASSWORD;
 }
 
+const loadedSecret = loadSecret();
+
 /** JWT 签名与 API Key 加密主密钥（已通过强度校验） */
-export const SECRET = loadSecret();
+export const SECRET = loadedSecret.secret;
 
-/** 管理员初始密码（已通过校验或安全生成） */
+/** 密钥来路：'env' = 显式配置，'local' = 本地自动生成并落盘 */
+export const SECRET_ORIGIN = loadedSecret.origin;
+
+/** 管理员密码是否由使用者显式配置（false = 用的是初始部署密码 admin） */
+export const ADMIN_PASSWORD_CONFIGURED = CONFIGURED_ADMIN_PASSWORD.length > 0;
+
+/** 管理员初始密码（显式配置的，或初始部署密码 admin） */
 export const ADMIN_PASSWORD = loadAdminPassword();
-
-/** 启动日志用：当前是否使用了开发兜底值 */
-export const USING_DEV_FALLBACK = SECRET === DEV_FALLBACK_SECRET;
-

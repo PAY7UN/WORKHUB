@@ -21,7 +21,7 @@ import { DEFAULT_FILE_MIME, guessMime } from '../shared/files.ts';
 import { DEFAULT_API_PORT } from '../shared/constants.ts';
 import { attachUser, requireAdmin, signToken } from './auth.ts';
 import { clearLoginFailures, loginGate, noteLoginFailure } from './loginThrottle.ts';
-import { IS_PRODUCTION, USING_DEV_FALLBACK } from './config.ts';
+import { IS_PRODUCTION, SECRET_ORIGIN } from './config.ts';
 import { envValue } from './env.ts';
 import { displayPath, logger } from './logger.ts';
 import {
@@ -2153,7 +2153,7 @@ function listenForPort(): void {
     logger.info('修改管理员密码: 登录后点侧边栏头像旁的钥匙图标');
     logger.info('已忘记密码: npm run admin:password -- <新密码>');
     logger.info(
-      `密钥来源: ${USING_DEV_FALLBACK ? '开发默认值（仅限本地）' : IS_PRODUCTION ? '生产环境变量' : '.env / 系统环境变量'}`,
+      `密钥来源: ${SECRET_ORIGIN === 'local' ? '本地自动生成（存在数据库旁边）' : IS_PRODUCTION ? '生产环境变量' : '.env / 系统环境变量'}`,
     );
   });
   server.on('error', (err: NodeJS.ErrnoException) => {

@@ -22,6 +22,12 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import {
+  FORBIDDEN_CREDENTIALS,
+  TEXT_FILE_PATTERN,
+  findFilledCredentialsInEnvExample,
+  isTextFile,
+} from './lib/package-credentials.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -150,6 +156,68 @@ try {
 }
 
 /**
+ * 在包里找写死的凭据：一次进程扫完整个包。
+ *
+ * 一个条目起一个进程的话，几千个文件就是几千次启动，慢得没法用；
+ * 这里让外部进程自己去扫，只把命中的条目名带回来。
+ *
+ * 候选名单不作为参数传过去：托盘包里有几千个条目，
+ * 拼成命令行会超出 Windows 的命令行长度限制。
+ *
+ * @param {string} zipPath
+ * @returns {{path: string, needle: string}[]}
+ */
+function scanZipForCredentials(zipPath) {
+  if (process.platform === 'win32') {
+    const quote = (value) => `'${value.replace(/'/g, "''")}'`;
+    const script = `
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::OpenRead(${quote(zipPath)})
+$needles = @(${FORBIDDEN_CREDENTIALS.map(quote).join(',')})
+try {
+  foreach ($e in $zip.Entries) {
+    $name = $e.FullName
+    if ($name -match '/node_modules/' -or $name -match '/runtime/') { continue }
+    if ($name -notmatch ${quote(TEXT_FILE_PATTERN)}) { continue }
+    if ($e.Length -gt 8388608) { continue }
+    $reader = New-Object System.IO.StreamReader($e.Open())
+    try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    foreach ($n in $needles) {
+      if ($text.Contains($n)) { Write-Output ($name + ' => ' + $n) }
+    }
+  }
+} finally { $zip.Dispose() }
+`;
+    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8',
+    });
+    return out
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [path, needle] = line.split(' => ');
+        return { path, needle };
+      });
+  }
+
+  const hits = [];
+  for (const name of listEntries(zipPath)) {
+    if (!isTextFile(name)) continue;
+    if (name.includes('/node_modules/') || name.includes('/runtime/')) continue;
+    let text = '';
+    try {
+      text = execFileSync('unzip', ['-p', zipPath, name], { encoding: 'utf8' });
+    } catch {
+      continue;
+    }
+    for (const needle of FORBIDDEN_CREDENTIALS) {
+      if (text.includes(needle)) hits.push({ path: name, needle });
+    }
+  }
+  return hits;
+}
+
+/**
  * 检查托盘免安装包。
  *
  * 重点是那两样「托盘自己更新要用的东西」：
@@ -183,6 +251,13 @@ function checkTrayPackage(zipPath) {
     const actual = createHash('sha256').update(readFileSync(zipPath)).digest('hex');
     if (expected && expected === actual) ok('sha256 对得上');
     else fail(`sha256 对不上：文件写着 ${expected || '(空)'}，实际是 ${actual}`);
+  }
+
+  // 托盘包把服务 payload 原封不动装进去：payload 里也不许有写死的凭据
+  const credentialHits = scanZipForCredentials(zipPath);
+  if (credentialHits.length === 0) ok('托盘包里没有写死的凭据');
+  else {
+    for (const hit of credentialHits) fail(`托盘包里出现了写死的凭据：${hit.path} 里写着 ${hit.needle}`);
   }
 }
 
@@ -249,6 +324,25 @@ function main() {
     else fail(`sha256 对不上：文件写着 ${expected || '(空)'}，实际是 ${actual}`);
   }
 
+  // 6. 包里不能带写死的凭据。
+  //    拿到包的人能自签管理员令牌、能解密库里的模型密钥——这正是要防的事，
+  //    而包一旦发出去就收不回来了，只能在发之前查掉。
+  const credentialHits = scanZipForCredentials(zipPath);
+  if (credentialHits.length === 0) {
+    ok('包里没有写死的凭据');
+  } else {
+    for (const hit of credentialHits) fail(`包里出现了写死的凭据：${hit.path} 里写着 ${hit.needle}`);
+  }
+
+  // .env.example 是给人抄的样例：里面带了值，凭据就等于发给了所有抄它的人
+  const envExample = readEntryContent(zipPath, inPackage('.env.example'));
+  const filled = findFilledCredentialsInEnvExample(envExample);
+  if (filled.length === 0) {
+    ok('.env.example 里的密钥与密码是空的');
+  } else {
+    for (const hit of filled) fail(`.env.example 里 ${hit.key}=${hit.value}（样例必须留空）`);
+  }
+
   console.log(`\n条目数：${entries.length}`);
   if (process.exitCode) {
     console.error('\n这个包不合格：别发。');
@@ -259,10 +353,16 @@ function main() {
   }
 
   // 托盘免安装包：有就一起查（这个包不是每次都打，没有也不报）
+  // 单独判一次：服务端包不合格不该顺带把托盘包也判成不合格——
+  // 那会让人去查一个其实没问题的包。
   const trayZip = resolveTrayPackage();
   if (trayZip) {
+    const serverExitCode = process.exitCode ?? 0;
+    process.exitCode = 0;
     checkTrayPackage(trayZip);
-    if (process.exitCode) {
+    const trayFailed = Boolean(process.exitCode);
+    process.exitCode = serverExitCode || (trayFailed ? 1 : 0);
+    if (trayFailed) {
       console.error('\n托盘包不合格：别发。');
     } else {
       console.log('\n托盘包合格：解压即用（双击 WorkHub.exe），并且能自动更新。');

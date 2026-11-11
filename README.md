@@ -571,17 +571,21 @@ Get-NetTCPConnection -State Listen -LocalPort 8080
 
 | 场景 | 做法 |
 | --- | --- |
+| 直接用初始密码 | 用户名 `admin`，密码 `admin`（**首次建库时**写入） |
 | 想自己指定初始密码 | 在 `.env` 写 `WORKHUB_ADMIN_PASSWORD=...`，**首次建库时**写入 |
 | 登录后想换密码 | 侧边栏头像旁的钥匙图标，需输入当前密码 |
 | 已经进不去 / 忘了密码 | 见下方「忘记密码」 |
 
-本地开发若未配置 `WORKHUB_ADMIN_PASSWORD`，服务端会在**首次建库时**生成一个随机密码并打印到启动日志，**只显示这一次**，请立刻记录。之后想换成自己好记的，登录后用侧边栏的钥匙图标修改即可。
+初始部署密码就是 `admin`：它必须好记，因为部署的人要立刻拿它登进去改密码。
+想一上来就用自己的密码，在 `.env` 里写 `WORKHUB_ADMIN_PASSWORD` 即可（仅首次建库时生效）。
 
-> 早期版本文档里的默认密码 `admin123` 已不再适用：它只在显式设置 `WORKHUB_ALLOW_INSECURE_DEV=1` 时才会启用。
+> `admin` 是公开的初始值，谁都能猜到——所以登录后的第一件事就该是改掉它。
+> 服务端在管理员密码仍是初始值时会提醒一句；`NODE_ENV=production` 下则**必须**显式配置，
+> 否则直接拒绝启动（对外的实例不该挂着一个人人皆知的口令）。
 
 ### 忘记密码
 
-改密入口要求先登录，而初始密码只在启动日志里出现过一次——一旦错过就无路可走。因此提供了离线重置命令，它直接改库、不需要任何登录态：
+改密入口要求先登录，而初始密码可能早就忘了。因此提供了离线重置命令，它直接改库、不需要任何登录态：
 
 ```bash
 npm run admin:password -- 我的新密码
@@ -596,6 +600,21 @@ npm run admin:password -- --generate
 - 不依赖 `WORKHUB_SECRET` 是否配置，也不会建表或灌种子数据
 - 改密后**所有已登录设备的下一次请求都会因令牌指纹过期而被要求重新登录**
 - 密码规则与设置页一致：至少 8 位
+
+### 本地自动生成的密钥
+
+本地开发若既没写 `.env`、也没配 `WORKHUB_SECRET`，可以打开 `WORKHUB_ALLOW_LOCAL_CREDENTIALS=1`：
+服务端会自己生成一把 32 字节随机密钥，存到**数据库旁边的 `.workhub-local-secret`** 里。
+
+- **跟库放在一起**：库搬走了，密钥跟着搬。放在代码目录里的话，升级换目录反而会跟库走散；
+- **每次启动都读同一把**：密钥一变，库里所有 API Key 与加密文档就再也解不开了
+  （表现是「模型配置莫名其妙全空了」，而日志里什么错都不会报）；
+- **文件坏了而库还在时，服务端拒绝启动**并说明原因，不会悄悄换一把新的——
+  悄悄换掉的话旧密文会永久失效，使用者只会以为「文档坏了」。
+
+想改成自己管理的密钥：在 `.env` 里写 `WORKHUB_SECRET=...`（至少 32 字符）。
+但要清楚，本地已经生成过密钥之后再改它，**旧密文就解不开了**——换密钥等于换一把新锁，
+要连库一起换掉才是干净的。
 
 ## 环境变量
 
@@ -619,15 +638,15 @@ npm run admin:password -- --generate
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `WORKHUB_SECRET` | 无（缺失则拒绝启动） | JWT 签名、Agent Key 加密主密钥，以及**文档加密主密钥的种子**（`MASTER_KEY = sha256(WORKHUB_SECRET)`），**生产必须配置**；本地需写入 `.env` 或设置 `WORKHUB_ALLOW_INSECURE_DEV=1`。改动它会让已加密文档的密文永久无法解密 |
-| `WORKHUB_ADMIN_PASSWORD` | 本地随机生成 | 管理员**初始**密码，仅首次建库时写入；已有库请用 `npm run admin:password` 或侧边栏修改，改动此变量对已有库无效 |
+| `WORKHUB_SECRET` | 无（缺失则拒绝启动） | JWT 签名、Agent Key 加密主密钥，以及**文档加密主密钥的种子**（`MASTER_KEY = sha256(WORKHUB_SECRET)`），**生产必须配置**；本地需写入 `.env` 或设置 `WORKHUB_ALLOW_LOCAL_CREDENTIALS=1`（本地自动生成一把并存在数据库旁边）。改动它会让已加密文档的密文永久无法解密 |
+| `WORKHUB_ADMIN_PASSWORD` | `admin`（本地） | 管理员**初始**密码，仅首次建库时写入；已有库请用 `npm run admin:password` 或侧边栏修改，改动此变量对已有库无效。`NODE_ENV=production` 下缺失即拒绝启动 |
 | `WORKHUB_PORT` | `8787` | 服务端端口。默认值来自 `shared/constants.ts` 的 `DEFAULT_API_PORT`；`.env` 里改它，托盘、部署脚本、Windows 服务宿主读的都是同一个值（宿主调停机接口时也会按新端口找服务） |
 | `WORKHUB_WEB_PORT` | `8080` | 前端 dev server 端口（监听 `0.0.0.0`，供局域网访问） |
 | `WORKHUB_DB_V2` | `data/workhub-v2.db` | 数据库路径（索引库）。`WORKHUB_DB` 是 v1 时代的旧变量，仅作兼容兜底；改名前的 `MDHUB_DB_V2` / `MDHUB_DB` 同样认 |
 | `WORKHUB_VAULT_DIR` | `data/vault` | 仓库目录：正文文件实际存放的位置 |
 | `WORKHUB_LOG_LEVEL` | `info` | 服务端日志级别：`silent` / `error` / `warn` / `info` / `debug` |
 | `WORKHUB_SEED_DEMO` | 关闭 | 置 `1` 时首次建库灌入示例文档（`shared/seed.ts`）；正式部署保持关闭 |
-| `WORKHUB_ALLOW_INSECURE_DEV` | 关闭 | 置 `1` 时允许使用公开的开发默认值（密钥 `workhub-dev-secret-change-me`、密码 `admin123`）；`NODE_ENV=production` 下无效 |
+| `WORKHUB_ALLOW_LOCAL_CREDENTIALS` | 关闭 | 置 `1` 时允许服务端在本地**自动生成一把密钥**：首次启动生成 32 字节随机密钥，存在数据库旁边的 `.workhub-local-secret`（重启不变）。它管的是密钥，不是密码——密码留空就是初始部署密码 `admin`；`NODE_ENV=production` 下无效 |
 | `NODE_ENV` | 未设置 | 置 `production` 启用生产模式：强制要求显式配置密钥与管理员密码 |
 | `WORKHUB_MANAGE_TOKEN` | 无 | 机器令牌：托盘 remote 模式用；优先于配置文件里的 `token`。**只发给可信机器**，它等价于运维权限 |
 | `WORKHUB_UPDATE_REPO` | `PAY7UN/WORKHUB` | 自动升级用的 GitHub 仓库（`owner/repo`）：比对版本、拉取发布包 |
@@ -669,7 +688,7 @@ npm run admin:password -- --generate
 | `warn` | 降级但不中断的情况（如用量统计失败） | stderr |
 | `info` | 启动横幅、建表迁移、种子数据等常规信息 | stdout |
 | `debug` | 排查用的细节 | stdout |
-| `notice` | 必须让用户看到的关键信息（一次性管理员密码），**不受级别开关影响** | stdout |
+| `notice` | 必须让用户看到的关键信息（初始管理员密码提示），**不受级别开关影响** | stdout |
 
 用 `WORKHUB_LOG_LEVEL` 调整：`silent` 全关、`error` 只留错误、`warn` / `info` 逐级放开、`debug` 最啰嗦。
 `npm run server > out.log` 时常规输出（`info` / `debug` / `notice`）进 `out.log`，错误（`error` / `warn` / `fatal`）
@@ -683,10 +702,11 @@ npm run admin:password -- --generate
 - **写入前脱敏**。所有日志入参都会过一遍密钥/令牌/密码的匹配（`Bearer` 头、JSON 里的 `apiKey`、
   `password=`、URL 里的 `user:pass@` 之类），命中的值一律替换成 `***`；数据库路径只给相对形式，
   不带本机用户名目录。上游返回的错误体同样先脱敏再发给浏览器。
-  唯一的例外是 `notice`：它承担一次性密码的逐字交付，脱敏规则可能把密码本身改写
-  （随机串里恰好出现 `sk-` 就成了 `sk-***`），那就等于给了用户一把开不了门的钥匙。
-- **一次性密码只在启动时打印**。未配置 `WORKHUB_ADMIN_PASSWORD` 时生成的那串随机密码会出现在
-  启动日志里（只此一次），它不受日志级别影响。**转贴启动日志前请先把那几行删掉。**
+  唯一的例外是 `notice`：它承担初始密码提示的逐字交付，脱敏规则可能把密码本身改写
+  （一旦被当成密钥替换成 `***`），那就等于给了用户一把开不了门的钥匙。
+- **初始密码提示只在建库时打印**。那几行提示（初始密码是什么、该去哪里改）会出现在
+  启动日志里，它不受日志级别影响。密码本身是公开的初始值，但**转贴启动日志前
+  仍请把账号信息一并过一遍**。
 
 前端日志在 `src/lib/logger.ts`：开发期全开，生产构建只保留 `error`——
 访客控制台里的内部状态变化对用户没有可操作性，只会淹没真正的报错。

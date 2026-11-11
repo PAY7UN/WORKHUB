@@ -5,7 +5,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ADMIN_PASSWORD, SECRET } from './config.ts';
+import { ADMIN_PASSWORD, ADMIN_PASSWORD_CONFIGURED, SECRET } from './config.ts';
 import { envFlag } from './env.ts';
 import { logger } from './logger.ts';
 import { hashPassword, verifyPassword } from './password.ts';
@@ -252,6 +252,11 @@ if (userCount.n === 0) {
   // 初始密码即刻哈希，明文列留空。访客无密码可言，明文与哈希都写空串。
   insertUser.run('u-admin', 'admin', '系统管理员', 'admin', 'A', '#6366f1', '', hashPassword(ADMIN_PASSWORD));
   insertUser.run('u-viewer', 'viewer', '访客', 'viewer', 'V', '#f59e0b', '', '');
+  if (!ADMIN_PASSWORD_CONFIGURED) {
+    logger.notice(`初始管理员密码：${ADMIN_PASSWORD}（用户名 admin）`);
+    logger.notice('请登录后立刻在侧边栏头像旁的钥匙图标里改掉它。');
+    logger.notice('忘了密码：npm run admin:password -- <新密码>');
+  }
 } else {
   // 体检：.env 里的 WORKHUB_ADMIN_PASSWORD 只在首次建库那一刻写进账号，之后再改它
   // 不会动已有账号的密码。很多人改完 .env 就登不上了，又找不到原因，
@@ -260,10 +265,17 @@ if (userCount.n === 0) {
   const adminRow = db
     .prepare("SELECT password_hash, password FROM users WHERE username = 'admin'")
     .get() as { password_hash: string; password: string } | undefined;
-  if (adminRow && !verifyPassword(ADMIN_PASSWORD, adminRow.password_hash, adminRow.password)) {
-    logger.warn('.env 中的 WORKHUB_ADMIN_PASSWORD 与数据库中现有的管理员密码不一致');
-    logger.warn('  该变量只在首次建库时写入，之后修改 .env 不会改变已有账号的密码');
-    logger.warn('  若要改用 .env 里的密码，请执行：npm run admin:password -- <新密码>');
+
+  if (ADMIN_PASSWORD_CONFIGURED) {
+    if (adminRow && !verifyPassword(ADMIN_PASSWORD, adminRow.password_hash, adminRow.password)) {
+      logger.warn('.env 中的 WORKHUB_ADMIN_PASSWORD 与数据库中现有的管理员密码不一致');
+      logger.warn('  该变量只在首次建库时写入，之后修改 .env 不会改变已有账号的密码');
+      logger.warn('  若要改用 .env 里的密码，请执行：npm run admin:password -- <新密码>');
+    }
+  } else if (adminRow && verifyPassword(ADMIN_PASSWORD, adminRow.password_hash, adminRow.password)) {
+    // 没配密码时初始密码就是 admin。库还在、密码也还是初始值，就提醒一句——
+    // 别让人一直用着它对外开着门。
+    logger.warn('管理员密码还是初始密码 admin，建议登录后立刻修改（侧边栏头像旁的钥匙图标）');
   }
 }
 

@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureFrontendBuilt } from './lib/frontend-build.mjs';
 import { buildServer } from './lib/server-build.mjs';
 import { zipDirectory, writeSha256 } from './lib/zip.mjs';
+import { assertNoHardcodedCredentials } from './lib/package-credentials.mjs';
 import {
   copyRuntimeDeps,
   pruneNativeDeps,
@@ -358,6 +359,9 @@ await buildServer({
 console.log('[2/6] 组装服务 payload');
 await buildPayload();
 pruneNativeDeps(join(PAYLOAD, 'node_modules'));
+
+// 托盘包会把 payload 原封不动装进安装程序：里面也不许有写死的凭据
+assertNoHardcodedCredentials(PAYLOAD);
 
 // --payload-only：只组装 payload，不跑 electron-builder。
 // 用来快速核对 payload 内容（CI 里断言「升级器在不在」这类事），

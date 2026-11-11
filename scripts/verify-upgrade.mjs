@@ -383,9 +383,9 @@ async function main() {
     ...process.env,
     WORKHUB_PORT: String(PORT),
     WORKHUB_DB_V2: dbPath,
-    // 服务端要求显式承认「这是开发环境」才肯用默认密钥。
+    // 服务端要求显式承认「这是开发环境」才肯自己生成本地密钥。
     // 这是临时目录里的验证实例，不设它服务根本起不来。
-    WORKHUB_ALLOW_INSECURE_DEV: '1',
+    WORKHUB_ALLOW_LOCAL_CREDENTIALS: '1',
   };
 
 
