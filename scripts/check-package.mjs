@@ -118,6 +118,7 @@ function resolveTrayPackage() {
 function listEntries(zipPath) {
   if (process.platform === 'win32') {
     const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead('${zipPath.replace(/'/g, "''")}')
 try { $zip.Entries | ForEach-Object { $_.FullName } } finally { $zip.Dispose() }
@@ -136,6 +137,7 @@ function readEntryContent(zipPath, entryName) {
   try {
     if (process.platform === 'win32') {
       const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead('${zipPath.replace(/'/g, "''")}')
 try {
@@ -172,6 +174,7 @@ function scanZipForCredentials(zipPath) {
   if (process.platform === 'win32') {
     const quote = (value) => `'${value.replace(/'/g, "''")}'`;
     const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead(${quote(zipPath)})
 $needles = @(${FORBIDDEN_CREDENTIALS.map(quote).join(',')})

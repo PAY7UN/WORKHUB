@@ -100,7 +100,15 @@ jobs:
           }
 
       - name: 包合格吗
-        run: npm run pack:check
+        shell: pwsh
+        run: |
+          # 校验失败也要说清楚是哪一项不合格：注解在 API 里公开可读，
+          # 不用等谁来翻几百 MB 的 CI 日志。
+          npm run pack:check 2>&1 | Tee-Object -FilePath 'pack-check.log'
+          if ($LASTEXITCODE -ne 0) {
+            node scripts/ci/build-failure-summary.mjs 'pack-check.log' '发布包不合格'
+            exit $LASTEXITCODE
+          }
 
       - name: 准备 Release 说明
         shell: pwsh
