@@ -122,8 +122,11 @@ jobs:
           # 不用翻几百 MB 的 CI 日志才知道是哪一步炸的。
           $env:WORKHUB_NODE_DIR = Split-Path -Parent (node -p "process.execPath")
           npm run pack:tray 2>&1 | Tee-Object -FilePath 'tray-build.log'
-          if ($LASTEXITCODE -ne 0) {
+          # 退出码要先存下来：node 一跑，$LASTEXITCODE 就被改成 0 了，
+          # 那样写的话打包失败会被当成成功，坏包一路发到使用者手里。
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
             node scripts/ci/build-failure-summary.mjs 'tray-build.log' '托盘打包失败'
-            exit $LASTEXITCODE
+            exit $code
           }
           npm run pack:check

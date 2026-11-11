@@ -24,10 +24,10 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import {
   FORBIDDEN_CREDENTIALS,
-  TEXT_FILE_PATTERN,
   findFilledCredentialsInEnvExample,
   isTextFile,
 } from './lib/package-credentials.mjs';
+import { readZipEntries, readZipEntryContent } from './lib/zip.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -114,108 +114,86 @@ function resolveTrayPackage() {
   return join(dir, zips[zips.length - 1]);
 }
 
-/** 列 zip 里的条目（不装依赖：PowerShell 自带，Windows 上人人都有） */
+/**
+ * 列 zip 里的条目。
+ *
+ * 自己读中央目录，不依赖外部解压器：
+ * 之前这里在 Windows 上靠 PowerShell 读，中文条目名会被解码成乱码
+ * （「使用说明.txt」变成乱码 → 检查误判 → 有时干脆抛异常）；
+ * 在别的系统上靠 unzip，而 Windows 上根本没装 unzip——
+ * 于是托盘包的「凭据扫描」在 Windows 上是直接跳过的，安全检查形同虚设。
+ * 现在两处都用同一套读法，哪儿都能跑。
+ */
 function listEntries(zipPath) {
-  if (process.platform === 'win32') {
-    const script = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [System.IO.Compression.ZipFile]::OpenRead('${zipPath.replace(/'/g, "''")}')
-try { $zip.Entries | ForEach-Object { $_.FullName } } finally { $zip.Dispose() }
-`;
-    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      encoding: 'utf8',
-    });
-    return out.split(/\r?\n/).filter(Boolean);
-  }
-  const out = execFileSync('unzip', ['-Z1', zipPath], { encoding: 'utf8' });
-  return out.split(/\r?\n/).filter(Boolean);
+  return readZipEntries(zipPath).map((entry) => entry.name);
 }
 
 /** 读 zip 里某个文件的内容（读不到就返回空串） */
 function readEntryContent(zipPath, entryName) {
   try {
-    if (process.platform === 'win32') {
-      const script = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [System.IO.Compression.ZipFile]::OpenRead('${zipPath.replace(/'/g, "''")}')
-try {
-  $entry = $zip.GetEntry('${entryName.replace(/'/g, "''")}')
-  if ($entry) {
-    $reader = New-Object System.IO.StreamReader($entry.Open())
-    try { $reader.ReadToEnd() } finally { $reader.Dispose() }
-  }
-} finally { $zip.Dispose() }
-`;
-      return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        encoding: 'utf8',
-      });
-    }
-    return execFileSync('unzip', ['-p', zipPath, entryName], { encoding: 'utf8' });
+    const entry = readZipEntries(zipPath).find((item) => item.name === entryName);
+    if (!entry) return '';
+    return readZipEntryContent(zipPath, entry).toString('utf8');
   } catch {
     return '';
   }
 }
 
 /**
- * 在包里找写死的凭据：一次进程扫完整个包。
+ * 用系统自带的解压器再数一遍条目，跟我们自己读出来的对一下。
  *
- * 一个条目起一个进程的话，几千个文件就是几千次启动，慢得没法用；
- * 这里让外部进程自己去扫，只把命中的条目名带回来。
+ * 自己写、自己读的东西当然对得上——但「对得上」只说明我们没写坏，
+ * 不说明别人能解开。这里借一个独立实现（Windows 的 .NET、其它系统的 unzip）
+ * 数个数：对不上就说明这个包结构有问题，不能发。
  *
- * 候选名单不作为参数传过去：托盘包里有几千个条目，
- * 拼成命令行会超出 Windows 的命令行长度限制。
+ * @param {string} zipPath
+ * @returns {number|null} 数不出来就返回 null（工具不在，不算失败）
+ */
+function countEntriesWithSystemTool(zipPath) {
+  try {
+    if (process.platform === 'win32') {
+      const script = `
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::OpenRead('${zipPath.replace(/'/g, "''")}')
+try { $zip.Entries.Count } finally { $zip.Dispose() }
+`;
+      const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8',
+      });
+      const count = Number.parseInt(out.trim(), 10);
+      return Number.isNaN(count) ? null : count;
+    }
+    const out = execFileSync('unzip', ['-Z1', zipPath], { encoding: 'utf8' });
+    return out.split(/\r?\n/).filter(Boolean).length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 在包里找写死的凭据。
+ *
+ * 只看文本类文件（按扩展名），第三方代码和自带运行时不算——
+ * 那些字符串不代表我们的包带了一把钥匙。
  *
  * @param {string} zipPath
  * @returns {{path: string, needle: string}[]}
  */
 function scanZipForCredentials(zipPath) {
-  if (process.platform === 'win32') {
-    const quote = (value) => `'${value.replace(/'/g, "''")}'`;
-    const script = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [System.IO.Compression.ZipFile]::OpenRead(${quote(zipPath)})
-$needles = @(${FORBIDDEN_CREDENTIALS.map(quote).join(',')})
-try {
-  foreach ($e in $zip.Entries) {
-    $name = $e.FullName
-    if ($name -match '/node_modules/' -or $name -match '/runtime/') { continue }
-    if ($name -notmatch ${quote(TEXT_FILE_PATTERN)}) { continue }
-    if ($e.Length -gt 8388608) { continue }
-    $reader = New-Object System.IO.StreamReader($e.Open())
-    try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
-    foreach ($n in $needles) {
-      if ($text.Contains($n)) { Write-Output ($name + ' => ' + $n) }
-    }
-  }
-} finally { $zip.Dispose() }
-`;
-    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      encoding: 'utf8',
-    });
-    return out
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => {
-        const [path, needle] = line.split(' => ');
-        return { path, needle };
-      });
-  }
-
   const hits = [];
-  for (const name of listEntries(zipPath)) {
-    if (!isTextFile(name)) continue;
-    if (name.includes('/node_modules/') || name.includes('/runtime/')) continue;
+  for (const entry of readZipEntries(zipPath)) {
+    if (entry.name.endsWith('/')) continue;
+    if (!isTextFile(entry.name)) continue;
+    if (entry.name.includes('/node_modules/') || entry.name.includes('/runtime/')) continue;
+    if (entry.size > 8 * 1024 * 1024) continue;
     let text = '';
     try {
-      text = execFileSync('unzip', ['-p', zipPath, name], { encoding: 'utf8' });
+      text = readZipEntryContent(zipPath, entry).toString('utf8');
     } catch {
       continue;
     }
     for (const needle of FORBIDDEN_CREDENTIALS) {
-      if (text.includes(needle)) hits.push({ path: name, needle });
+      if (text.includes(needle)) hits.push({ path: entry.name, needle });
     }
   }
   return hits;
@@ -241,6 +219,12 @@ function checkTrayPackage(zipPath) {
   const strays = [...names].filter((name) => !name.startsWith(`${PACKAGE_DIR}/`));
   if (strays.length === 0) ok(`顶层只有 ${PACKAGE_DIR}/ 一个目录`);
   else fail(`顶层散着 ${strays.length} 个文件（应该全部收在 ${PACKAGE_DIR}/ 里）`);
+
+  // 让系统自带的解压器也数一遍条目：确认使用者电脑上的解压工具读得懂
+  const systemCount = countEntriesWithSystemTool(zipPath);
+  if (systemCount === null) console.log('· 找不到系统解压器，跳过交叉核对');
+  else if (systemCount === names.size) ok(`条目数跟系统解压器对得上（${names.size} 个）`);
+  else fail(`条目数跟系统解压器对不上：我们读出 ${names.size} 个，系统读出 ${systemCount} 个`);
 
   for (const [need, why] of TRAY_REQUIRED) {
     if (names.has(inPackage(need))) ok(`有 ${need}  （${why}）`);
@@ -278,6 +262,13 @@ function main() {
   const strays = [...names].filter((name) => !name.startsWith(`${PACKAGE_DIR}/`));
   if (strays.length === 0) ok(`顶层只有 ${PACKAGE_DIR}/ 一个目录`);
   else fail(`顶层散着 ${strays.length} 个文件（应该全部收在 ${PACKAGE_DIR}/ 里）`);
+
+  // 0.1 让系统自带的解压器也数一遍条目：自己写自己读不算数，
+  //     得确认别人（使用者电脑上的解压工具）也读得懂这个包
+  const systemCount = countEntriesWithSystemTool(zipPath);
+  if (systemCount === null) console.log('· 找不到系统解压器，跳过交叉核对');
+  else if (systemCount === names.size) ok(`条目数跟系统解压器对得上（${names.size} 个）`);
+  else fail(`条目数跟系统解压器对不上：我们读出 ${names.size} 个，系统读出 ${systemCount} 个`);
 
   // 1. 该有的都在
   for (const need of REQUIRED) {

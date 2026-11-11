@@ -94,9 +94,12 @@ jobs:
           # 不用等谁来翻几百 MB 的 CI 日志才知道是哪一步炸的。
           # 注解的转义与截断交给仓库里的脚本：手写十有八九会把注解发丢。
           npm run pack:tray 2>&1 | Tee-Object -FilePath 'tray-build.log'
-          if ($LASTEXITCODE -ne 0) {
+          # 先把退出码存下来再跑 node：node 一跑，$LASTEXITCODE 就变成 0 了，
+          # 后面 exit $LASTEXITCODE 会把失败当成成功——v0.3.0 的坏包就是这么发出去的。
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
             node scripts/ci/build-failure-summary.mjs 'tray-build.log' '托盘打包失败'
-            exit $LASTEXITCODE
+            exit $code
           }
 
       - name: 包合格吗
@@ -105,9 +108,10 @@ jobs:
           # 校验失败也要说清楚是哪一项不合格：注解在 API 里公开可读，
           # 不用等谁来翻几百 MB 的 CI 日志。
           npm run pack:check 2>&1 | Tee-Object -FilePath 'pack-check.log'
-          if ($LASTEXITCODE -ne 0) {
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
             node scripts/ci/build-failure-summary.mjs 'pack-check.log' '发布包不合格'
-            exit $LASTEXITCODE
+            exit $code
           }
 
       # 上传之前先把清单点一遍：少一样就当场失败。

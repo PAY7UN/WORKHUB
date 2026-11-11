@@ -31,7 +31,7 @@ import { ensureFrontendBuilt } from './lib/frontend-build.mjs';
 import { buildServer } from './lib/server-build.mjs';
 import { copyRuntimeDeps, pruneNativeDeps } from './lib/runtime-deps.mjs';
 import { ensureNodeRuntime } from './lib/node-runtime.mjs';
-import { zipDirectory } from './lib/zip.mjs';
+import { verifyZipArchive, writeSha256, zipDirectory } from './lib/zip.mjs';
 import { assertNoHardcodedCredentials } from './lib/package-credentials.mjs';
 import {
   copyFileSync,
@@ -44,7 +44,6 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -295,12 +294,11 @@ async function main() {
   const zipPath = join(outDir, `workhub-server-${version}.zip`);
   rmSync(zipPath, { force: true });
   await zipDirectory(pkgRoot, zipPath, { baseName: PACKAGE_DIR });
+  // 打完当场读回来验一遍：坏包不许离开这一步
+  const entries = verifyZipArchive(zipPath, { prefix: PACKAGE_DIR });
+  console.log(`  压缩包 ${entries.length} 个条目，读回来没问题`);
 
-  const hash = createHash('sha256');
-  hash.update(readFileSync(zipPath));
-  const sha256 = hash.digest('hex');
-  writeFileSync(`${zipPath}.sha256`, `${sha256}  workhub-server-${version}.zip\n`, 'utf8');
-
+  const sha256 = await writeSha256(zipPath, `workhub-server-${version}.zip`);
   // 暂存目录清不掉也不能算打包失败：包已经打出来了。
   // 真实原因通常是 Windows 上有杀毒软件正拿着某个文件，或者权限不足——
   // 这时候留个暂存目录，远比把一次成功的打包报成失败强。
@@ -310,7 +308,7 @@ async function main() {
     console.log(`  （暂存目录没清掉，留着了：${err?.message ?? err}）`);
   }
 
-  const sizeMb = (readFileSync(zipPath).length / 1024 / 1024).toFixed(1);
+  const sizeMb = (statSync(zipPath).size / 1024 / 1024).toFixed(1);
   console.log(`已打出升级包：${zipPath}`);
   console.log(`  版本：${version}`);
   console.log(`  大小：${sizeMb} MB`);

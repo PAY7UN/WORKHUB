@@ -16,14 +16,14 @@
  * 用法：npm run pack:tray [-- --skip-build]
  */
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { ensureFrontendBuilt } from './lib/frontend-build.mjs';
 import { buildServer } from './lib/server-build.mjs';
-import { zipDirectory, writeSha256 } from './lib/zip.mjs';
+import { verifyZipArchive, writeSha256, zipDirectory } from './lib/zip.mjs';
 import { assertNoHardcodedCredentials } from './lib/package-credentials.mjs';
 import {
   copyRuntimeDeps,
@@ -359,8 +359,13 @@ async function packPortableZip() {
   const zipPath = join(dest, fileName);
   rmSync(zipPath, { force: true });
   await zipDirectory(portableDir, zipPath, { baseName: 'workhub' });
-  const sha256 = writeSha256(zipPath, fileName);
-  const sizeMb = (readFileSync(zipPath).length / 1024 / 1024).toFixed(1);
+  // 打完当场读回来验一遍：这个包是完整的吗？
+  // v0.3.0 的免安装包就是这么坏的——打包工具崩了留下一个截断的 zip，
+  // 而当时没有任何一环会发现它，坏包一路发到了使用者手里。
+  const entries = verifyZipArchive(zipPath, { prefix: 'workhub' });
+  console.log(`  压缩包 ${entries.length} 个条目，读回来没问题`);
+  const sha256 = await writeSha256(zipPath, fileName);
+  const sizeMb = (statSync(zipPath).size / 1024 / 1024).toFixed(1);
   return { fileName, zipPath, sha256, sizeMb };
 }
 
