@@ -40,8 +40,6 @@ const PASSTHROUGH_TABLES = [
   'access_grants',
   'agent_config',
   'agent_usage',
-  'dingtalk_config',
-  'reminders',
 ];
 
 /** 旧库里那些没有仓库的文档，统一并入这个仓库 */

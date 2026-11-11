@@ -6,7 +6,6 @@ import {
   FolderTree,
   Loader2,
   Lock,
-  MessageSquare,
   ShieldCheck,
   Users,
 } from 'lucide-react';
@@ -68,7 +67,7 @@ export function OverviewSection({ onNavigate }: OverviewSectionProps) {
       value: lockedCount,
       icon: Lock,
       hint: '正文只存密文',
-      section: 'encrypted',
+      section: 'access',
     },
     {
       label: '待审批申请',
@@ -178,43 +177,14 @@ export function OverviewSection({ onNavigate }: OverviewSectionProps) {
         >
           <Users className="h-4 w-4 text-indigo-500" />
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium">访问授权</span>
+            <span className="block text-sm font-medium">访问权限</span>
             <span className="block text-[11px] text-muted-foreground">
-              审批访客申请，随时收回已放行的权限
+              加密文档清单、审批访客申请，随时收回已放行的权限
             </span>
           </span>
           <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </button>
 
-        <button
-          type="button"
-          onClick={() => onNavigate('encrypted')}
-          className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-border/70 bg-white/50 px-3 py-2.5 text-left transition-colors hover:border-indigo-300/70 hover:bg-indigo-50/40 dark:bg-white/5 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/20"
-        >
-          <Lock className="h-4 w-4 text-indigo-500" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium">加密文档</span>
-            <span className="block text-[11px] text-muted-foreground">
-              哪些文档以密文保存、谁被放行
-            </span>
-          </span>
-          <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onNavigate('dingtalk')}
-          className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-border/70 bg-white/50 px-3 py-2.5 text-left transition-colors hover:border-indigo-300/70 hover:bg-indigo-50/40 dark:bg-white/5 dark:hover:border-indigo-800 dark:hover:border-indigo-950/20"
-        >
-          <MessageSquare className="h-4 w-4 text-indigo-500" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium">钉钉同步</span>
-            <span className="block text-[11px] text-muted-foreground">
-              接入自己的钉钉，到点自动提醒
-            </span>
-          </span>
-          <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        </button>
         <button
           type="button"
           onClick={() => onNavigate('security')}

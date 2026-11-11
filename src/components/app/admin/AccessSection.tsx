@@ -1,5 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Clock, Download, Eye, Inbox, ScrollText, ShieldOff, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Check,
+  Clock,
+  Download,
+  Eye,
+  Inbox,
+  Lock,
+  ScrollText,
+  ShieldOff,
+  Unlock,
+  UserCheck,
+  X,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
@@ -97,28 +109,37 @@ interface AccessSectionProps {
 }
 
 /**
- * 访问授权管理（管理后台 · 访问授权分区）。
+ * 访问权限管理（管理后台 · 访问权限分区）。
  *
  * 这里替代了「把密码抄给每个人」那套做法：访客自己申请，管理员在这里批。
  *
- * 两块内容：
- * - 待审批：谁想看哪篇文档、为什么，等我点头。
- * - 授权名单：已经放行过谁，随时可以收回来。
+ * 一个分区回答同一条链上的四个问题：
+ * - 加密文档：哪些文档以密文保存，谁被放行了，能不能取消加密；
+ * - 待审批：谁想看哪篇文档、为什么，等我点头；
+ * - 已授权：已经放行过谁，随时可以收回来；
+ * - 访问审计：谁在什么时候看过、拿走过什么。
+ *
+ * 「加密文档」原先是另一个分区，但加密文档本身就是为了控制「谁能看它」——
+ * 拆成两处只会让管理员在两个页面之间来回找同一个问题的答案。
  *
  * 授权不是密码：它有主人（是谁）、有期限（到什么时候）、能收回。
  * 密码发出去就收不回来了——这是两者的根本差别。
  */
 export function AccessSection({ docId, docName, onClearFilter, focusRequestId }: AccessSectionProps) {
   const {
+    docs,
     listAccessRequests,
     approveAccessRequest,
     rejectAccessRequest,
     listAllAccessGrants,
-    listDocAccessGrants,
     revokeDocAccessGrant,
     updateDocAccessGrant,
     bulkApproveAccessRequests,
+    bulkGrantAccess,
+    listKnownGuests,
     listAccessAudit,
+    decryptDoc,
+    openAdminConsole,
   } = useApp();
   const [requests, setRequests] = useState<AccessRequest[]>([]);
   const [grants, setGrants] = useState<AccessGrant[]>([]);
@@ -145,6 +166,38 @@ export function AccessSection({ docId, docName, onClearFilter, focusRequestId }:
   /** 已经定位过的申请：避免每 10 秒的自动刷新都把页面滚回去 */
   const handledFocusRef = useRef<string | null>(null);
 
+  /* ---------------- 加密文档清单 ---------------- */
+  /** 已知访客（申请过或已获授权的），批量授权时供「选谁」 */
+  const [guests, setGuests] = useState<Array<{ id: string; name: string }>>([]);
+  /** 批量授权时勾选的加密文档 */
+  const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
+  /** 批量授权的目标访客 */
+  const [grantGuestId, setGrantGuestId] = useState('');
+  /** 批量授权的有效期：0 = 长期有效 */
+  const [grantTerm, setGrantTerm] = useState(0);
+  const [grantBusy, setGrantBusy] = useState(false);
+
+  /**
+   * 加密文档清单。
+   *
+   * 限定到某篇文档时只留那一篇：从文档菜单进来的人问的是「这篇」，
+   * 把全站密文文档摊在他面前只会挡路。
+   */
+  const encryptedDocs = useMemo(
+    () => docs.filter((d) => d.type === 'file' && d.encrypted && (!docId || d.id === docId)),
+    [docs, docId],
+  );
+
+  /** 每篇文档现在有几个人被放行（已撤销的不算） */
+  const grantCount = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const g of grants) {
+      if (g.revokedAt) continue;
+      counts[g.docId] = (counts[g.docId] ?? 0) + 1;
+    }
+    return counts;
+  }, [grants]);
+
   /**
    * 定位到深链指定的那条申请。
    *
@@ -169,14 +222,18 @@ export function AccessSection({ docId, docName, onClearFilter, focusRequestId }:
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const [pending, all, log] = await Promise.all([
+        const [pending, all, log, knownGuests] = await Promise.all([
           listAccessRequests('pending', docId),
-          docId ? listDocAccessGrants(docId) : listAllAccessGrants(),
+          // 一次性取全量授权：加密文档清单要按篇统计放行人数，
+          // 文档筛选只是把这份列表按 docId 收窄，不必再单独发一次请求
+          listAllAccessGrants(),
           listAccessAudit(docId),
+          listKnownGuests(),
         ]);
         setRequests(pending);
         setGrants(all);
         setAudit(log);
+        setGuests(knownGuests);
         // 已经不在待审批列表里的（例如被别人批掉了），就别再留在勾选里
         setSelected((prev) => prev.filter((id) => pending.some((r) => r.id === id)));
       } catch (e) {
@@ -185,7 +242,7 @@ export function AccessSection({ docId, docName, onClearFilter, focusRequestId }:
         if (!silent) setLoading(false);
       }
     },
-    [docId, listAccessRequests, listAllAccessGrants, listDocAccessGrants, listAccessAudit],
+    [docId, listAccessRequests, listAllAccessGrants, listAccessAudit, listKnownGuests],
   );
 
   useEffect(() => {
@@ -227,6 +284,47 @@ export function AccessSection({ docId, docName, onClearFilter, focusRequestId }:
       toast.error((e as Error)?.message || '批量批准失败');
     } finally {
       setBulkBusy(false);
+    }
+  };
+
+  /**
+   * 批量授权：把勾选的多篇加密文档一次性放行给同一个访客。
+   *
+   * 「一个目录里的文档都加密了」是常见的用法：访客要申请就得提 N 次、
+   * 管理员要批 N 次。这里一次勾选、一次授权。
+   *
+   * 访客只能从「已知访客」里选——访客的身份是会话 cookie 里的标识，
+   * 凭空造一个他登录时不会认得。所以没申请过的人，请他先走申请流程。
+   */
+  const handleBulkGrant = async () => {
+    if (selectedDocs.length === 0 || !grantGuestId) return;
+    const guest = guests.find((g) => g.id === grantGuestId);
+    setGrantBusy(true);
+    try {
+      const granted = await bulkGrantAccess(
+        grantGuestId,
+        guest?.name ?? grantGuestId,
+        selectedDocs,
+        grantTerm,
+      );
+      toast.success(`已授权「${guest?.name ?? grantGuestId}」访问 ${granted} 篇文档`);
+      setSelectedDocs([]);
+      await load(true);
+    } catch (e) {
+      toast.error((e as Error)?.message || '批量授权失败');
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  /** 取消加密：正文恢复明文，访客直接可读 */
+  const handleDecrypt = async (id: string, name: string) => {
+    try {
+      await decryptDoc(id);
+      await load(true);
+      toast.success(`「${name}」已取消加密`);
+    } catch (e) {
+      toast.error((e as Error)?.message || '取消加密失败');
     }
   };
 
@@ -287,8 +385,10 @@ export function AccessSection({ docId, docName, onClearFilter, focusRequestId }:
     }
   };
 
-  const activeGrants = grants.filter((g) => !g.revokedAt);
-  const revokedGrants = grants.filter((g) => g.revokedAt);
+  // 限定到某篇文档时，下面的授权名单也只看这一篇
+  const scopedGrants = docId ? grants.filter((g) => g.docId === docId) : grants;
+  const activeGrants = scopedGrants.filter((g) => !g.revokedAt);
+  const revokedGrants = scopedGrants.filter((g) => g.revokedAt);
 
   return (
     <div className="space-y-4">
@@ -306,6 +406,142 @@ export function AccessSection({ docId, docName, onClearFilter, focusRequestId }:
           )}
         </div>
       )}
+
+      {/* ---------------- 加密文档 ---------------- */}
+      <section>
+        <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+          <Lock className="h-4 w-4 text-indigo-500" />
+          加密文档
+          {encryptedDocs.length > 0 && (
+            <span className="rounded-full bg-indigo-500/15 px-2 py-0.5 text-[11px] text-indigo-600 dark:text-indigo-400">
+              {encryptedDocs.length}
+            </span>
+          )}
+        </h4>
+
+        <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">
+          以密文保存的文档，访客一律读不到正文：要提交访问申请，由你在下面批准后才能查看。
+          服务端不保存任何访问密码，批准与撤销都随时可做。
+        </p>
+
+        {encryptedDocs.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-muted-foreground dark:border-slate-700">
+            没有加密过任何文档（在文档菜单里点「加密文档」即可）
+          </p>
+        ) : (
+          <>
+            {/* 批量授权工具条：整个目录都加密时，勾一次就够 */}
+            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-indigo-100/60 bg-white/50 px-2.5 py-2 dark:border-indigo-900/50 dark:bg-white/5">
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedDocs((prev) =>
+                    prev.length === encryptedDocs.length ? [] : encryptedDocs.map((d) => d.id),
+                  )
+                }
+                className="cursor-pointer text-[11px] text-indigo-600 underline-offset-2 hover:underline dark:text-indigo-400"
+              >
+                {selectedDocs.length === encryptedDocs.length ? '取消全选' : '全选'}
+              </button>
+              <span className="text-[11px] text-muted-foreground">已选 {selectedDocs.length} 篇</span>
+              <select
+                value={grantGuestId}
+                onChange={(e) => setGrantGuestId(e.target.value)}
+                className="h-7 max-w-[10rem] rounded-md border border-slate-200 bg-white/70 px-1.5 text-[11px] dark:border-slate-700 dark:bg-white/5"
+              >
+                <option value="">选择访客…</option>
+                {guests.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={grantTerm}
+                onChange={(e) => setGrantTerm(Number(e.target.value))}
+                className="h-7 rounded-md border border-slate-200 bg-white/70 px-1.5 text-[11px] dark:border-slate-700 dark:bg-white/5"
+              >
+                <option value={0}>长期有效</option>
+                <option value={1}>1 天</option>
+                <option value={7}>7 天</option>
+                <option value={30}>30 天</option>
+              </select>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={selectedDocs.length === 0 || !grantGuestId || grantBusy}
+                onClick={() => void handleBulkGrant()}
+                className="h-7 px-2 text-[11px]"
+              >
+                <UserCheck className="mr-1 h-3.5 w-3.5" />
+                {grantBusy ? '授权中…' : '批量授权'}
+              </Button>
+            </div>
+
+            {guests.length === 0 && (
+              <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">
+                还没有已知访客（访客要先提交一次访问申请才会出现在这里），
+                批量授权需要从这里选择一位访客。
+              </p>
+            )}
+
+            <ul className="space-y-2">
+              {encryptedDocs.map((doc) => {
+                const count = grantCount[doc.id] ?? 0;
+                return (
+                  <li
+                    key={doc.id}
+                    className="rounded-lg border border-indigo-100/60 bg-white/50 px-3 py-2.5 dark:border-indigo-900/50 dark:bg-white/5"
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedDocs.includes(doc.id)}
+                        onChange={() =>
+                          setSelectedDocs((prev) =>
+                            prev.includes(doc.id)
+                              ? prev.filter((x) => x !== doc.id)
+                              : [...prev, doc.id],
+                          )
+                        }
+                        aria-label={`勾选 ${doc.name}`}
+                        className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-indigo-500"
+                      />
+                      <Lock className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+                      <span className="truncate text-sm font-medium">{doc.name}</span>
+                      <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+                        {doc.lockedAt && `${formatRelativeTime(doc.lockedAt)}加密 · `}
+                        {count > 0 ? `${count} 人已授权` : '暂无授权'}
+                      </span>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openAdminConsole('access', { docId: doc.id, docName: doc.name })}
+                        title="只看这篇文档的申请与授权"
+                      >
+                        <UserCheck className="h-3.5 w-3.5" />
+                        访问授权
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void handleDecrypt(doc.id, doc.name)}
+                        title="取消加密：正文恢复明文，访客直接可读"
+                      >
+                        <Unlock className="h-3.5 w-3.5" />
+                        取消加密
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        )}
+      </section>
 
       <section>
         <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">

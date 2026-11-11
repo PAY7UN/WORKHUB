@@ -9,7 +9,7 @@
  * 与界面共用同一套语义：能力页里手动跑一次，任务里自动跑，
  * 执行逻辑只有这一份。
  */
-import { getAgentConfigPublic, listAllDocs, listReminders, searchDocs } from '../db.ts';
+import { getAgentConfigPublic, listAllDocs, searchDocs } from '../db.ts';
 import { listRepos, repoStats } from '../repos.ts';
 import { listAttachments } from '../attachments.ts';
 import { buildAskMessages, retrieveForAsk } from '../agentContext.ts';
@@ -229,22 +229,6 @@ const agentAsk: SkillRunner = async (params, ctx) => {
   };
 };
 
-/* ------------------------------ 提醒 ------------------------------ */
-
-/** 提醒清单：提醒到点会推到钉钉，过程与结果都留痕 */
-const reminderList: SkillRunner = async (_params, ctx) => {
-  if (!ctx.isAdmin) throw new SkillRunError('提醒清单仅管理员可见');
-  const reminders = listReminders();
-  const output = reminders
-    .map((r) => `${r.title}（${new Date(r.remindAt).toLocaleString('zh-CN')}，${r.status}）`)
-    .join('\n');
-  return {
-    summary: `共 ${reminders.length} 条提醒`,
-    output: output || '还没有提醒',
-    data: reminders,
-  };
-};
-
 /* ------------------------------ 注册表 ------------------------------ */
 
 /**
@@ -351,7 +335,7 @@ const dataAnalyze: SkillRunner = async (params, ctx) => {
  * 能力执行体注册表。
  *
  * key 与 skills/ 目录里的 id 一一对应。
- * 注意这里只登记「读类 + 智能」能力：会写数据的能力（建提醒、发钉钉、提交授权申请）
+ * 注意这里只登记「读类 + 智能」能力：会写数据的能力（提交授权申请）
  * 留在能力页手动执行——任务一次跑错就是错数据，代价远高于手动点一下。
  */
 export const SKILL_RUNNERS: Record<string, SkillRunner> = {
@@ -361,7 +345,6 @@ export const SKILL_RUNNERS: Record<string, SkillRunner> = {
   'attachment.list': attachmentList,
   'agent.status': agentStatus,
   'agent.ask': agentAsk,
-  'reminder.list': reminderList,
   'web.fetch': webFetch,
   'data.analyze': dataAnalyze,
 };

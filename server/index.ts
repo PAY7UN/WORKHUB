@@ -12,10 +12,7 @@ import { fileURLToPath } from 'node:url';
 import type {
   AccessCapability,
   AgentSettings,
-  DingTalkChannel,
-  DingTalkConfig,
   DocNode,
-  ReminderRepeat,
 } from '../shared/types.ts';
 import { ACCESS_CAPABILITY_LABELS } from '../shared/types.ts';
 import { MAX_POLISH_CHARS, MAX_RUNNING_POLISH_TASKS } from '../shared/polish.ts';
@@ -50,7 +47,6 @@ import {
   decryptDocRow,
   decryptBinaryDocRow,
   defaultRepoId,
-  deleteReminder,
   detachSubtree,
   DekUnavailableError,
   encryptBinaryDocRow,
@@ -66,18 +62,14 @@ import {
   getAgentConfig,
   getAgentConfigPublic,
   getAgentUsageSummary,
-  getDingTalkConfig,
-  getDingTalkConfigPublic,
   getDoc,
   getDocEncryptionRow,
-  getReminder,
   insertAccessAudit,
   insertAccessGrant,
   insertAccessRequest,
   insertAgentUsage,
   insertBinaryDoc,
   insertDoc,
-  insertReminder,
   kindOf,
   listAccessAudit,
   listAccessGrants,
@@ -85,10 +77,8 @@ import {
   listAllAccessGrants,
   listAllDocs,
   listKnownGuests,
-  listReminders,
   normalizeImportDocs,
   parseCapabilities,
-  previewDingTalkConfig,
   readDocCipher,
   readNodeBytes,
   readNodeRawBytes,
@@ -97,17 +87,13 @@ import {
   revokeAccessGrant,
   rowToUser,
   saveAgentConfig,
-  saveDingTalkConfig,
   searchDocs,
   updateAccessGrant,
   updateDocRow,
-  updateReminder,
   updateUserPassword,
   upgradeLegacyPassword,
 } from './db.ts';
 import { notifyAccessRevoked, subscribeAccessWatch } from './accessWatch.ts';
-import { computeNextFutureFireAt, pushReminder, safeErrorMessage, testDingTalk } from './dingtalk.ts';
-import { startReminderScheduler } from './reminderScheduler.ts';
 import { db, DB_PATH, MASTER_KEY } from './db.ts';
 import {
   decryptBytes,
@@ -2034,200 +2020,6 @@ app.post('/api/agent/polish-tasks/clear-finished', requireAdmin, (_req, res) => 
   res.json(clearFinishedPolishTasks());
 });
 
-/* ------------------------------ 钉钉同步 ------------------------------ */
-
-/**
- * 钉钉配置（管理员）。
- *
- * 密钥类字段（加签密钥、AppSecret）不回显：浏览器只拿到「已配置 / 未配置」，
- * 与 Agent 的 API Key 同一口径。
- */
-app.get('/api/dingtalk/config', requireAdmin, (_req, res) => {
-  res.json({ config: getDingTalkConfigPublic() });
-});
-
-/** 从请求体里解析钉钉配置草稿 */
-function readDingTalkDraft(body: Record<string, unknown>): Partial<DingTalkConfig> & {
-  webhookSecret?: string;
-  appSecret?: string;
-} {
-  const str = (v: unknown): string | undefined => (typeof v === 'string' ? v.trim() : undefined);
-  const list = (v: unknown): string[] | undefined =>
-    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
-  const channel = body.channel;
-  return {
-    enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined,
-    channel:
-      channel === 'webhook' || channel === 'notify' || channel === 'todo'
-        ? (channel as DingTalkChannel)
-        : undefined,
-    webhookUrl: str(body.webhookUrl),
-    webhookSecret: typeof body.webhookSecret === 'string' ? body.webhookSecret : undefined,
-    appKey: str(body.appKey),
-    appSecret: typeof body.appSecret === 'string' ? body.appSecret : undefined,
-    robotCode: str(body.robotCode),
-    userIds: list(body.userIds),
-    unionId: str(body.unionId),
-    executorIds: list(body.executorIds),
-    todoBaseUrl: str(body.todoBaseUrl),
-  };
-}
-
-app.put('/api/dingtalk/config', requireAdmin, (req, res) => {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const draft = readDingTalkDraft(body);
-  saveDingTalkConfig({
-    ...draft,
-    clearWebhookSecret: body.clearWebhookSecret === true,
-    clearAppSecret: body.clearAppSecret === true,
-  });
-  res.json({ config: getDingTalkConfigPublic() });
-});
-
-/**
- * 连通性测试：按当前通道发一条测试消息。
- *
- * 用请求体里的草稿配置而非库里已存的——用户改完配置还没保存就想验证时，
- * 不该被迫先点一次保存。
- */
-app.post('/api/dingtalk/test', requireAdmin, async (req, res) => {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const draft = readDingTalkDraft(body);
-  const cfg = previewDingTalkConfig(draft);
-  try {
-    const message = await testDingTalk(cfg);
-    res.json({ ok: true, message });
-  } catch (e) {
-    res.status(400).json({ message: safeErrorMessage(e) });
-  }
-});
-
-/* ------------------------------ 提醒记录 ------------------------------ */
-
-/** 提醒清单（管理员） */
-app.get('/api/reminders', requireAdmin, (_req, res) => {
-  res.json({ reminders: listReminders() });
-});
-
-/**
- * 新建提醒。
- *
- * 关联文档只存 id 与名称快照：文档改名或被删，提醒里的信息仍可读。
- */
-app.post('/api/reminders', requireAdmin, (req, res) => {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const title = typeof body.title === 'string' ? body.title.trim() : '';
-  if (!title) return res.status(400).json({ message: '提醒标题不能为空' });
-
-  const remindAt = Number(body.remindAt);
-  if (!Number.isFinite(remindAt) || remindAt <= 0) {
-    return res.status(400).json({ message: '提醒时间无效' });
-  }
-
-  const repeatRaw = body.repeat;
-  const repeat: ReminderRepeat =
-    repeatRaw === 'daily' || repeatRaw === 'weekly' || repeatRaw === 'monthly' ? repeatRaw : 'once';
-
-  const channelRaw = body.channel;
-  const channel: DingTalkChannel =
-    channelRaw === 'notify' || channelRaw === 'todo' ? channelRaw : getDingTalkConfig().channel;
-
-  const docId = typeof body.docId === 'string' && body.docId.trim() ? body.docId.trim() : null;
-  const doc = docId ? getDoc(docId) : undefined;
-
-  const reminder = insertReminder({
-    id: randomUUID(),
-    title,
-    content: typeof body.content === 'string' ? body.content : '',
-    remindAt,
-    repeat,
-    channel,
-    docId: doc?.id ?? null,
-    docName: doc?.name ?? null,
-    createdBy: nowUserId(req),
-  });
-  res.json({ reminder });
-});
-
-/** 修改提醒：时间、标题、状态（完成/取消）等 */
-app.patch('/api/reminders/:id', requireAdmin, (req, res) => {
-  const id = String(req.params.id);
-  const cur = getReminder(id);
-  if (!cur) return res.status(404).json({ message: '提醒不存在' });
-
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const patch: Parameters<typeof updateReminder>[1] = {};
-
-  if (typeof body.title === 'string' && body.title.trim()) patch.title = body.title.trim();
-  if (typeof body.content === 'string') patch.content = body.content;
-  const remindAt = Number(body.remindAt);
-  if (Number.isFinite(remindAt) && remindAt > 0) patch.remindAt = remindAt;
-
-  const repeatRaw = body.repeat;
-  if (repeatRaw === 'once' || repeatRaw === 'daily' || repeatRaw === 'weekly' || repeatRaw === 'monthly') {
-    patch.repeat = repeatRaw;
-  }
-
-  const channelRaw = body.channel;
-  if (channelRaw === 'webhook' || channelRaw === 'notify' || channelRaw === 'todo') {
-    patch.channel = channelRaw;
-  }
-
-  const statusRaw = body.status;
-  if (
-    statusRaw === 'pending' ||
-    statusRaw === 'sent' ||
-    statusRaw === 'done' ||
-    statusRaw === 'cancelled' ||
-    statusRaw === 'failed'
-  ) {
-    patch.status = statusRaw;
-    if (statusRaw === 'done' && cur.doneAt === null) patch.doneAt = Date.now();
-    // 状态一改就不再排期：巡检只捞 status='pending' 的记录，无需再动触发时间
-  }
-
-  updateReminder(id, patch);
-  res.json({ reminder: getReminder(id) });
-});
-
-/** 删除提醒记录 */
-app.delete('/api/reminders/:id', requireAdmin, (req, res) => {
-  const ok = deleteReminder(String(req.params.id));
-  if (!ok) return res.status(404).json({ message: '提醒不存在' });
-  res.json({ ok: true });
-});
-
-/**
- * 立即发送一条提醒。
- *
- * 与自动触发走完全相同的代码路径（同一套 pushReminder + 状态流转），
- * 手动触发不该和自动触发有两套行为。
- */
-app.post('/api/reminders/:id/fire', requireAdmin, async (req, res) => {
-  const id = String(req.params.id);
-  const reminder = getReminder(id);
-  if (!reminder) return res.status(404).json({ message: '提醒不存在' });
-
-  const cfg = getDingTalkConfig();
-  try {
-    const result = await pushReminder(cfg, reminder, reminder.channel);
-    const nextAt = computeNextFutureFireAt(reminder.repeat, reminder.remindAt, Date.now());
-    updateReminder(id, {
-      status: nextAt === null ? 'sent' : 'pending',
-      ...(nextAt === null ? {} : { remindAt: nextAt }),
-      firedAt: Date.now(),
-      fireCount: reminder.fireCount + 1,
-      lastError: '',
-      todoId: result.todoId ?? reminder.todoId,
-    });
-    res.json({ reminder: getReminder(id) });
-  } catch (e) {
-    const message = safeErrorMessage(e);
-    updateReminder(id, { lastError: message });
-    res.status(400).json({ message });
-  }
-});
-
 /* ------------------------------ 前端静态资源 ------------------------------ */
 
 /**
@@ -2330,10 +2122,6 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-// 提醒调度器随服务启动：到点的提醒由服务端自己推送到钉钉，
-// 不依赖浏览器开着——关了页面提醒照样到。
-startReminderScheduler();
-
 // 上次没清完的暂存文件顺手扫掉：删除是尽力而为的后台任务，
 // 进程被杀或机器断电都会留下 .trash 文件，它们已经不在索引里了。
 // 扫在清道夫线程里做，不占着启动不放。
@@ -2355,15 +2143,11 @@ let httpServer: ReturnType<typeof app.listen> | null = null;
 function listenForPort(): void {
   const server = app.listen(PORT, '0.0.0.0', () => {
     const cfg = getAgentConfigPublic();
-    const ding = getDingTalkConfigPublic();
     logger.info(`服务已启动: http://localhost:${PORT}`);
     for (const addr of lanAddresses(PORT)) logger.info(`局域网访问: ${addr}`);
     // 路径给相对形式：启动日志常被原样贴进 issue，绝对路径会带出本机用户名目录
     logger.info(`数据库: ${displayPath(DB_PATH)}`);
     logger.info(`模型: ${cfg.model} @ ${cfg.baseUrl}，API Key ${cfg.hasApiKey ? '已配置' : '未配置'}`);
-    logger.info(
-      `钉钉同步: ${ding.enabled ? '已开启' : '未开启'}${ding.enabled ? `（通道：${ding.channel}）` : ''}`,
-    );
     // 密码相关的两个入口都指到启动日志里：登录后才能改密，忘了密码反而进不去，
     // 所以离线重置这条退路必须让人在第一时间看见，而不是等到真忘了再去翻文档
     logger.info('修改管理员密码: 登录后点侧边栏头像旁的钥匙图标');

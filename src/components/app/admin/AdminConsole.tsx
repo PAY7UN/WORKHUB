@@ -1,11 +1,9 @@
-import { Bot, Boxes, LayoutDashboard, Lock, MessageSquare, ShieldCheck, UserCheck } from 'lucide-react';
+import { Bot, Boxes, LayoutDashboard, ShieldCheck, UserCheck } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useApp } from '@/context/AppContext';
 import { ADMIN_SECTION_LABELS, type AdminSection } from '@/types';
 import { AccessSection } from './AccessSection';
 import { AgentSection } from './AgentSection';
-import { DingTalkSection } from './DingTalkSection';
-import { EncryptedSection } from './EncryptedSection';
 import { OverviewSection } from './OverviewSection';
 import { RepoSection } from './RepoSection';
 import { SecuritySection } from './SecuritySection';
@@ -23,11 +21,9 @@ const SECTIONS: {
   icon: typeof LayoutDashboard;
 }[] = [
   { id: 'overview', label: '概览', desc: '现在有多少事等着处理', icon: LayoutDashboard },
-  { id: 'access', label: '访问授权', desc: '审批申请、收回授权', icon: UserCheck },
-  { id: 'encrypted', label: '加密文档', desc: '哪些文档以密文保存', icon: Lock },
+  { id: 'access', label: '访问权限', desc: '加密文档、审批申请、收回授权', icon: UserCheck },
   { id: 'repos', label: '仓库管理', desc: '项目、留存规则、迁移', icon: Boxes },
   { id: 'agent', label: 'AI Agent', desc: '模型、API Key、访客开关', icon: Bot },
-  { id: 'dingtalk', label: '钉钉同步', desc: '到点提醒、待办同步', icon: MessageSquare },
   { id: 'security', label: '账号安全', desc: '修改管理员密码', icon: ShieldCheck },
 ];
 
@@ -66,7 +62,7 @@ export function AdminConsole() {
             </span>
           </DialogTitle>
           <DialogDescription>
-            按功能分区管理：概览、访问授权、加密文档、仓库管理、AI Agent、钉钉同步、账号安全。
+            按功能分区管理：概览、访问权限、仓库管理、AI Agent、账号安全。
           </DialogDescription>
         </DialogHeader>
 
@@ -123,10 +119,8 @@ export function AdminConsole() {
                 focusRequestId={adminFocusRequestId ?? undefined}
               />
             )}
-            {adminSection === 'encrypted' && <EncryptedSection />}
             {adminSection === 'repos' && <RepoSection />}
             {adminSection === 'agent' && <AgentSection />}
-            {adminSection === 'dingtalk' && <DingTalkSection />}
             {adminSection === 'security' && <SecuritySection />}
           </div>
         </div>

@@ -17,7 +17,7 @@
  */
 
 /** 能力的分类：按「它对资料做什么」划分 */
-export type SkillCategory = 'search' | 'ai' | 'content' | 'notify' | 'access' | 'system' | 'web' | 'data';
+export type SkillCategory = 'search' | 'ai' | 'content' | 'access' | 'system' | 'web' | 'data';
 
 /** 分类的展示顺序：先看最常用的 */
 export const SKILL_CATEGORY_ORDER: SkillCategory[] = [
@@ -26,7 +26,6 @@ export const SKILL_CATEGORY_ORDER: SkillCategory[] = [
   'search',
   'ai',
   'content',
-  'notify',
   'access',
   'system',
 ];
@@ -112,7 +111,7 @@ export interface SkillSpec {
   /**
    * 能否进「一句话任务」。
    *
-   * 能力页里能跑 ≠ 任务里能跑：会写数据的能力（建提醒、发钉钉、提交授权申请）
+   * 能力页里能跑 ≠ 任务里能跑：会写数据的能力（提交授权申请）
    * 一次跑错就是错数据，代价远高于手动点一下。
    */
   composable: boolean;

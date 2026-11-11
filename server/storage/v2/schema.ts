@@ -251,43 +251,6 @@ CREATE TABLE IF NOT EXISTS access_audit (
   created_at INTEGER NOT NULL
 );
 
--- 钉钉同步配置：单行（id=1）
-CREATE TABLE IF NOT EXISTS dingtalk_config (
-  id                INTEGER PRIMARY KEY CHECK (id = 1),
-  enabled           INTEGER NOT NULL DEFAULT 0,
-  channel           TEXT NOT NULL DEFAULT 'webhook' CHECK (channel IN ('webhook','notify','todo')),
-  webhook_url       TEXT NOT NULL DEFAULT '',
-  webhook_secret_enc TEXT,
-  app_key           TEXT NOT NULL DEFAULT '',
-  app_secret_enc    TEXT,
-  robot_code        TEXT NOT NULL DEFAULT '',
-  user_ids          TEXT NOT NULL DEFAULT '',
-  union_id          TEXT NOT NULL DEFAULT '',
-  executor_ids      TEXT NOT NULL DEFAULT '',
-  todo_base_url     TEXT NOT NULL DEFAULT '',
-  updated_at        INTEGER NOT NULL
-);
-
--- 提醒记录：到点推送到钉钉，过程与结果都留痕
-CREATE TABLE IF NOT EXISTS reminders (
-  id         TEXT PRIMARY KEY,
-  title      TEXT NOT NULL,
-  content    TEXT NOT NULL DEFAULT '',
-  remind_at  INTEGER NOT NULL,
-  repeat     TEXT NOT NULL DEFAULT 'once' CHECK (repeat IN ('once','daily','weekly','monthly')),
-  channel    TEXT NOT NULL DEFAULT 'webhook' CHECK (channel IN ('webhook','notify','todo')),
-  status     TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sent','done','cancelled','failed')),
-  doc_id     TEXT,
-  doc_name   TEXT,
-  created_at INTEGER NOT NULL,
-  created_by TEXT NOT NULL DEFAULT 'u-admin',
-  fired_at   INTEGER,
-  done_at    INTEGER,
-  last_error TEXT NOT NULL DEFAULT '',
-  fire_count INTEGER NOT NULL DEFAULT 0,
-  todo_id    TEXT NOT NULL DEFAULT ''
-);
-
 -- ---------------------------------------------------------------- 索引
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_repo ON nodes(repo_id);
@@ -295,7 +258,6 @@ CREATE INDEX IF NOT EXISTS idx_agent_usage_created ON agent_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_access_requests_status ON access_requests(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_access_grants_doc ON access_grants(doc_id);
 CREATE INDEX IF NOT EXISTS idx_access_audit_doc ON access_audit(doc_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
 CREATE INDEX IF NOT EXISTS idx_attachments_doc ON attachments(doc_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_sha ON attachments(sha256);
 `;

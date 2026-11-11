@@ -9,16 +9,11 @@ import type {
   AccessRequest,
   AgentSettings,
   Attachment,
-  DingTalkChannel,
-  DingTalkConfigView,
   DocNode,
   DocSearchHit,
   GuestIdentity,
   PolishTask,
   RagScope,
-  Reminder,
-  ReminderRepeat,
-  ReminderStatus,
   Repo,
   RepoStat,
   User,
@@ -690,56 +685,6 @@ export const api = {
   }> => {
     return request('/agent/polish-tasks/clear-finished', { method: 'POST' });
   },
-
-  /* 钉钉同步 */
-
-  /** 钉钉配置：密钥不回显，只拿到「已配置 / 未配置」 */
-  getDingTalkConfig: () => request<{ config: DingTalkConfigView }>('/dingtalk/config'),
-
-  /**
-   * 保存钉钉配置。
-   *
-   * 密钥类字段留空表示保持原值；传 clearXxx 则清除。
-   */
-  saveDingTalkConfig: (
-    patch: Partial<DingTalkConfigView> & {
-      webhookSecret?: string;
-      clearWebhookSecret?: boolean;
-      appSecret?: string;
-      clearAppSecret?: boolean;
-    },
-  ) => request<{ config: DingTalkConfigView }>('/dingtalk/config', { method: 'PUT', body: JSON.stringify(patch) }),
-
-  /**
-   * 连通性测试：按草稿配置发一条测试消息。
-   * 不必先保存——改完配置直接测，测不过再改。
-   */
-  testDingTalk: (
-    patch: Partial<DingTalkConfigView> & { webhookSecret?: string; appSecret?: string },
-  ) => request<{ ok: boolean; message: string }>('/dingtalk/test', { method: 'POST', body: JSON.stringify(patch) }),
-
-  /** 提醒清单 */
-  listReminders: () => request<{ reminders: Reminder[] }>('/reminders'),
-
-  /** 新建提醒。remindAt 为毫秒时间戳 */
-  createReminder: (input: {
-    title: string;
-    content?: string;
-    remindAt: number;
-    repeat?: ReminderRepeat;
-    channel?: DingTalkChannel;
-    docId?: string;
-  }) => request<{ reminder: Reminder }>('/reminders', { method: 'POST', body: JSON.stringify(input) }),
-
-  /** 修改提醒：改时间、标题，或标记完成/取消 */
-  updateReminder: (id: string, patch: { title?: string; content?: string; remindAt?: number; status?: ReminderStatus }) =>
-    request<{ reminder: Reminder }>(`/reminders/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
-
-  /** 删除提醒记录 */
-  deleteReminder: (id: string) => request<{ ok: boolean }>(`/reminders/${id}`, { method: 'DELETE' }),
-
-  /** 立即发送一条提醒（与自动触发同一套逻辑） */
-  fireReminder: (id: string) => request<{ reminder: Reminder }>(`/reminders/${id}/fire`, { method: 'POST' }),
 
 };
 

@@ -12,9 +12,6 @@ export type {
   AccessRequest,
   Attachment,
   AttachmentTextStatus,
-  DingTalkChannel,
-  DingTalkConfig,
-  DingTalkConfigView,
   DocNode,
   DocSearchHit,
   DocTree,
@@ -22,9 +19,6 @@ export type {
   PolishTask,
   RagScope,
   RagScopeMode,
-  Reminder,
-  ReminderRepeat,
-  ReminderStatus,
   Repo,
   RepoStat,
   User,
@@ -99,16 +93,17 @@ export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
  * 管理员要做的事原本散成一排图标（授权、加密文档、改密），
  * 每一件都得先猜「那个图标是哪件事」。这里按功能归类，
  * 每个分区自己管自己的事，入口只留一个「管理后台」。
+ *
+ * 「加密文档」不再是独立分区：加密文档本来就是「谁能看它」这个问题的一部分，
+ * 拆成两个分区只会让管理员在两个地方来回找同一件事的答案。
  */
-export type AdminSection = 'overview' | 'access' | 'encrypted' | 'repos' | 'agent' | 'dingtalk' | 'security';
+export type AdminSection = 'overview' | 'access' | 'repos' | 'agent' | 'security';
 
 /** 管理后台分区的中文名，用于标题与面包屑 */
 export const ADMIN_SECTION_LABELS: Record<AdminSection, string> = {
   overview: '概览',
-  access: '访问授权',
-  encrypted: '加密文档',
+  access: '访问权限',
   repos: '仓库管理',
   agent: 'AI Agent',
-  dingtalk: '钉钉同步',
   security: '账号安全',
 };

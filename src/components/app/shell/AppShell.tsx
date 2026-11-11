@@ -104,7 +104,7 @@ export function AppShell({ onGoHome }: AppShellProps) {
                   variant="ghost"
                   onClick={() => openAdminConsole('overview')}
                   className="h-7 px-2 text-[11px] hover:bg-indigo-100/60 hover:text-indigo-600 dark:hover:bg-indigo-950/30"
-                  title="管理后台：概览、访问授权、加密文档、AI Agent、账号安全"
+                  title="管理后台：概览、访问权限、仓库管理、AI Agent、账号安全"
                 >
                   <LayoutDashboard className="h-3.5 w-3.5 mr-1" />
                   管理
@@ -147,7 +147,7 @@ export function AppShell({ onGoHome }: AppShellProps) {
         <DocsWorkspace />
       </main>
 
-      {/* 管理后台：按功能分区（概览 / 访问授权 / 加密文档 / AI Agent / 账号安全） */}
+      {/* 管理后台：按功能分区（概览 / 访问权限 / 仓库管理 / AI Agent / 账号安全） */}
       <AdminConsole />
 
       {/* 文档分析 Agent（配置入口在面板右上角齿轮） */}
