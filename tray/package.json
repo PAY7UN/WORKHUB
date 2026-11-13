@@ -1,6 +1,6 @@
 {
   "name": "workhub-tray",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "private": true,
   "description": "WorkHub 托盘工具：图标 + 菜单，本地守护服务进程，远程管服务器",
   "main": "main.cjs",
