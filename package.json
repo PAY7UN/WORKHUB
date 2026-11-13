@@ -1,7 +1,7 @@
 {
   "name": "workhub",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "个人记录与知识管理站点：文档与原件一体化归档，文档与 Agent 配置存服务端，访客浏览器不持有不可见文档与模型凭据",
   "license": "MIT",
   "author": "PAY7UN",
