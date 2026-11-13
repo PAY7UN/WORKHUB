@@ -28,6 +28,10 @@ files:
 
 asar: true
 
+# 应用打包完、安装器开工之前跑一下：把安装器要用的品牌位图现画出来，
+# 写进 buildResources。没有它，nsis 下面那几个位图就找不到。
+afterPack: ./scripts/hooks/after-pack.cjs
+
 # 服务 payload：托盘要拉起的服务进程需要的一切（代码 + 前端产物 + 运行时依赖）
 # 放在 asar 外面——服务进程是纯 Node 模式跑的，读不了 asar 里的文件
 # （打包脚本会用实际组装的 payload 目录覆盖这一条，这里的写法只为看得懂）
@@ -72,6 +76,20 @@ nsis:
   shortcutName: WorkHub
   # 卸载时保留用户数据（.env / 数据库），重装不丢东西
   deleteAppDataOnUninstall: false
+
+  # 自定义安装器脚本：品牌欢迎页/完成页 + 一页自绘的「安装选项」
+  # （数据存放位置、开机自启动），装完把选择写进 tray.config.json。
+  # 脚本源文件在 scripts/nsis/installer.nsh，由 afterPack 钩子复制到
+  # buildResources（顺带补上 NSIS 要求的 UTF-8 BOM）。
+  include: installer.nsh
+  installerHeader: installerHeader.bmp
+  installerSidebar: installerSidebar.bmp
+  uninstallerSidebar: uninstallerSidebar.bmp
+
+  # 安装器只留中文界面。默认会把 26 种语言全塞进去，
+  # 而托盘本身的中文界面是唯一的正规用法——留一整套看不懂的按钮更糟。
+  installerLanguages:
+    - zh_CN
 
 # 只留中文和英文两种界面语言。
 # Electron 默认把 50 多种语言包全塞进 locales/，装完在安装目录里铺一层

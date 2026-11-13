@@ -77,12 +77,11 @@ test('更新源：环境变量能覆盖配置', () => {
   assert.equal(source.url, 'https://x/m.json');
 });
 
-test('更新源：旧变量名仍然生效，新名优先', () => {
+test('更新源：旧变量名不再生效，新名优先', () => {
   // 托盘与服务端必须读到同一个值：两边规则不一致的症状是
   // 「托盘连的是 A，服务端跑在 B」，属于最难查的那一类
   const old = resolveUpdateSource({}, { MDHUB_UPDATE_MANIFEST: 'https://old/m.json' });
-  assert.equal(old.kind, 'manifest');
-  assert.equal(old.url, 'https://old/m.json');
+  assert.equal(old.kind, 'github');
 
   const both = resolveUpdateSource(
     {},

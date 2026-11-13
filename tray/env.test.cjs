@@ -6,7 +6,7 @@
  * 因为托盘在找 A 端口，服务在 B 端口。
  *
  * 判定规则必须跟服务端看到的完全一致（server/env.ts + server/envFile.ts）：
- * 按 Node 的 --env-file 那套规则合并进程环境与 .env，再新名优先、旧名兜底地取 PORT。
+ * 按 Node 的 --env-file 那套规则合并进程环境与 .env，再取 WORKHUB_PORT。
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -19,17 +19,11 @@ test('进程环境里的端口优先于 .env', () => {
   assert.equal(port, 9000);
 });
 
-test('旧名 MDHUB_PORT 也认', () => {
-  // 回归点：以前写的是 process.env.WORKHUB_PORT || process.env.WORKHUB_PORT，
-  // 等于旧名永远读不到。改名过渡期机器上还留着 MDHUB_PORT 是常事，
-  // 服务端认它（server/env.ts），托盘不认就两边错开。
+test('旧名 MDHUB_PORT 不再认', () => {
+  // 旧名不认：配了它等于没配。与其两套名长期并存，
+  // 不如一次改名彻底——「以为生效了其实没生效」是最难查的一类故障。
   const port = resolvePort({ MDHUB_PORT: '8000' }, '', DEFAULT);
-  assert.equal(port, 8000);
-});
-
-test('新名与旧名同时存在时取新名', () => {
-  const port = resolvePort({ WORKHUB_PORT: '9000', MDHUB_PORT: '8000' }, '', DEFAULT);
-  assert.equal(port, 9000);
+  assert.equal(port, DEFAULT);
 });
 
 test('.env 里的端口认得（引号、注释、空格都算）', () => {
@@ -46,15 +40,13 @@ test('.env 带 BOM 也能读出端口', () => {
   assert.equal(resolvePort({}, '\uFEFFWORKHUB_PORT=9006\n', DEFAULT), 9006);
 });
 
-test('.env 里的旧名也认', () => {
-  assert.equal(resolvePort({}, 'MDHUB_PORT=9007\n', DEFAULT), 9007);
+test('.env 里的旧名也不再认', () => {
+  assert.equal(resolvePort({}, 'MDHUB_PORT=9007\n', DEFAULT), DEFAULT);
 });
 
 test('合并按变量名来，不是按后缀', () => {
-  // .env 里是 WORKHUB_PORT=9000，系统环境里留着旧名 MDHUB_PORT=8000。
-  // Node 的规则是「同名才不覆盖」，所以 .env 的 WORKHUB_PORT 照样生效；
-  // 服务端取端口是新名优先 → 9000。
-  // 托盘若按后缀一刀切取到 8000，就跟服务端错开了。
+  // .env 里是 WORKHUB_PORT=9000，系统环境里留着别的键。
+  // Node 的规则是「同名才不覆盖」，所以 .env 的 WORKHUB_PORT 照样生效。
   const port = resolvePort({ MDHUB_PORT: '8000' }, 'WORKHUB_PORT=9000\n', DEFAULT);
   assert.equal(port, 9000);
 });
@@ -75,13 +67,12 @@ test('非法端口不生效', () => {
   assert.equal(resolvePort({ WORKHUB_PORT: 'abc' }, '', DEFAULT), DEFAULT);
 });
 
-test('envValue 按新名优先、旧名兜底取变量', () => {
-  const env = { WORKHUB_SECRET: 'new', MDHUB_SECRET: 'old' };
-  assert.equal(envValue(env, 'SECRET'), 'new');
-  assert.equal(envValue({ MDHUB_SECRET: 'old' }, 'SECRET'), 'old');
+test('envValue 只认 WORKHUB_ 前缀', () => {
+  assert.equal(envValue({ WORKHUB_SECRET: 'v' }, 'SECRET'), 'v');
+  assert.equal(envValue({ MDHUB_SECRET: 'old' }, 'SECRET'), '');
   assert.equal(envValue({}, 'SECRET'), '');
   // 空串不算数：托盘与服务端都要能把「没配」和「配成空」分清
-  assert.equal(envValue({ WORKHUB_SECRET: '', MDHUB_SECRET: 'old' }, 'SECRET'), 'old');
+  assert.equal(envValue({ WORKHUB_SECRET: '' }, 'SECRET'), '');
 });
 
 test('解析 .env 时注释与引号都按 Node 的规矩来', () => {

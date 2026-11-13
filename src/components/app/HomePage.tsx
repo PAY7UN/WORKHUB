@@ -74,7 +74,7 @@ export function HomePage({ onEnter }: HomePageProps) {
   };
 
   return (
-    <div className="relative min-h-screen overflow-y-auto scrollbar-thin">
+    <div className="relative h-full overflow-y-auto scrollbar-thin">
       {/* 背景光斑 */}
       <div className="pointer-events-none fixed -top-32 -left-32 h-96 w-96 rounded-full bg-indigo-400/30 blur-3xl float-animation" />
       <div className="pointer-events-none fixed -bottom-32 -right-32 h-96 w-96 rounded-full bg-emerald-400/25 blur-3xl float-animation-delay" />
@@ -91,7 +91,7 @@ export function HomePage({ onEnter }: HomePageProps) {
           </div>
           <div>
             <h1 className="text-xl font-bold gradient-text leading-tight">WorkHub</h1>
-            <p className="text-xs text-muted-foreground">笔记与原件的一体化归档</p>
+            <p className="text-xs text-muted-foreground">个人记录网站</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -120,7 +120,7 @@ export function HomePage({ onEnter }: HomePageProps) {
               笔记能写 · 文件能放 · 权限能收
             </div>
             <h2 className="text-4xl lg:text-5xl font-bold leading-tight">
-              文档与文件
+              个人记录
               <br />
               <span className="gradient-text">各归其位</span>
             </h2>
@@ -163,7 +163,7 @@ export function HomePage({ onEnter }: HomePageProps) {
                     className="w-full h-12 gradient-bg hover:opacity-90 transition-all shadow-lg shadow-indigo-500/30 text-base"
                   >
                     <ShieldCheck className="h-5 w-5 mr-2" />
-                    以管理员身份进入工作区
+                    进入个人记录网站
                     <ArrowRight className="h-4 w-4 ml-1" />
                   </Button>
                   <Button
@@ -185,7 +185,7 @@ export function HomePage({ onEnter }: HomePageProps) {
                     className="w-full h-12 gradient-bg hover:opacity-90 transition-all shadow-lg shadow-indigo-500/30 text-base"
                   >
                     <Eye className="h-5 w-5 mr-2" />
-                    以访客身份进入工作区
+                    以访客身份进入
                     <ArrowRight className="h-4 w-4 ml-1" />
                   </Button>
 
@@ -252,7 +252,8 @@ export function HomePage({ onEnter }: HomePageProps) {
                     </Button>
                   </div>
                   <p className="text-center text-[10px] text-muted-foreground">
-                    密码由管理员统一配置
+                    密码由管理员统一配置。首次使用的默认密码是 admin，登录后请到
+                    「管理后台 → 账号安全」改掉。
                   </p>
                 </div>
               ))}
@@ -305,7 +306,7 @@ export function HomePage({ onEnter }: HomePageProps) {
 
       {/* 底部 */}
       <footer className="relative z-10 text-center text-xs text-muted-foreground pb-8">
-        WorkHub · 文档与原件存储于服务端仓库目录
+        WorkHub 个人记录网站 · 文档与原件存储于服务端仓库目录
       </footer>
     </div>
   );

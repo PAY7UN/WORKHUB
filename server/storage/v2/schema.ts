@@ -1,26 +1,20 @@
 /**
  * v2 数据模型的唯一定义。
  *
- * 这个文件是「表长什么样」的唯一真相源：迁移器建库、运行时建表、
- * 空库启动补表，都走这里。改字段只改这一处，不会出现
- * 「迁移建的库」和「运行时建的库」结构不一样这种事。
+ * 这个文件是「表长什么样」的唯一真相源：运行时建表、空库启动补表，
+ * 都走这里。改字段只改这一处，不会出现「两条建库路径」结构不一样这种事。
  *
- * 模型与旧库的三处根本差别：
+ * 模型的三处根本设计：
  *
  * 1. **文档表叫 nodes，不叫 docs**。它不只装文档，也装文件夹——
- *    旧模型里两者塞在同一张表、用 type 列区分，本质是同一棵树，
- *    没必要拆成两张表再靠外键拼回去。
+ *    两者本是同一棵树，没必要拆成两张表再靠外键拼回去。
  *
  * 2. **正文不在库里**。库里只有索引（路径、哈希、大小），
  *    正文躺在 vault 的仓库目录里。库被拷走不等于内容被拷走，
  *    反过来内容也不会把库撑大。
  *
  * 3. **仓库是必填的**。nodes.repo_id NOT NULL：
- *    新模型里没有「未归档」这种状态，每篇文档都有明确的归属。
- *
- * 抓包会话、抓包记录、协议范本这三张表曾属于「工作台」，随该模块下线，
- * SCHEMA 里已不再声明。老库里若还留着它们，原样保留——这里只声明不删除，
- * 不会去碰用户已有的数据。
+ *    没有「未归档」这种状态，每篇文档都有明确的归属。
  */
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
@@ -62,6 +56,21 @@ CREATE TABLE IF NOT EXISTS repos (
   created_by    TEXT NOT NULL DEFAULT 'u-admin'
 );
 
+-- ---------------------------------------------------------------- 仓库事件
+-- 项目仓库自己的历史：建了、改了哪条规则、搬进搬出多少篇、什么时候没的。
+--
+-- 这张表不引用 repos(id)：仓库删掉以后，那条「项目没了、连带清掉多少东西」
+-- 仍要能被追问到，所以事件只留仓库 id 与名字快照，不跟着级联一起消失。
+CREATE TABLE IF NOT EXISTS repo_events (
+  id         TEXT PRIMARY KEY,
+  repo_id    TEXT NOT NULL,
+  repo_name  TEXT NOT NULL DEFAULT '',
+  action     TEXT NOT NULL CHECK (action IN ('created','updated','migrated','deleted')),
+  detail     TEXT NOT NULL DEFAULT '',
+  actor      TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+
 -- ---------------------------------------------------------------- 节点
 -- 文档与文件夹合在一张表：它们构成同一棵树，拆开只是把关系挪个地方存。
 --
@@ -79,7 +88,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   size          INTEGER,
   content_hash  TEXT,
   -- 节点形态：note = Markdown 笔记；file = 原件（zip/图片/PDF/代码…）
-  -- 老库补列时拿不到 DEFAULT 'note'，所以读侧一律按「空值即 note」处理
+  -- 读侧一律经 db.ts 的 kindOf() 兜底，空值按 note 处理
   kind          TEXT NOT NULL DEFAULT 'note',
   -- 原件的 MIME 与扩展名（kind='file' 时有值）
   mime          TEXT NOT NULL DEFAULT '',
@@ -151,7 +160,8 @@ CREATE TABLE IF NOT EXISTS users (
   role          TEXT NOT NULL CHECK (role IN ('admin','viewer')),
   avatar        TEXT NOT NULL,
   color         TEXT NOT NULL,
-  password      TEXT NOT NULL,
+  -- 密码只存哈希。库里从来没有、也不再补明文列：
+  -- 一份凭据只留一份副本，任何一处泄露都足以登录。
   password_hash TEXT NOT NULL DEFAULT ''
 );
 
@@ -254,6 +264,7 @@ CREATE TABLE IF NOT EXISTS access_audit (
 -- ---------------------------------------------------------------- 索引
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_repo ON nodes(repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_events_created ON repo_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_usage_created ON agent_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_access_requests_status ON access_requests(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_access_grants_doc ON access_grants(doc_id);
@@ -263,119 +274,12 @@ CREATE INDEX IF NOT EXISTS idx_attachments_sha ON attachments(sha256);
 `;
 
 /**
- * 从 SCHEMA 里解析出每张表应有的列。
- *
- * SCHEMA 是「表长什么样」的唯一真相源，补列也得照着它来，
- * 否则补列逻辑和建表逻辑会各说各话——那才是真正难查的故障。
- */
-function expectedColumns(): Array<{ table: string; columns: Array<{ name: string; type: string; notNull: boolean }> }> {
-  const out: Array<{ table: string; columns: Array<{ name: string; type: string; notNull: boolean }> }> = [];
-  // 只认普通的 CREATE TABLE：虚表（FTS）不能 ALTER，它的结构问题在上面单独处理
-  const re = /CREATE TABLE IF NOT EXISTS (\w+)\s*\(([\s\S]*?)\n\);/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(SCHEMA))) {
-    const [, table, body] = m;
-    const columns: Array<{ name: string; type: string; notNull: boolean }> = [];
-    for (const raw of body.split('\n')) {
-      const line = raw.trim().replace(/--.*$/, '').trim();
-      if (!line) continue;
-      // 表级约束（UNIQUE (...) / CHECK (...) / FOREIGN KEY ...）不是列，跳过
-      if (/^(UNIQUE|CHECK|PRIMARY|FOREIGN|CONSTRAINT)\b/i.test(line)) continue;
-      const col = /^(\w+)\s+([A-Za-z]+(?:\s*\([^)]*\))?)\s*(.*)$/.exec(line);
-      if (!col) continue;
-      const [, name, type, rest] = col;
-      if (!rest || /PRIMARY KEY/i.test(rest)) continue; // 主键列补不了，跳过
-      columns.push({ name, type: type.replace(/\s+/g, ''), notNull: /NOT NULL/i.test(rest) });
-    }
-    out.push({ table, columns });
-  }
-  return out;
-}
-
-/**
- * 给已存在的表补上 SCHEMA 里新增的列。
- *
- * CREATE TABLE IF NOT EXISTS 只管「表在不在」，管不了「列齐不齐」：
- * 老库建好之后再往 SCHEMA 里加字段，那个库永远补不上。
- * 后果不是启动报错，而是运行时一句 “no such column: xxx”——
- * 而且只在真正写那条记录时才炸，平时一切正常，看着像好好的。
- *
- * 所以每次开库都核对一遍：缺哪列补哪列。补列是幂等的，
- * 库已经是最新结构时什么也不做。
- */
-export function ensureColumns(db: V2Database): string[] {
-  const added: string[] = [];
-  for (const { table, columns } of expectedColumns()) {
-    const actual = new Set(
-      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
-        (c) => c.name,
-      ),
-    );
-    if (actual.size === 0) continue; // 表还不存在，交给 SCHEMA 建
-    for (const col of columns) {
-      if (actual.has(col.name)) continue;
-      // 补 NOT NULL 的列必须带默认值，否则 SQLite 不让加
-      const def =
-        col.notNull
-          ? col.type.startsWith('TEXT')
-            ? ` DEFAULT ''`
-            : col.type.startsWith('REAL')
-              ? ' DEFAULT 0'
-              : ' DEFAULT 0'
-          : '';
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col.name} ${col.type}${def}`);
-      added.push(`${table}.${col.name}`);
-    }
-  }
-  return added;
-}
-
-/**
- * 放宽 access_audit.action 的取值范围。
- *
- * CHECK 约束是写死在建表语句里的，而 CREATE TABLE IF NOT EXISTS 不会改已存在的表——
- * 于是新加的动作（比如「调整授权」）往老库里写会被 CHECK 挡下来。
- * 而写审计的代码是吞异常的：数据没进去，日志里只留一行 warn，
- * 表现就是「点了没反应，流水里也没有」，极难往数据库方向想。
- *
- * SQLite 不能直接改 CHECK，只能重建表：建新的、搬数据、删旧的、改名。
- * 老表的 CHECK 里已经含新值就什么都不做——重建是无意义的写放大。
- */
-function widenAccessAuditActions(db: V2Database): boolean {
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'access_audit'")
-    .get() as { sql?: string } | undefined;
-  const sql = row?.sql ?? '';
-  if (!sql) return false;
-  if (sql.includes("'adjust'")) return false; // 已经放开了
-
-  const rebuild = db.transaction(() => {
-    db.exec(`
-      CREATE TABLE access_audit_new (
-        id         TEXT PRIMARY KEY,
-        doc_id     TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-        action     TEXT NOT NULL CHECK (action IN ('request','approve','reject','open','download','revoke','adjust','share')),
-        actor_id   TEXT NOT NULL DEFAULT '',
-        actor_name TEXT NOT NULL DEFAULT '',
-        detail     TEXT NOT NULL DEFAULT '',
-        created_at INTEGER NOT NULL
-      );
-      INSERT INTO access_audit_new (id, doc_id, action, actor_id, actor_name, detail, created_at)
-        SELECT id, doc_id, action, actor_id, actor_name, detail, created_at FROM access_audit;
-      DROP TABLE access_audit;
-      ALTER TABLE access_audit_new RENAME TO access_audit;
-      CREATE INDEX IF NOT EXISTS idx_access_audit_doc ON access_audit(doc_id, created_at);
-    `);
-  });
-  rebuild();
-  return true;
-}
-
-/**
  * 打开（或创建）v2 库并建表。
  *
- * FTS 虚表要单独检查一次结构：CREATE TABLE IF NOT EXISTS 遇到已存在的表不会改结构，
- * 而虚表又不能 ALTER——所以列对不上就直接重建（里面的数据是索引，随时能重建）。
+ * SCHEMA 是表结构的唯一真相源：库要么是新建的（结构即 SCHEMA），
+ * 要么就是现役结构（由同一份 SCHEMA 建出来的）。
+ * 刻意不保留「给老库补列 / 重建约束」这类迁移逻辑——
+ * 结构对不上时，最该做的是重建库，而不是在旧结构上打补丁。
  */
 export function openV2Db(path: string = DB_V2_PATH): V2Database {
   mkdirSync(dirname(path), { recursive: true });
@@ -384,16 +288,95 @@ export function openV2Db(path: string = DB_V2_PATH): V2Database {
   db.pragma('foreign_keys = ON');
   db.pragma('wal_autocheckpoint = 256');
 
-  const ftsCols = db.prepare("select name from pragma_table_info('node_fts')").all() as Array<{
-    name: string;
-  }>;
-  if (ftsCols.length > 0 && !ftsCols.some((c) => c.name === 'repo_id')) {
-    db.exec('drop table if exists node_fts;');
-  }
-
   db.exec(SCHEMA);
-  ensureColumns(db);
-  // CHECK 约束不在 ensureColumns 的射程内：它管列，不管约束
-  widenAccessAuditActions(db);
+  assertWritableSchema(db);
   return db;
+}
+
+/**
+ * 从 SCHEMA 里解析出每张表应有的列。
+ *
+ * SCHEMA 是「表长什么样」的唯一真相源，核对也得照着它来，
+ * 否则核对逻辑和建表逻辑会各说各话——那才是真正难查的故障。
+ */
+function expectedColumns(): Map<string, Array<{ name: string; notNull: boolean; hasDefault: boolean }>> {
+  const out = new Map<string, Array<{ name: string; notNull: boolean; hasDefault: boolean }>>();
+  // 只认普通的 CREATE TABLE：虚表（FTS）的结构由 FTS5 自己管，另有影子表
+  const re = /CREATE TABLE IF NOT EXISTS (\w+)\s*\(([\s\S]*?)\n\);/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(SCHEMA))) {
+    const [, table, body] = m;
+    const columns: Array<{ name: string; notNull: boolean; hasDefault: boolean }> = [];
+    for (const rawLine of body.split('\n')) {
+      const line = rawLine.trim().replace(/--.*$/, '').trim();
+      if (!line) continue;
+      // 表级约束（UNIQUE (...) / CHECK (...) / FOREIGN KEY ...）不是列，跳过
+      if (/^(UNIQUE|CHECK|PRIMARY|FOREIGN|CONSTRAINT)\b/i.test(line)) continue;
+      const col = /^(\w+)\s+([A-Za-z]+(?:\s*\([^)]*\))?)\s*(.*)$/.exec(line);
+      if (!col) continue;
+      const [, name, , rest] = col;
+      if (!rest || /PRIMARY KEY/i.test(rest)) continue; // 主键列在 SQLite 里是 NOT NULL 的特例，不参与核对
+      columns.push({
+        name,
+        notNull: /NOT NULL/i.test(rest),
+        hasDefault: /\bDEFAULT\b/i.test(rest),
+      });
+    }
+    out.set(table, columns);
+  }
+  return out;
+}
+
+/**
+ * 核对库的结构能不能接住现役代码的写入。
+ *
+ * 库只有一种结构（SCHEMA），不是「哪个版本建出来的都能跑」。
+ * 但 SQLite 的 CREATE TABLE IF NOT EXISTS 不会改已存在的表——
+ * 旧版留下来的库会带着旧列继续开着。
+ *
+ * 为什么这值得单独查：症状是**写入时**才炸，
+ * 而且只炸第一处写入（「NOT NULL constraint failed: users.password」）。
+ * 开库时一切正常，登录一次才开始不对，而报错信息里没有半个字提到
+ * 「你的库是旧版」——排查方向会一路跑到密码校验上去，绕很远。
+ *
+ * 这里只判定、不修复：修复旧结构等于把刚删掉的兼容逻辑又写回来。
+ * 判定出来就明确告诉使用者：备份，然后重建。
+ *
+ * 判定标准是「会不会挡住写入」，而不是「长得像不像」：
+ *   - SCHEMA 里声明的列在库里缺了 → 写入会报「no such column」，要拦；
+ *   - 库里多了一列，且是 NOT NULL 又没有默认值 → 写入会被约束挡下，要拦；
+ *   - 库里多了一列，但可空或有默认值 → 不挡写入，放行（清掉它要重建表，
+ *     那正是我们要避免的那类迁移动作）。
+ */
+export function assertWritableSchema(db: V2Database): void {
+  const problems: string[] = [];
+  for (const [table, columns] of expectedColumns()) {
+    const actual = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+      notnull: number;
+      dflt_value: unknown;
+    }>;
+    if (actual.length === 0) continue; // 表还不存在，交给 SCHEMA 建
+
+    const actualNames = new Set(actual.map((c) => c.name));
+    for (const col of columns) {
+      if (!actualNames.has(col.name)) {
+        problems.push(`${table} 缺少列 ${col.name}`);
+      }
+    }
+    for (const col of actual) {
+      if (columns.some((c) => c.name === col.name)) continue;
+      if (col.notnull === 1 && col.dflt_value === null) {
+        problems.push(`${table} 多出一列 ${col.name}（NOT NULL 且没有默认值，写入会被挡住）`);
+      }
+    }
+  }
+  if (problems.length === 0) return;
+  throw new Error(
+    `数据库结构与当前版本不匹配，这个库不能直接用：\n` +
+      problems.map((p) => `  - ${p}`).join('\n') +
+      `\n\n这个库是旧版本留下的。当前版本不再兼容旧结构` +
+      `（不补列、不重建表），所以请先把 data 目录整个备份走，再删掉那个库文件重新启动——` +
+      `正文在 data/vault/ 里，删库不会删掉正文，但库里的索引、标签与授权需要重新建立。`,
+  );
 }

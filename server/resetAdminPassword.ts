@@ -89,9 +89,8 @@ function main(): void {
       fail('数据库中还没有 users 表', ['请先运行一次 npm run server 完成初始化。']);
     }
 
-    // 同时清空明文列：留着它等于同时维护两份凭据，任一处泄露都足以登录
     const info = db
-      .prepare("UPDATE users SET password_hash = ?, password = '' WHERE username = 'admin'")
+      .prepare("UPDATE users SET password_hash = ? WHERE username = 'admin'")
       .run(hashPassword(plain));
     if (info.changes === 0) {
       fail('未找到 username = admin 的账号', [

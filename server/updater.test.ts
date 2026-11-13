@@ -45,19 +45,21 @@ test('更新源：自定义源优先于 GitHub', () => {
   assert.match(forked.url, /someone\/FORK/);
 });
 
-test('更新源：旧变量名仍然生效', () => {
-  // 内网部署往往在改名前就配好了更新源，认不出旧名等于「升级功能忽然失灵」
+test('更新源：旧变量名不再生效', () => {
+  // 旧名不认：配了它等于没配。
+  // 认旧名的真正代价不是「升级失灵」，而是两套名长期并存——
+  // 改了新名却因为旧名还在而没生效，这比直接失灵更难查。
   const old = resolveUpdateSource({ MDHUB_UPDATE_MANIFEST: 'https://intranet/manifest.json' });
-  assert.equal(old.kind, 'manifest');
-  assert.equal(old.url, 'https://intranet/manifest.json');
+  assert.equal(old.kind, 'github');
 
   const oldDirect = resolveUpdateSource({ MDHUB_UPDATE_URL: 'https://intranet/pkg.zip' });
-  assert.equal(oldDirect.kind, 'url');
+  assert.equal(oldDirect.kind, 'github');
 
   const oldRepo = resolveUpdateSource({ MDHUB_UPDATE_REPO: 'someone/FORK' });
-  assert.match(oldRepo.url, /someone\/FORK/);
+  assert.doesNotMatch(oldRepo.url, /someone\/FORK/);
+});
 
-  // 新旧都在时以新名为准
+test('更新源：新旧同时配时只认新名', () => {
   const both = resolveUpdateSource({
     WORKHUB_UPDATE_MANIFEST: 'https://new/manifest.json',
     MDHUB_UPDATE_MANIFEST: 'https://old/manifest.json',

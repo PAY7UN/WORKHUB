@@ -5,7 +5,7 @@ import type {
   AccessGrant,
   AccessReason,
   AccessRequest,
-  AdminSection,
+  AdminPasswordState,
   DocNode,
   DocSearchHit,
   DocTree,
@@ -25,9 +25,9 @@ import {
   type AgentConfigView,
   type AgentStatus,
 } from '@/lib/api';
-import { SEED_DOCS, SEED_REPO, SEED_REPO_ID, SEED_USERS, seedDocsForRepo } from '../../shared/seed';
+import { SEED_USERS } from '../../shared/seed';
 import { log } from '@/lib/logger';
-import { readStore, removeStore, writeStore } from '@/lib/storage';
+import { readStore, writeStore } from '@/lib/storage';
 import { toast } from 'sonner';
 
 /**
@@ -73,6 +73,13 @@ interface AppContextValue {
   changeAdminPassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logoutAdmin: () => void;
   isAdmin: boolean;
+  /**
+   * 管理员密码的状态（服务端判定）。
+   *
+   * 'custom' = 已经改过了；其余两种表示还是初始值，界面据此提醒「该改密码了」。
+   * 改完服务端就不再报这件事，提醒随之消失。
+   */
+  adminPasswordState: AdminPasswordState;
   hasPermission: (perm: Permission) => boolean;
   /** 首次从服务端加载中 */
   bootstrapping: boolean;
@@ -150,6 +157,14 @@ interface AppContextValue {
   repos: Repo[];
   /** 各仓库的规模统计（文档数、附件数、占用） */
   repoStats: RepoStat[];
+  /**
+   * 仓库清单的加载状态。
+   *
+   * 分三态是因为「没连上服务端」和「服务端说一个仓库都没有」
+   * 在界面上是两回事：前者要提示去查服务，后者要提示去建仓库。
+   * 混成一句「还没有仓库」就会把人引到错的方向。
+   */
+  reposStatus: 'loading' | 'ready' | 'error';
   /** 拉取仓库清单 */
   refreshRepos: () => Promise<void>;
   /**
@@ -279,26 +294,9 @@ interface AppContextValue {
   listAccessAudit: (docId?: string) => Promise<AccessAuditEntry[]>;
 
   // 管理后台
-  /** 管理后台是否打开 */
-  adminConsoleOpen: boolean;
-  /** 当前所在的分区 */
-  adminSection: AdminSection;
-  /** 文档范围限定：从文档菜单进入时只看这一篇 */
-  adminDocFilter: { docId: string; docName: string } | null;
-  /** 要定位到的申请单（深链定位）；null 表示不定位 */
-  adminFocusRequestId: string | null;
-  /**
-   * 打开管理后台。
-   * section 省略时保持当前分区；doc 省略时取消文档范围限定；
-   * focusRequestId 传入时，访问授权分区会定位并高亮那一条申请。
-   */
-  openAdminConsole: (
-    section?: AdminSection,
-    doc?: { docId: string; docName: string },
-    focusRequestId?: string,
-  ) => void;
-  /** 关闭管理后台 */
-  closeAdminConsole: () => void;
+  // 后台的打开/关闭/分区状态不再由 Context 持有：
+  // 它现在是独立路由页（/admin/:section），分区与文档范围都在 URL 里，
+  // 入口一律用 navigate() 跳过去，刷新和转发链接都能落回同一处。
 
   // 文档分析 Agent
   agentConfig: AgentConfigView;
@@ -322,7 +320,13 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 /** 离线兜底缓存：仅在后端不可达时展示，后端恢复后立即以服务端为准 */
 const STORAGE_KEY_DOCS = 'workhub.docs';
-const STORAGE_KEY_IMPORTED = 'workhub.importedToServer';
+/**
+ * 上次停留的仓库。
+ *
+ * 刷新页面后要回到同一个仓库：工作区切了范围、切了目录，
+ * 刷新一下却落在别处（多半是个空仓库），看着就像资料没了。
+ */
+const STORAGE_KEY_REPO = 'workhub.currentRepo';
 
 const DEFAULT_AGENT_CONFIG: AgentConfigView = {
   baseUrl: 'https://api.minimaxi.com/v1',
@@ -339,11 +343,16 @@ const DEFAULT_AGENT_CONFIG: AgentConfigView = {
 function loadCachedDocs(): DocNode[] {
   try {
     const raw = readStore(localStorage, STORAGE_KEY_DOCS);
-    if (!raw) return seedDocsForRepo(SEED_REPO_ID);
+    if (!raw) return [];
     const parsed = JSON.parse(raw) as DocNode[];
-    return Array.isArray(parsed) && parsed.length ? parsed : seedDocsForRepo(SEED_REPO_ID);
+    // 本地没有缓存就返回空列表，别拿示例文档顶替。
+    //
+    // 早先这里会塞一份示例（团队周报/使用指南…），刷新后首屏先闪出一堆
+    // 根本不存在的示例内容，等真数据到了再被替换掉——用户只会以为
+    // 「自己的资料被冲成示例了」。宁可空着（加载中），也别放假数据。
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
-    return seedDocsForRepo(SEED_REPO_ID);
+    return [];
   }
 }
 
@@ -353,6 +362,8 @@ const VIEWER_USER = SEED_USERS.find((u) => u.role === 'viewer')!;
 export function AppProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState<string>(() => getToken());
   const [isAdmin, setIsAdmin] = useState<boolean>(() => Boolean(getToken()));
+  /** 管理员密码状态（服务端判定，见 adminPasswordState） */
+  const [adminPasswordState, setAdminPasswordState] = useState<AdminPasswordState>('custom');
   const [docs, setDocs] = useState<DocNode[]>(() => loadCachedDocs());
   const [bootstrapping, setBootstrapping] = useState(true);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({
@@ -368,23 +379,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /* ---- 仓库（项目） ---- */
   const [repos, setRepos] = useState<Repo[]>([]);
   const [repoStats, setRepoStats] = useState<RepoStat[]>([]);
+  const [reposStatus, setReposStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   /**
    * 当前所在仓库。
    *
    * 存 id 而不是对象：仓库设置（名称、允许格式）随时可能变，
    * 存 id 才能保证界面上显示的永远是最新的一份。
+   *
+   * 初值取自本地存储：刷新页面后要落回同一个仓库，
+   * 而不是每次都被弹回「最早创建的那个」——那个多半是空的。
    */
-  const [currentRepoId, setCurrentRepoId] = useState<string>('');
+  const [currentRepoId, setCurrentRepoIdState] = useState<string>(
+    () => readStore(localStorage, STORAGE_KEY_REPO) ?? '',
+  );
+
+  /**
+   * 切换所在仓库，并记住它。
+   *
+   * 记住的理由很实际：用户在某个仓库里翻资料，刷新一下就被弹到别处，
+   * 文件树一空，看着就像资料没了——其实只是范围换了。
+   */
+  const setCurrentRepoId = useCallback((id: string) => {
+    setCurrentRepoIdState(id);
+    try {
+      writeStore(localStorage, STORAGE_KEY_REPO, id);
+    } catch {
+      /* 隐私模式忽略：记不住也只是下次回到默认仓库 */
+    }
+  }, []);
 
   const refreshRepos = useCallback(async () => {
     try {
       const { repos: list, stats } = await api.listRepos();
       setRepos(list);
       setRepoStats(stats);
-    } catch {
-      // 拉不到仓库不该拖垮整个应用，退回示例仓库撑住界面
-      setRepos([SEED_REPO]);
-      setRepoStats([]);
+      setReposStatus('ready');
+    } catch (e) {
+      // 拉不到仓库时保留已有列表，不要换成示例仓库：
+      // 换上别的 id 会把「当前仓库」指到一个不存在的地方，
+      // 文件树于是空着——用户只会觉得资料没了，其实只是没连上服务端。
+      log.warn('仓库列表读取失败，沿用已有列表', e);
+      setReposStatus('error');
     }
   }, []);
 
@@ -393,14 +428,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [repos, currentRepoId],
   );
 
-  // 仓库就位后落到第一个：没有选中仓库就没有「当前范围」，
-  // 文件树与检索范围都无从谈起，所以必须始终有一个当前仓库。
+  /**
+   * 仓库就位后确定「当前所在仓库」。
+   *
+   * 顺序有讲究：
+   * 1. 记住的那个还在 → 就用它（用户刚才就在这儿，别把人挪走）；
+   * 2. 记住的没了（仓库被删）→ 选文档最多的那个，
+   *    至少第一眼看到的是有内容的仓库，而不是对着空目录发呆；
+   * 3. 全都空 → 第一个。
+   *
+   * 早先是无条件取 repos[0]，也就是「最早创建的那个」，
+   * 而最早创建的那个往往是个还没用的空项目——于是刷新后第一眼永远是空的。
+   *
+   * 加载态也在这里结束：只有「当前落在哪个仓库」定下来了，
+   * 首屏才算读完。提前结束的话，中间会闪一帧「所有仓库混在一起」的内容。
+   */
   useEffect(() => {
-    if (repos.length === 0) return;
-    if (!repos.some((r) => r.id === currentRepoId)) {
-      setCurrentRepoId(repos[0].id);
+    if (reposStatus === 'loading') return;
+    if (repos.length > 0 && !repos.some((r) => r.id === currentRepoId)) {
+      const docCount = (id: string) => repoStats.find((s) => s.repoId === id)?.docCount ?? 0;
+      const best = repos.reduce((a, b) => (docCount(b.id) > docCount(a.id) ? b : a), repos[0]);
+      setCurrentRepoId(best.id);
     }
-  }, [repos, currentRepoId]);
+    setBootstrapping(false);
+  }, [repos, repoStats, reposStatus, currentRepoId, setCurrentRepoId]);
 
   /**
    * 外部内容强制同步信号（当前为「应用到文档」的唯一通道）。
@@ -460,53 +511,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  /**
-   * 升级迁移：把浏览器 localStorage 中的历史文档导入数据库。
-   *
-   * importDocs 是覆盖式写入（DELETE FROM docs 后全量重插），所以必须先确认服务端
-   * 确实一条文档都没有。否则会用本地快照回滚服务端的删除与移动结果；快照里不含
-   * 加密文档的正文，回写时会把这些文档一并抹掉。
-   */
-  const migrateLocalDocsOnce = useCallback(async () => {
-    let done = false;
-    try {
-      // 清理旧版本遗留在浏览器中的明文 API Key（新旧两个键名都清）
-      removeStore(localStorage, 'workhub.agentSettings');
-      done = readStore(localStorage, STORAGE_KEY_IMPORTED) === '1';
-    } catch {
-      return;
-    }
-    if (done) return;
-
-    // 服务端已有数据：一律不导入，只补标记
-    let serverDocs: DocNode[] = [];
-    try {
-      ({ docs: serverDocs } = await api.listDocs());
-    } catch {
-      return; // 服务端不可达时不做任何写入
-    }
-    if (serverDocs.length > 0) {
-      writeStore(localStorage, STORAGE_KEY_IMPORTED, '1');
-      return;
-    }
-
-    const cached = loadCachedDocs();
-    // 缓存仍是初始种子时无需导入
-    const isSeed =
-      cached.length === SEED_DOCS.length && cached.every((d, i) => d.id === SEED_DOCS[i]?.id);
-    if (isSeed) {
-      writeStore(localStorage, STORAGE_KEY_IMPORTED, '1');
-      return;
-    }
-    try {
-      await api.importDocs(cached);
-      writeStore(localStorage, STORAGE_KEY_IMPORTED, '1');
-      await refreshDocs({ persist: true });
-      log.info('已将本地历史文档导入服务端数据库');
-    } catch {
-      /* 导入失败不阻塞使用 */
-    }
-  }, [refreshDocs]);
 
   // 令牌被服务端判定失效时同步复位身份状态，避免界面仍显示为管理员
   useEffect(() => {
@@ -527,8 +531,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       let verified: boolean | null = null;
       if (getToken()) {
         try {
-          const { user, tokenInvalid } = await api.me();
+          const { user, tokenInvalid, passwordState } = await api.me();
           verified = user.role === 'admin';
+          // 刷新页面后仍要提醒改密码：提醒的依据是「密码还是初始值」这一事实，
+          // 不是「刚刚登录过」。只在登录那一刻回报的话，刷新一次提醒就没了。
+          if (!cancelled) setAdminPasswordState(verified ? passwordState ?? 'custom' : 'custom');
           if (tokenInvalid) {
             // 令牌已被服务端作废（过期 / 密钥轮换 / 改密后指纹不符），必须清掉本地残留。
             // 不清的话，下次刷新又会因「本地有令牌」乐观地显示成管理员，
@@ -546,15 +553,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!cancelled && verified !== null) setIsAdmin(verified);
       const admin = verified ?? isAdmin;
 
+      // 文档与仓库是首屏的两块内容：先把它们拿到，界面才能开始显示。
       try {
         await refreshDocs({ persist: admin });
-        await refreshRepos();
+      } catch {
+        // 拉不到文档就沿用本地缓存继续
+        log.warn('文档清单读取失败，沿用本地缓存');
+      }
+      // 注意：这里不结束加载态。「当前落在哪个仓库」由上面那个 effect 决定，
+      // 等它定下来再结束，否则会先闪一帧「所有仓库混在一起」的内容。
+      await refreshRepos();
+
+      // Agent 的可用性与配置跟首屏内容无关，慢了就慢了，不该挡住界面。
+      try {
         const status = await api.agentStatus();
         if (!cancelled) setAgentStatus(status);
         if (admin) {
           const cfg = await api.getAgentConfig();
           if (!cancelled) setAgentConfig(cfg.config);
-          await migrateLocalDocsOnce();
         }
       } catch {
         // 后端不可达：保留本地缓存，标记 Agent 不可用
@@ -562,8 +578,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           log.warn('服务端不可达，当前展示本地缓存数据');
           setAgentStatus((s) => ({ ...s, canUse: false, reason: 'NO_API_KEY', model: '' }));
         }
-      } finally {
-        if (!cancelled) setBootstrapping(false);
       }
     })();
     return () => {
@@ -661,8 +675,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const loginAdmin = useCallback(
     async (password: string): Promise<LoginResult> => {
       let newToken: string;
+      let passwordState: AdminPasswordState = 'custom';
       try {
-        ({ token: newToken } = await api.login(password));
+        const res = await api.login(password);
+        newToken = res.token;
+        passwordState = res.passwordState ?? 'custom';
       } catch (e) {
         // 失败原因必须原样透出。笼统报「密码错误」会把限流 429、后端未启动、
         // 网络不可达一并伪装成密码打错，用户只会反复重输，反而把真正的限流
@@ -675,25 +692,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setToken(newToken);
       setTokenState(newToken);
       setIsAdmin(true);
+      // 密码还是初始值就要说出口：这是唯一一次「刚用初始密码登进来」的时刻，
+      // 提醒放在这里最该被看见（详见 adminPasswordState 的说明）。
+      setAdminPasswordState(passwordState);
       try {
         await refreshDocs({ persist: true });
         const [{ config }, status] = await Promise.all([api.getAgentConfig(), api.agentStatus()]);
         setAgentConfig(config);
         setAgentStatus(status);
-        await migrateLocalDocsOnce();
       } catch {
         void refreshDocs().catch(() => undefined);
       }
       return { ok: true, message: '' };
     },
-    [refreshDocs, migrateLocalDocsOnce],
+    [refreshDocs],
   );
 
   const logoutAdmin = useCallback(() => {
     setToken('');
     setTokenState('');
     setIsAdmin(false);
-    void refreshDocs().catch(() => setDocs(seedDocsForRepo(SEED_REPO_ID)));
+    setAdminPasswordState('custom');
+    // 拉不到新清单就保留手上这份，不要拿示例文档替换——
+    // 退出登录瞬间把界面换成一份假资料，比不刷新更让人困惑。
+    void refreshDocs().catch(() => undefined);
   }, [refreshDocs]);
 
   /**
@@ -707,6 +729,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const { token: newToken } = await api.changePassword(currentPassword, newPassword);
       setToken(newToken);
       setTokenState(newToken);
+      // 密码已经换掉了：提醒到此为止，不必再问服务端一次。
+      setAdminPasswordState('custom');
     },
     [],
   );
@@ -787,51 +811,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
    */
   const [guest, setGuest] = useState<GuestIdentity | null>(null);
   const [pendingAccessCount, setPendingAccessCount] = useState(0);
-
-  /**
-   * 管理后台的打开状态与当前分区。
-   *
-   * 放在全局而不是各个面板自己持有，是因为入口散在好几个地方：
-   * 侧边栏的管理入口、文档菜单的「访问授权」、AI 助手的齿轮。
-   * 它们要的是同一扇门——开着同一扇门、落在同一个分区，
-   * 而不是各开各的弹窗、互相盖住。
-   */
-  const [adminConsoleOpen, setAdminConsoleOpen] = useState(false);
-  const [adminSection, setAdminSection] = useState<AdminSection>('overview');
-  /** 从某篇文档进入时的范围限定；不设则看全部文档 */
-  const [adminDocFilter, setAdminDocFilter] = useState<{ docId: string; docName: string } | null>(
-    null,
-  );
-  /**
-   * 要定位到的申请单（来自定位深链）。
-   *
-   * 审批人点开带 ?access= 的链接，落到本站就该直接看到那一条申请，
-   * 而不是自己在一堆申请里找「哪条是我刚点的」。
-   */
-  const [adminFocusRequestId, setAdminFocusRequestId] = useState<string | null>(null);
-
-  /**
-   * 打开管理后台。
-   *
-   * 不传 section 就保持当前分区——从概览点「去处理」跳到具体分区，
-   * 而从文档菜单再进同一分区时，不该把管理员弹回概览。
-   */
-  const openAdminConsole = useCallback(
-    (
-      section?: AdminSection,
-      doc?: { docId: string; docName: string },
-      focusRequestId?: string,
-    ) => {
-      if (section) setAdminSection(section);
-      // 没给文档范围就清掉上一次的限定：否则会莫名其妙地只看上一篇文档
-      setAdminDocFilter(doc ?? null);
-      setAdminFocusRequestId(focusRequestId ?? null);
-      setAdminConsoleOpen(true);
-    },
-    [],
-  );
-
-  const closeAdminConsole = useCallback(() => setAdminConsoleOpen(false), []);
 
   // 拉一次访客身份（服务端会顺手发 cookie），以及管理员侧的待处理申请数
   useEffect(() => {
@@ -1271,6 +1250,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       changeAdminPassword,
       logoutAdmin,
       isAdmin,
+      adminPasswordState,
       hasPermission,
       bootstrapping,
       docs,
@@ -1293,6 +1273,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       allTags,
       repos,
       repoStats,
+      reposStatus,
       refreshRepos,
       currentRepoId,
       setCurrentRepoId,
@@ -1322,12 +1303,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       bulkGrantAccess,
       listKnownGuests,
       listAccessAudit,
-      adminConsoleOpen,
-      adminSection,
-      adminDocFilter,
-      adminFocusRequestId,
-      openAdminConsole,
-      closeAdminConsole,
       agentConfig,
       canUseAgent,
       agentReason: agentStatus.reason,
@@ -1341,6 +1316,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       changeAdminPassword,
       logoutAdmin,
       isAdmin,
+      adminPasswordState,
       hasPermission,
       bootstrapping,
       docs,
@@ -1363,8 +1339,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       allTags,
       repos,
       repoStats,
+      reposStatus,
       refreshRepos,
       currentRepoId,
+      setCurrentRepoId,
       currentRepo,
       searchQuery,
       searchHits,
@@ -1391,12 +1369,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       bulkGrantAccess,
       listKnownGuests,
       listAccessAudit,
-      adminConsoleOpen,
-      adminSection,
-      adminDocFilter,
-      adminFocusRequestId,
-      openAdminConsole,
-      closeAdminConsole,
       agentConfig,
       canUseAgent,
       agentStatus.reason,

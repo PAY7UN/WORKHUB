@@ -13,7 +13,7 @@ const { envValue } = require('./env.cjs');
 
 const MANAGE_TOKEN_HEADER = 'x-workhub-token';
 
-/** 取令牌：环境变量优先于配置文件（旧名 MDHUB_MANAGE_TOKEN 也认） */
+/** 取令牌：环境变量优先于配置文件 */
 function manageToken(config) {
   return envValue(process.env, 'MANAGE_TOKEN') || String(config?.token || '').trim();
 }

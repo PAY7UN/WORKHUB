@@ -31,6 +31,14 @@ import { useEffect, useRef } from 'react';
 
 interface DocTreeViewProps {
   tree: DocTree[];
+  /**
+   * 数据还在读取。
+   *
+   * 有了它才能把「还没到」和「没有」分开：读取中显示「正在读取…」，
+   * 而不是一句「暂无文档」——后者会被当成资料没了，
+   * 用户接着去建仓库、建文件夹，越弄越乱。
+   */
+  loading?: boolean;
   selectedId: string | null;
   expanded: Record<string, boolean>;
   onToggleExpand: (id: string) => void;
@@ -75,7 +83,7 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
   return null;
 }
 
-export function DocTreeView({ tree, ...rest }: DocTreeViewProps) {
+export function DocTreeView({ tree, loading = false, ...rest }: DocTreeViewProps) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   /**
@@ -99,16 +107,29 @@ export function DocTreeView({ tree, ...rest }: DocTreeViewProps) {
   }, [rest.selectedId, tree]);
 
   return (
-    <div ref={rootRef} className="space-y-0.5">
-      {tree.map((node) => (
-        <TreeNode key={node.id} node={node} depth={0} {...rest} />
-      ))}
-      {tree.length === 0 && (
-        <div className="text-center text-sm text-muted-foreground py-12 px-4">
-          <Folder className="h-10 w-10 mx-auto mb-2 opacity-30" />
-          <div>暂无文档</div>
-          <div className="text-xs mt-1">点击下方按钮创建</div>
+    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-0.5">
+      {loading ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-4 py-8 text-center text-sm text-muted-foreground">
+          <div>正在读取…</div>
+          <div className="mt-1 text-[11px] leading-relaxed opacity-80">文件树马上就到</div>
         </div>
+      ) : (
+        <>
+          {tree.map((node) => (
+            <TreeNode key={node.id} node={node} depth={0} {...rest} />
+          ))}
+          {/* 空状态在侧栏里垂直居中：先前它贴着顶上写，下面留着一大片空白，
+              看着像内容没加载完 */}
+          {tree.length === 0 && (
+            <div className="flex flex-1 flex-col items-center justify-center px-4 py-8 text-center text-sm text-muted-foreground">
+              <Folder className="mb-2 h-10 w-10 opacity-25" />
+              <div>暂无文档</div>
+              <div className="mt-1 text-[11px] leading-relaxed opacity-80">
+                用上方「新建」或上传添加内容
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

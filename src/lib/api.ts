@@ -7,6 +7,7 @@ import type {
   AccessCapability,
   AccessGrant,
   AccessRequest,
+  AdminPasswordState,
   AgentSettings,
   Attachment,
   DocNode,
@@ -15,6 +16,7 @@ import type {
   PolishTask,
   RagScope,
   Repo,
+  RepoEvent,
   RepoStat,
   User,
 } from '../../shared/types';
@@ -98,8 +100,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     // 业务性的 401：保留原始错因，不动登录态
     let msg = '请求失败（HTTP 401）';
     try {
-      const data = (await res.json()) as { error?: string; message?: string };
-      if (data?.error || data?.message) msg = data.error || data.message || msg;
+      const data = (await res.json()) as { error?: string };
+      if (data?.error) msg = data.error;
     } catch {
       /* 忽略解析失败 */
     }
@@ -109,11 +111,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     let msg = `请求失败（HTTP ${res.status}）`;
     let data: Record<string, unknown> | undefined;
     try {
-      const parsed = (await res.json()) as { error?: string; message?: string };
+      const parsed = (await res.json()) as { error?: string };
       data = parsed as Record<string, unknown>;
-      // 各端点历史上用过 error 与 message 两种字段名，缺失具体原因会退化成
+      // 服务端的错误体统一是 { error }。缺失具体原因会退化成
       // 无信息量的「HTTP 400」，用户无从判断该拆分文档还是检查权限
-      if (parsed?.error || parsed?.message) msg = parsed.error || parsed.message || msg;
+      if (parsed?.error) msg = parsed.error;
     } catch {
       // 响应体不是 JSON —— 说明请求压根没命中后端路由，Express 回了 HTML 404 页。
       // 这种情况通常是后端进程还跑着旧版本代码（前端已更新、后端没重启），
@@ -135,8 +137,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
  */
 async function errorMessageOf(res: Response, fallback: string): Promise<string> {
   try {
-    const data = (await res.json()) as { error?: string; message?: string };
-    return data?.error || data?.message || fallback;
+    const data = (await res.json()) as { error?: string };
+    return data?.error || fallback;
   } catch {
     return fallback;
   }
@@ -174,13 +176,24 @@ interface AgentUsageEvent {
 
 export const api = {
   // 认证
+  /**
+   * 管理员登录。
+   *
+   * passwordState 由服务端判定：密码是否还是初始值（admin 或 .env 里定的那个）。
+   * 前端只负责据此提醒，是否要改是用户的事，但「还没改」这件事必须说出口。
+   */
   login: (password: string) =>
-    request<{ token: string; user: User }>('/auth/login', {
+    request<{ token: string; user: User; passwordState?: AdminPasswordState }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ password }),
     }),
   me: () =>
-    request<{ user: User; isAnon: boolean; tokenInvalid?: boolean }>('/auth/me'),
+    request<{
+      user: User;
+      isAnon: boolean;
+      tokenInvalid?: boolean;
+      passwordState?: AdminPasswordState;
+    }>('/auth/me'),
 
   /**
    * 访客身份。
@@ -324,9 +337,6 @@ export const api = {
    */
   searchDocs: (q: string) =>
     request<{ query: string; hits: DocSearchHit[] }>(`/docs/search?q=${encodeURIComponent(q)}`),
-
-  importDocs: (docs: DocNode[]) =>
-    request<{ imported: number }>('/docs/import', { method: 'POST', body: JSON.stringify({ docs }) }),
 
   /**
    * 文档加密。
@@ -522,6 +532,14 @@ export const api = {
   /** 把文档归入仓库（跨仓库迁移，整棵子树一起搬） */
   assignDocsToRepo: (repoId: string, docIds: string[]) =>
     request<{ moved: number }>(`/repos/${repoId}/docs`, { method: 'POST', body: JSON.stringify({ docIds }) }),
+
+  /**
+   * 仓库历史（项目仓库的流水）。
+   *
+   * 只有管理员能读：仓库名与规则本就不算秘密，但「这个项目什么时候没的、
+   * 当时带走了多少东西」这种账没必要让访客也看见。
+   */
+  listRepoEvents: () => request<{ events: RepoEvent[] }>('/repos/events'),
 
   /* 附件 */
 
@@ -748,8 +766,8 @@ async function openEventStream(
     // 解析失败时保留状态码文案即可——例如 404 多半由 Express 直接返回，无 JSON 体。
     let msg = `${actionLabel}失败（HTTP ${res.status}）`;
     try {
-      const data = (await res.json()) as { error?: string; message?: string };
-      if (data?.error || data?.message) msg = `${actionLabel}失败：${data.error || data.message}`;
+      const data = (await res.json()) as { error?: string };
+      if (data?.error) msg = `${actionLabel}失败：${data.error}`;
     } catch {
       /* 无可解析的响应体，沿用状态码文案 */
     }
@@ -778,8 +796,8 @@ async function openEventStream(
       }
     } else if (event === 'error') {
       try {
-        const { message } = JSON.parse(raw) as { message: string };
-        throw new ApiError(message || `${actionLabel}失败`, 500);
+        const { error } = JSON.parse(raw) as { error: string };
+        throw new ApiError(error || `${actionLabel}失败`, 500);
       } catch (e) {
         if (e instanceof ApiError) throw e;
       }

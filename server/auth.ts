@@ -27,8 +27,6 @@ export interface AuthPayload {
    * 没有它的话，改密码只影响「下次登录」，此前签发的令牌仍可用满 12 小时——
    * 密码泄露的典型场景恰恰是令牌也在别人手里，改密码却踢不掉他。
    * 校验时需查库比对，故只在 admin 令牌上携带，访客令牌免去这次查询。
-   *
-   * 旧令牌不含此字段，此时跳过比对（渐进兼容：它们会在 TTL 内自然过期）。
    */
   pwd?: string;
   iat: number;
@@ -91,11 +89,13 @@ export function readToken(req: Request): string | null {
  * 令牌携带的密码指纹是否仍与库中一致。
  *
  * 查不到用户时返回 false：宁可让令牌失效，也不要在没有依据时放行。
+ * 指纹必须严格相等：库里若没有哈希，说明这条记录本身就不完整，
+ * 放行等于绕过「改密后旧令牌失效」这条语义。
  */
 function isFingerprintCurrent(payload: AuthPayload): boolean {
   const user = findUserById(payload.sub);
   if (!user) return false;
-  return user.password_hash === '' || passwordFingerprint(user.password_hash) === payload.pwd;
+  return passwordFingerprint(user.password_hash) === payload.pwd;
 }
 
 /** 无需登录：解析令牌，失败则回落为访客身份 */
@@ -104,7 +104,7 @@ export function attachUser(req: Request, _res: Response, next: NextFunction): vo
   const payload = token ? verifyToken(token) : null;
   // 指纹不符 = 密码已被改过，这个令牌不该再有效。降级为访客并标记失效，
   // 由 requireAdmin 转成 401，前端随之清理登录态并提示重新登录。
-  const stale = Boolean(payload && !payload.anon && payload.pwd !== undefined && !isFingerprintCurrent(payload));
+  const stale = Boolean(payload && !payload.anon && !isFingerprintCurrent(payload));
   if (payload && !stale) {
     req.user = {
       id: payload.sub,

@@ -1,7 +1,7 @@
 /**
  * 初始种子数据：数据库首次初始化时写入，前端「重置数据」也复用同一份。
  */
-import type { DocNode, Repo, User } from './types.ts';
+import type { DocNode, User } from './types.ts';
 
 export const SEED_USERS: User[] = [
   { id: 'u-admin', username: 'admin', displayName: '系统管理员', role: 'admin', avatar: 'A', color: '#6366f1' },
@@ -9,28 +9,6 @@ export const SEED_USERS: User[] = [
 ];
 
 const now = Date.now();
-
-/**
- * 离线兜底用的示例仓库。
- *
- * 前端在拿不到服务端数据时用 SEED_DOCS 撑起界面，
- * 而示例文档必须有归属——v2 起不存在「没有仓库」这种文档。
- */
-export const SEED_REPO_ID = 'r-demo';
-
-export const SEED_REPO: Repo = {
-  id: SEED_REPO_ID,
-  slug: 'demo',
-  name: '示例',
-  description: '示例文档的归属仓库',
-  color: '#6366f1',
-  allowedExts: [],
-  maxFileSize: 26214400,
-  ragEnabled: true,
-  createdAt: now,
-  updatedAt: now,
-  createdBy: 'u-admin',
-};
 
 /**
  * 示例文档。
@@ -79,7 +57,7 @@ export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
 
 ## 一、身份说明
 
-- **管理员**：进入工作区后点击左侧「管理员」按钮。初始密码默认是 \`admin\`（仅首次建库时写入），也可以用环境变量 \`WORKHUB_ADMIN_PASSWORD\` 在部署时指定。登录后可在侧边栏头像旁的钥匙图标修改；已忘记密码可用 \`npm run admin:password -- <新密码>\` 离线重置
+- **管理员**：进入工作区后点击左侧「管理员」按钮。初始密码默认是 \`admin\`（仅首次建库时写入，固定值不是随机值），也可以用环境变量 \`WORKHUB_ADMIN_PASSWORD\` 在部署时指定。登录后请到「管理后台 → 账号安全」修改（密码还是初始值时，界面会一直提醒）；已忘记密码可用 \`npm run admin:password -- <新密码>\` 离线重置
 - **访客**：只读身份，可浏览与下载全部文档；加密文档的正文需提交访问申请、由管理员批准后方可查看
 
 ## 二、权限说明
@@ -270,12 +248,3 @@ export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
     tags: ['周报'],
   },
 ];
-
-/**
- * 把示例文档挂到指定仓库下。
- *
- * 文档必须落在某个仓库里，所以拿到示例文档时得同时给出归属。
- */
-export function seedDocsForRepo(repoId: string): DocNode[] {
-  return SEED_DOCS.map((d) => ({ ...d, repoId }));
-}

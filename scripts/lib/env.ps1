@@ -12,7 +12,7 @@
   - 值可以带引号（'...' 或 "..."），带引号时 # 是值的一部分；
   - 不带引号时，行尾 # 之后是注释（# 前面有没有空格都算注释）；
   - 同一个键写多次，后写的赢；
-  - 前缀新名 WORKHUB_ 优先，旧名 MDHUB_ 兜底；
+  - 前缀只有 WORKHUB_ 一个，旧名 MDHUB_ 不再兜底；
   - 文件带 UTF-8 BOM 不影响解析——BOM 后面的第一个键照样读得到。
     （Node 自带的 --env-file 恰恰认不出 BOM，会静默丢掉第一个变量，
      所以 PowerShell 这边必须自己处理，不然同一个 .env 服务端读到 A、
@@ -28,8 +28,9 @@
     tray/env.cjs（托盘）
 #>
 
-# 前缀：新名在前。旧名是过渡期的兜底，不是推荐的写法。
-$script:WorkHubEnvPrefixes = @('WORKHUB_', 'MDHUB_')
+# 前缀：只有新名。旧名不再兜底——两套名长期并存，改了新的却因为旧的还在而没生效，
+# 比直接不生效更难查。
+$script:WorkHubEnvPrefixes = @('WORKHUB_')
 
 <#
 .SYNOPSIS
@@ -58,8 +59,7 @@ function Read-EnvFileText {
   按 Node --env-file 的规则把 .env 文本解析成键值表。
 
 .DESCRIPTION
-  返回 hashtable：键原样保留（WORKHUB_PORT / MDHUB_PORT 都认），
-  前缀的取舍交给 Get-EnvValue。
+  返回 hashtable：键原样保留，前缀的取舍交给 Get-EnvValue。
 #>
 function ConvertFrom-EnvFileText {
     [CmdletBinding()]
@@ -98,11 +98,11 @@ function Get-EnvFileTable {
 
 <#
 .SYNOPSIS
-  按后缀取变量：新名优先，旧名兜底，空串不算数。
+  按后缀取变量：只认新名，空串不算数。
 
 .DESCRIPTION
   与 server/env.ts 的 envValueFrom 同规则：
-  WORKHUB_SECRET 取不到才看 MDHUB_SECRET；配成空串等于没配
+  只看 WORKHUB_SECRET；配成空串等于没配
   （空串一路传下去会盖住默认值，是很常见的手滑）。
 #>
 function Get-EnvValue {

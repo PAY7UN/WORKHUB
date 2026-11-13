@@ -5,6 +5,7 @@ import {
   Upload,
   Home,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import { DocTreeView } from '../DocTreeView';
 import { FolderView } from '../FolderView';
@@ -50,13 +51,14 @@ export function DocsWorkspace() {
     visibleDocs,
     encryptDoc,
     decryptDoc,
-    openAdminConsole,
     currentRepoId,
     currentRepo,
     repos,
     refreshRepos,
     refreshDocs,
+    bootstrapping,
   } = useApp();
+  const navigate = useNavigate();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -416,8 +418,8 @@ export function DocsWorkspace() {
     onRequestUpload: openUpload,
     onRequestEncrypt: handleRequestEncrypt,
     onRequestAccessGrant: (n: DocNode) => {
-      // 从文档菜单进入管理后台的「访问授权」分区，并限定在这一篇文档
-      openAdminConsole('access', { docId: n.id, docName: n.name });
+      // 从文档菜单进入管理后台的「访问权限」分区，并限定在这一篇文档
+      navigate(`/admin/access?doc=${encodeURIComponent(n.id)}`);
     },
     onRequestRepo: (n: DocNode) => setRepoTarget(n),
   };
@@ -428,53 +430,67 @@ export function DocsWorkspace() {
   return (
     <div className="h-full flex overflow-hidden">
       {/* 侧边栏：文件树 */}
-      <aside className="w-64 shrink-0 flex flex-col border-r border-indigo-100/40 dark:border-indigo-900/40 glass">
-        {/* 操作按钮：三档操作同排分段，静止态统一，强调只在 hover 出现 */}
+      <aside className="flex w-52 shrink-0 flex-col border-r border-border/60 glass xl:w-64">
+        {/*
+         * 操作区：三个按钮等分。
+         *
+         * 宽度一样（flex-1 + basis-0，不看内容），谁也不多占地方。
+         * 外观仍分主次：「新建」是渐变实心，另外两个是描边图标——
+         * 常用的一眼能认出来，但三块挨在一起时边界是对齐的。
+         *
+         * 用 flex-1 basis-0 而不是 grid-cols-3：没有上传权限时只剩两个按钮，
+         * 这时自动各占一半，grid 会空出一格。
+         */}
         {canCreate && (
-          <div className="border-b border-indigo-100/40 px-3 pb-3 pt-3 dark:border-indigo-900/40">
-            <div className="flex overflow-hidden rounded-lg border border-slate-200/70 bg-white/60 transition-colors dark:border-slate-700/50 dark:bg-white/5">
+          <div className="border-b border-border/60 px-3 py-2.5">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => openCreate(currentFolderId, 'file')}
                 title="新建文档"
-                className="flex h-8 flex-1 cursor-pointer items-center justify-center gap-1 text-[11px] font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 focus-visible:outline-none dark:text-slate-200 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-200"
+                className="gradient-bg flex h-8 min-w-0 flex-1 basis-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-transparent text-[11px] font-medium text-white shadow-sm shadow-indigo-500/20 transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-1 focus-visible:outline-none"
               >
                 <FilePlus className="h-3.5 w-3.5 shrink-0" />
-                <span className="whitespace-nowrap">新建文档</span>
+                <span className="whitespace-nowrap">新建</span>
               </button>
               <button
                 type="button"
                 onClick={() => openCreate(currentFolderId, 'folder')}
                 title="新建文件夹"
-                className="flex h-8 flex-1 cursor-pointer items-center justify-center gap-1 border-l border-slate-200/70 text-[11px] font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 focus-visible:outline-none dark:border-slate-700/50 dark:text-slate-200 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-200"
+                aria-label="新建文件夹"
+                className="flex h-8 min-w-0 flex-1 basis-0 cursor-pointer items-center justify-center rounded-lg border border-border/70 bg-white/70 text-slate-600 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:outline-none dark:bg-white/5 dark:text-slate-300 dark:hover:bg-indigo-500/15"
               >
-                <FolderPlus className="h-3.5 w-3.5 shrink-0" />
-                <span className="whitespace-nowrap">新建文件夹</span>
+                <FolderPlus className="h-3.5 w-3.5" />
               </button>
               {canUpload && (
                 <button
                   type="button"
                   onClick={() => openUpload(currentFolderId)}
                   title="上传文件：.md 变成文档，其它格式（含压缩包）原样存为原件"
-                  className="flex h-8 flex-1 cursor-pointer items-center justify-center gap-1 border-l border-slate-200/70 text-[11px] font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 focus-visible:outline-none dark:border-slate-700/50 dark:text-slate-200 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-200"
+                  aria-label="上传文件"
+                  className="flex h-8 min-w-0 flex-1 basis-0 cursor-pointer items-center justify-center rounded-lg border border-border/70 bg-white/70 text-slate-600 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:outline-none dark:bg-white/5 dark:text-slate-300 dark:hover:bg-indigo-500/15"
                 >
-                  <Upload className="h-3.5 w-3.5 shrink-0" />
-                  <span className="whitespace-nowrap">上传文件</span>
+                  <Upload className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
           </div>
         )}
 
+        {/*
+         * 工具区入口已经挪到顶部的区域切换条（文档 / 工具 / 管理），
+         * 左侧这一列是文件树与仓库的地盘，不再塞站点级导航进去——
+         * 同一件事有两个入口，人会 unsure 该点哪个。
+         */}
         {/* 仓库切换：按项目圈定当前看得见的资料 */}
         <RepoSwitcher />
 
         {/* 文件树 */}
-        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-2">
-          <div className="flex items-center justify-between mb-2 px-2">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <div className="scrollbar-thin flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
+          <div className="mb-1.5 flex items-center justify-between px-2">
+            {/* 仓库名不在这里重复：上面刚选中的那一行已经标着了 */}
+            <span className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
               文件树
-              {currentRepo ? ` · ${currentRepo.name}` : ''}
             </span>
             <button
               onClick={() => setCurrentFolderId(null)}
@@ -484,7 +500,8 @@ export function DocsWorkspace() {
               <Home className="h-3 w-3" /> 根
             </button>
           </div>
-          <DocTreeView tree={tree} {...treeProps} />
+          {/* 读取中只报状态，别把「还没到」说成「没有」 */}
+          <DocTreeView tree={tree} loading={bootstrapping} {...treeProps} />
         </div>
       </aside>
 
@@ -495,6 +512,7 @@ export function DocsWorkspace() {
         ) : (
           <FolderView
             folderId={visibleFolderId}
+            loading={bootstrapping}
             onOpen={handleOpenDoc}
             onRequestRename={(n) => {
               setRenameTarget(n);

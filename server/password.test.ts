@@ -13,8 +13,8 @@ import {
   validateNewPassword,
 } from '../shared/passwordPolicy.ts';
 import {
+  classifyAdminPassword,
   hashPassword,
-  needsUpgrade,
   passwordFingerprint,
   verifyPassword,
 } from './password.ts';
@@ -61,20 +61,10 @@ test('损坏的哈希格式一律判否，不抛异常', () => {
   }
 });
 
-test('无哈希时回退到存量明文比对', () => {
-  assert.equal(verifyPassword('legacy123', '', 'legacy123'), true);
-  assert.equal(verifyPassword('legacy123', '', 'legacy999'), false);
-  assert.equal(verifyPassword('legacy123', '', ''), false);
-});
-
-test('长度不等的明文不会让 timingSafeEqual 抛异常', () => {
-  assert.equal(verifyPassword('ab', '', 'abc'), false);
-});
-
-test('needsUpgrade 只在有明文且无哈希时为真', () => {
-  assert.equal(needsUpgrade('', 'plain'), true);
-  assert.equal(needsUpgrade('scrypt$aa$bb', 'plain'), false);
-  assert.equal(needsUpgrade('', ''), false);
+test('没有哈希一律判否，不存在明文兜底', () => {
+  // 库里只有哈希这一份副本。空哈希就是「这个账号没有可用密码」，
+  // 而不是「拿明文去比一比」——后者等于把明文密码又变回了可用的凭据。
+  assert.equal(verifyPassword('anything', ''), false);
 });
 
 test('指纹区分改密前后，且不泄露哈希主体', () => {
@@ -83,4 +73,25 @@ test('指纹区分改密前后，且不泄露哈希主体', () => {
   assert.notEqual(passwordFingerprint(before), passwordFingerprint(after));
   assert.equal(passwordFingerprint(before).length, 16);
   assert.equal(passwordFingerprint(''), '');
+});
+
+test('密码还是默认的 admin 时判为初始值', () => {
+  assert.equal(classifyAdminPassword(hashPassword('admin'), 'admin'), 'initial-default');
+});
+
+test('密码还是部署时配置的那个值时判为初始值', () => {
+  assert.equal(classifyAdminPassword(hashPassword('deploy-pwd'), 'deploy-pwd'), 'initial-configured');
+});
+
+test('配置值本身就是 admin 时按默认算，不重复报一次', () => {
+  assert.equal(classifyAdminPassword(hashPassword('admin'), 'admin'), 'initial-default');
+});
+
+test('密码被改过之后判为 custom（不再提醒）', () => {
+  assert.equal(classifyAdminPassword(hashPassword('brand-new-pwd'), 'admin'), 'custom');
+  assert.equal(classifyAdminPassword(hashPassword('brand-new-pwd'), 'deploy-pwd'), 'custom');
+});
+
+test('没有密码记录时判为 custom，不误报', () => {
+  assert.equal(classifyAdminPassword('', 'admin'), 'custom');
 });

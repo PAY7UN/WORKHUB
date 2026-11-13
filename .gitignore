@@ -64,6 +64,10 @@ tray/tray.config.json
 # 托盘工具的打包产物（安装包、免安装目录、组装出来的 payload）
 /release/
 
+# electron-builder 的 buildResources 目录（electron-builder.yml 里 buildResources: build）
+# 里面的品牌位图和 installer.nsh 都是 afterPack 钩子现场生成的，不是源码
+/build/
+
 # 编辑器
 .vscode/*
 !.vscode/extensions.json

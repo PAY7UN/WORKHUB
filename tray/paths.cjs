@@ -31,10 +31,10 @@ function dataFiles(dataDir) {
   };
 }
 
-/** 服务端认的数据库相关变量名（新旧名都算） */
-const DB_ENV_NAMES = ['WORKHUB_DB_V2', 'MDHUB_DB_V2', 'WORKHUB_DB', 'MDHUB_DB'];
+/** 服务端认的数据库相关变量名（与服务端 server/paths.ts 一致，只认新名） */
+const DB_ENV_NAMES = ['WORKHUB_DB_V2', 'WORKHUB_DB'];
 /** 服务端认的 vault 相关变量名 */
-const VAULT_ENV_NAMES = ['WORKHUB_VAULT_DIR', 'MDHUB_VAULT_DIR'];
+const VAULT_ENV_NAMES = ['WORKHUB_VAULT_DIR'];
 
 /**
  * 子进程要拿到的、跟工作目录有关的环境变量。

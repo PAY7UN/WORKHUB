@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { db, moveNodesToRepo } from './db.ts';
 import { logger } from './logger.ts';
 import { removeRepoDir, slugify } from './storage/v2/vault.ts';
-import type { Repo, RepoStat } from '../shared/types.ts';
+import type { Repo, RepoEvent, RepoEventAction, RepoStat } from '../shared/types.ts';
 
 /* ------------------------------ 行映射 ------------------------------ */
 
@@ -86,6 +86,60 @@ export function findRepoByName(name: string): Repo | undefined {
 
 /* ------------------------------ 增删改 ------------------------------ */
 
+/**
+ * 记一条仓库事件。
+ *
+ * 仓库的历史不是从行上反推出来的（更新会覆盖旧值，删除会连行一起没），
+ * 而是当场记下来的——事后要回答「这个项目什么时候没的、当时带走了多少东西」，
+ * 只看当前状态是答不出来的。
+ *
+ * 事件表不引用 repos(id)：仓库删了以后，那条记录仍要留得住。
+ */
+export function logRepoEvent(
+  repoId: string,
+  repoName: string,
+  action: RepoEventAction,
+  detail: string,
+  actor = '',
+): void {
+  try {
+    db.prepare(
+      `INSERT INTO repo_events (id, repo_id, repo_name, action, detail, actor, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(`re-${randomUUID().slice(0, 8)}`, repoId, repoName, action, detail, actor, Date.now());
+  } catch (e) {
+    // 记历史失败不该挡住正事：仓库该建还是建，该改还是改。
+    logger.warn('仓库事件写入失败', (e as Error).message);
+  }
+}
+
+/** 仓库历史（新的在前） */
+export function listRepoEvents(limit = 200): RepoEvent[] {
+  const rows = db
+    .prepare(
+      `SELECT id, repo_id, repo_name, action, detail, actor, created_at
+         FROM repo_events ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(Math.max(1, Math.min(limit, 1000))) as Array<{
+    id: string;
+    repo_id: string;
+    repo_name: string;
+    action: RepoEventAction;
+    detail: string;
+    actor: string;
+    created_at: number;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    repoId: r.repo_id,
+    repoName: r.repo_name,
+    action: r.action,
+    detail: r.detail,
+    actor: r.actor,
+    createdAt: r.created_at,
+  }));
+}
+
 export interface CreateRepoInput {
   name: string;
   description?: string;
@@ -128,6 +182,13 @@ export function createRepo(input: CreateRepoInput): Repo {
     updatedAt: repo.updatedAt,
     createdBy: repo.createdBy,
   });
+  logRepoEvent(
+    repo.id,
+    repo.name,
+    'created',
+    repo.description ? `新建项目仓库：${repo.description}` : '新建项目仓库',
+    input.createdBy,
+  );
   return repo;
 }
 
@@ -140,7 +201,7 @@ export interface UpdateRepoInput {
   ragEnabled?: boolean;
 }
 
-export function updateRepo(id: string, patch: UpdateRepoInput): Repo | undefined {
+export function updateRepo(id: string, patch: UpdateRepoInput, actor = ''): Repo | undefined {
   const current = getRepo(id);
   if (!current) return undefined;
 
@@ -173,6 +234,30 @@ export function updateRepo(id: string, patch: UpdateRepoInput): Repo | undefined
     updatedAt: next.updatedAt,
   });
 
+  /**
+   * 只记规则上的变化，不记「点了一次保存什么都没改」。
+   *
+   * 事件流水是给人追进度的，不是给日志用的：
+   * 满屏「保存成功」只会把真变化淹掉。
+   */
+  const changes: string[] = [];
+  if (next.name !== current.name) changes.push(`改名：${current.name} → ${next.name}`);
+  if (next.description !== current.description) changes.push('改了说明');
+  if (JSON.stringify(next.allowedExts) !== JSON.stringify(current.allowedExts)) {
+    const fmt = (list: string[]) => (list.length ? list.join(' ') : '不限格式');
+    changes.push(`允许格式：${fmt(current.allowedExts)} → ${fmt(next.allowedExts)}`);
+  }
+  if (next.maxFileSize !== current.maxFileSize) {
+    const mb = (bytes: number) => Math.round(bytes / 1024 / 1024);
+    changes.push(`单文件上限：${mb(current.maxFileSize)}MB → ${mb(next.maxFileSize)}MB`);
+  }
+  if (next.ragEnabled !== current.ragEnabled) {
+    changes.push(next.ragEnabled ? '开始参与 AI 检索' : '不再参与 AI 检索');
+  }
+  if (changes.length) {
+    logRepoEvent(id, next.name, 'updated', changes.join('；'), actor);
+  }
+
   return next;
 }
 
@@ -191,7 +276,7 @@ export interface DeleteRepoResult {
   attachments: number;
 }
 
-export function deleteRepo(id: string): DeleteRepoResult {
+export function deleteRepo(id: string, actor = ''): DeleteRepoResult {
   const repo = getRepo(id);
   if (!repo) return { removed: false, docs: 0, attachments: 0 };
 
@@ -215,6 +300,16 @@ export function deleteRepo(id: string): DeleteRepoResult {
   db.prepare('delete from node_fts where repo_id = ?').run(id);
   db.prepare('delete from attachment_fts where repo_id = ?').run(id);
   db.prepare('DELETE FROM repos WHERE id = ?').run(id);
+
+  // 仓库没了，但它「什么时候没的、连带清掉了多少东西」仍要留得住：
+  // 这条记录不进仓库的行，只进事件表。
+  logRepoEvent(
+    id,
+    repo.name,
+    'deleted',
+    `删除仓库，连带清掉 ${docCount} 篇文档、${attachmentCount} 个附件`,
+    actor,
+  );
   return { removed: true, docs: docCount, attachments: attachmentCount };
 }
 
@@ -237,8 +332,27 @@ export function listDocIdsInRepo(repoId: string): string[] {
  * 正文文件也跟着搬：仓库换了，目录名就换了，
  * 文件不挪位置的话，索引说它在，磁盘上却读不出来。
  */
-export function moveDocsToRepo(docIds: string[], targetRepoId: string): number {
-  return moveNodesToRepo(docIds, targetRepoId);
+export function moveDocsToRepo(docIds: string[], targetRepoId: string, actor = ''): number {
+  const target = getRepo(targetRepoId);
+  if (!target || docIds.length === 0) return 0;
+
+  // 搬之前先数清各源仓库带走多少：搬完就查不出来了。
+  const placeholders = docIds.map(() => '?').join(',');
+  const sources = db
+    .prepare(`SELECT repo_id AS repoId, COUNT(*) AS n FROM nodes WHERE id IN (${placeholders}) GROUP BY repo_id`)
+    .all(...docIds) as Array<{ repoId: string; n: number }>;
+
+  const moved = moveNodesToRepo(docIds, targetRepoId);
+
+  for (const s of sources) {
+    if (s.repoId === targetRepoId) continue;
+    const from = getRepo(s.repoId);
+    if (!from) continue;
+    logRepoEvent(from.id, from.name, 'migrated', `迁出 ${s.n} 篇到「${target.name}」`, actor);
+  }
+  logRepoEvent(target.id, target.name, 'migrated', `迁入 ${moved} 篇文档`, actor);
+
+  return moved;
 }
 
 /* ------------------------------ 统计 ------------------------------ */

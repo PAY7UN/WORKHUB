@@ -378,7 +378,7 @@ function resolvePort() {
     // 解析规则跟 Node 的 --env-file 一致（引号、行尾注释、BOM 都要认），
     // 见 server/envFile.ts。写错一个字符，端口就找不到了。
     const parsed = parseEnvFile(readFileSync(join(ROOT, '.env'), 'utf8'));
-    const port = Number(parsed.WORKHUB_PORT || parsed.MDHUB_PORT || '');
+    const port = Number(parsed.WORKHUB_PORT || '');
     if (Number.isFinite(port) && port > 0) return port;
   } catch {
     // 没有 .env

@@ -7,6 +7,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { extname, join } from 'node:path';
 import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type {
@@ -39,6 +40,7 @@ import { runAgent } from './agent/runtime.ts';
 import { DEFAULT_AGENT_ROLE_ID, findAgentRole } from './agent/roles.ts';
 import { purgeStashed, stashFile, sweepStashed } from './storage/v2/vault.ts';
 import {
+  adminPasswordState,
   bulkApproveAccessRequests,
   bulkInsertAccessGrants,
   clearDocAccess,
@@ -54,7 +56,6 @@ import {
   findActiveGrant,
   findLatestRequest,
   findPendingRequest,
-  findImportProblems,
   findUserById,
   findUserByUsername,
   getAccessGrant,
@@ -77,13 +78,11 @@ import {
   listAllAccessGrants,
   listAllDocs,
   listKnownGuests,
-  normalizeImportDocs,
   parseCapabilities,
   readDocCipher,
   readNodeBytes,
   readNodeRawBytes,
   renameGuestSession,
-  replaceAllDocs,
   revokeAccessGrant,
   rowToUser,
   saveAgentConfig,
@@ -91,7 +90,6 @@ import {
   updateAccessGrant,
   updateDocRow,
   updateUserPassword,
-  upgradeLegacyPassword,
 } from './db.ts';
 import { notifyAccessRevoked, subscribeAccessWatch } from './accessWatch.ts';
 import { db, DB_PATH, MASTER_KEY } from './db.ts';
@@ -119,6 +117,7 @@ import {
   deleteRepo,
   findRepoByName,
   getRepo,
+  listRepoEvents,
   listRepos,
   moveDocsToRepo,
   repoStats,
@@ -128,8 +127,6 @@ import { ensureGuestSession } from './guests.ts';
 import { createManageRouter } from './manage.ts';
 import { checkForUpdate, startUpgrade } from './updater.ts';
 import {
-  hashPassword,
-  needsUpgrade,
   passwordFingerprint,
   validateNewPassword,
   verifyPassword,
@@ -215,7 +212,7 @@ function openSse(res: express.Response): {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     },
     fail: (message: string) => {
-      res.write(`event: error\ndata: ${JSON.stringify({ message })}\n\n`);
+      res.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
       res.end();
     },
   };
@@ -291,22 +288,19 @@ app.post('/api/auth/login', (req, res) => {
 
   const password = String(req.body?.password ?? '');
   const user = findUserByUsername('admin');
-  if (!user || !verifyPassword(password, user.password_hash, user.password)) {
+  if (!user || !verifyPassword(password, user.password_hash)) {
     // 失败一律计数，不因「账号不存在」而免记——否则那条分支就成了免计数的探针
     noteLoginFailure(key);
     res.status(401).json({ error: '密码错误' });
     return;
   }
   clearLoginFailures(key);
-  // 存量库首次登录成功后顺手升级为哈希，无需用户操作也不打断本次登录
-  if (needsUpgrade(user.password_hash, user.password)) {
-    upgradeLegacyPassword(user.id, password);
-    user.password_hash = hashPassword(password);
-    user.password = '';
-  }
   res.json({
     token: signToken(rowToUser(user), false, passwordFingerprint(user.password_hash)),
     user: rowToUser(user),
+    // 密码还是初始值（admin 或 .env 里定的那个）时明确告诉前端，
+    // 由它提醒一次「该改了」——服务端只说事实，要不要提醒、怎么提醒是界面的事。
+    passwordState: adminPasswordState(),
   });
 });
 
@@ -366,6 +360,9 @@ app.get('/api/auth/me', (req, res) => {
     // 否则客户端只看到 role=viewer，无法区分「本来就没登录」与「登录被作废」，
     // 于是继续用本地残留的令牌自称管理员，界面与实际权限长期不一致。
     tokenInvalid: Boolean(req.tokenInvalid),
+    // 刷新页面后仍要提醒改密码：这条提醒的依据是「密码还是初始值」这一事实，
+    // 不是「刚刚登录过」。只靠登录那一刻回报的话，刷新一次提醒就没了。
+    passwordState: req.user?.role === 'admin' ? adminPasswordState() : 'custom',
   });
 });
 
@@ -412,7 +409,7 @@ app.post('/api/auth/change-password', requireAdmin, (req, res) => {
     res.status(404).json({ error: '账号不存在' });
     return;
   }
-  if (!verifyPassword(currentPassword, user.password_hash, user.password)) {
+  if (!verifyPassword(currentPassword, user.password_hash)) {
     // 用 403 而不是 401：前端把 401 一律当成「令牌已作废」，
     // 会清掉本地令牌并把人踢回访客（见 src/lib/api.ts 的 401 分支）。
     // 当前密码输错属于「凭证不对」，不是「未登录」——与文档解锁的口径一致。
@@ -835,48 +832,6 @@ app.delete('/api/docs/:id', requireAdmin, (req, res) => {
   purgeStashed(stashed, dirs);
 });
 
-/* ---- 覆盖式导入浏览器 localStorage 中的历史文档（仅管理员，一次性迁移用） */
-app.post('/api/docs/import', requireAdmin, (req, res) => {
-  const raw = req.body?.docs;
-  if (!Array.isArray(raw) || raw.length === 0) {
-    res.status(400).json({ error: 'docs 必须是非空数组' });
-    return;
-  }
-
-  // 先看载荷，再动手。
-  //
-  // 覆盖式导入是「全量替换」：中途出岔子的代价是整个资料库没了——
-  // 库里空了，盘上的内容也找不回来。载荷不合格就原样退回，一个字节都不碰。
-  const problems = findImportProblems(raw);
-  if (problems.length) {
-    res.status(400).json({
-      error: `导入载荷有 ${problems.length} 处不合格，未改动任何数据`,
-      problems,
-    });
-    return;
-  }
-
-  try {
-    const { docs, defaulted } = normalizeImportDocs(raw);
-    const imported = replaceAllDocs(docs);
-
-    // 兜底补齐的地方要说出来：迁移完能查到「谁写的」「什么时候写的」，
-    // 比默默替人填上强。
-    const notes: string[] = [];
-    if (defaulted.timestamps) notes.push(`${defaulted.timestamps} 篇缺时间戳，已按当前时间补齐`);
-    if (defaulted.authors) notes.push(`${defaulted.authors} 篇缺作者，已记为导入人`);
-    if (defaulted.repos) notes.push(`${defaulted.repos} 篇指向了不存在的仓库，已落到默认仓库`);
-
-    logger.info('已覆盖式导入历史文档', `${imported} 篇`);
-    res.json({ imported, defaulted, notes });
-  } catch (err) {
-    // 走到这里说明中途出了岔子：事务已经回滚，旧目录已经挪回来了。
-    // 一定要说清楚「库还在」——不然排查的人会以为资料被清空了。
-    logger.error('导入失败，已回滚，资料库保持原样', err);
-    res.status(500).json({ error: '导入失败，已回滚，资料库保持原样' });
-  }
-});
-
 /* ------------------------------ 仓库 ------------------------------ */
 
 /**
@@ -887,6 +842,16 @@ app.post('/api/docs/import', requireAdmin, (req, res) => {
  */
 app.get('/api/repos', (_req, res) => {
   res.json({ repos: listRepos(), stats: repoStats() });
+});
+
+/**
+ * 仓库历史（项目仓库的流水）。
+ *
+ * 只给管理员：仓库名与规则不算秘密，但「这个项目什么时候没的、
+ * 当时带走了多少东西」这种账没必要让访客也看见。
+ */
+app.get('/api/repos/events', requireAdmin, (_req, res) => {
+  res.json({ events: listRepoEvents() });
 });
 
 app.post('/api/repos', requireAdmin, (req, res) => {
@@ -937,7 +902,7 @@ app.patch('/api/repos/:id', requireAdmin, (req, res) => {
   }
   if (typeof body.maxFileSize === 'number') patch.maxFileSize = body.maxFileSize;
   if (typeof body.ragEnabled === 'boolean') patch.ragEnabled = body.ragEnabled;
-  res.json({ repo: updateRepo(id, patch) });
+  res.json({ repo: updateRepo(id, patch, nowUserId(req)) });
 });
 
 /**
@@ -952,7 +917,7 @@ app.delete('/api/repos/:id', requireAdmin, (req, res) => {
     return;
   }
   try {
-    res.json(deleteRepo(id));
+    res.json(deleteRepo(id, nowUserId(req)));
   } catch (e) {
     // 目录没删掉就等于没删成功：仓库行留着，用户能看见、还能再试一次。
     // 把原因说清楚，比报个 500 然后留下满地孤儿文件强。
@@ -977,7 +942,7 @@ app.post('/api/repos/:id/docs', requireAdmin, (req, res) => {
     res.status(400).json({ error: '请至少选择一篇文档' });
     return;
   }
-  res.json({ moved: moveDocsToRepo(docIds, id) });
+  res.json({ moved: moveDocsToRepo(docIds, id, nowUserId(req)) });
 });
 
 /* ------------------------------ 附件 ------------------------------ */
@@ -1940,7 +1905,7 @@ app.post('/api/agent/chat', async (req, res) => {
 app.post('/api/agent/polish', requireAdmin, async (req, res) => {
   const cfg = getAgentConfig();
   if (!cfg.apiKey.trim()) {
-    return res.status(400).json({ message: '尚未配置 API Key，请先在 Agent 设置中配置' });
+    return res.status(400).json({ error: '尚未配置 API Key，请先在 Agent 设置中配置' });
   }
 
   const content = typeof req.body?.content === 'string' ? req.body.content : '';
@@ -1949,19 +1914,19 @@ app.post('/api/agent/polish', requireAdmin, async (req, res) => {
   const docName = typeof req.body?.docName === 'string' ? req.body.docName : '未命名文档';
 
   const trimmed = content.trim();
-  if (!trimmed) return res.status(400).json({ message: '文章内容为空，无需润色' });
+  if (!trimmed) return res.status(400).json({ error: '文章内容为空，无需润色' });
   if (content.length > MAX_POLISH_CHARS) {
     return res.status(400).json({
-      message: `文章长度为 ${content.length} 字符，超过润色上限 ${MAX_POLISH_CHARS} 字符，请拆分后再试`,
+      error: `文章长度为 ${content.length} 字符，超过润色上限 ${MAX_POLISH_CHARS} 字符，请拆分后再试`,
     });
   }
   // 文件夹没有正文，润色无意义；提前拒绝可省下一次模型调用
-  if (req.body?.type === 'folder') return res.status(400).json({ message: '文件夹没有正文，无法润色' });
+  if (req.body?.type === 'folder') return res.status(400).json({ error: '文件夹没有正文，无法润色' });
   // 加密文档不参与 Agent 处理：即使内容由客户端传入，也不让模型接触它的正文
   if (docId) {
     const target = getDoc(docId);
     if (target?.encrypted) {
-      return res.status(403).json({ message: '加密文档不参与 Agent 处理：其正文不应进入模型' });
+      return res.status(403).json({ error: '加密文档不参与 Agent 处理：其正文不应进入模型' });
     }
   }
 
@@ -1971,7 +1936,7 @@ app.post('/api/agent/polish', requireAdmin, async (req, res) => {
   const running = countRunningPolishTasks();
   if (running >= MAX_RUNNING_POLISH_TASKS) {
     return res.status(429).json({
-      message:
+      error:
         `已有 ${running} 个润色任务正在生成，最多同时支持 ${MAX_RUNNING_POLISH_TASKS} 个。` +
         '请等现有任务完成，或在 Agent 面板取消部分任务后再提交。',
     });
@@ -1990,7 +1955,7 @@ app.get('/api/agent/polish-tasks', requireAdmin, (_req, res) => {
 /** 订阅任务进度。任务已完成时立即补发终态，无需前端记住增量 */
 app.get('/api/agent/polish-tasks/:id/stream', requireAdmin, (req, res) => {
   if (!subscribePolishTask(req, res, String(req.params.id))) {
-    res.status(404).json({ message: '任务不存在或已过期' });
+    res.status(404).json({ error: '任务不存在或已过期' });
   }
 });
 
@@ -2007,7 +1972,7 @@ app.delete('/api/agent/polish-tasks/:id', requireAdmin, (req, res) => {
   const result = removePolishTasks([String(req.params.id)], { cancelRunning: true });
   if (result.cancelled.length) return res.json({ ok: true, removed: 1, cancelled: true });
   if (result.removed.length) return res.json({ ok: true, removed: 1 });
-  res.status(404).json({ message: '任务不存在或已过期' });
+  res.status(404).json({ error: '任务不存在或已过期' });
 });
 
 /**
@@ -2033,12 +1998,23 @@ app.post('/api/agent/polish-tasks/clear-finished', requireAdmin, (_req, res) => 
  * 放在所有 API 路由之后注册：Express 按注册顺序匹配，
  * 这样 `/api/xxx` 永远先落到 API 上，不会被静态中间件截走。
  *
- * 前端不用 history 路由（只有查询参数），所以不需要 SPA 兜底路由：
- * 访问根路径时静态中间件的 index 选项会直接命中 index.html。
+ * 前端用 BrowserRouter（真实路径如 /tools、/admin/overview），刷新与深链
+ * 由下面的 SPA 兜底接住：静态文件没命中、路径又带不出文件扩展名的 GET
+ * 一律回 index.html，由前端路由决定渲染什么。两个排除缺一不可——
+ * 放过 /api/ 是为了接口打错路径时仍返回 Express 原生的 404（前端 api.ts
+ * 对非 JSON 响应有专门文案，拿到 HTML 反而能说出「重启后端」这句有用的话）；
+ * 放过带扩展名的路径是为了让静态中间件处理 404，而不是把 favicon 请求
+ * 也回一整页 HTML。
  */
 const DIST_DIR = fileURLToPath(new URL('../dist', import.meta.url));
 if (existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR));
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (req.path.startsWith('/api/')) return next();
+    if (extname(req.path)) return next();
+    res.sendFile(join(DIST_DIR, 'index.html'));
+  });
   logger.info(`前端静态资源: ${displayPath(DIST_DIR)}`);
 } else {
   logger.warn('未找到 dist/，本次只提供 API（前端请跑 npm run dev，或先执行 npm run build）');
@@ -2150,7 +2126,7 @@ function listenForPort(): void {
     logger.info(`模型: ${cfg.model} @ ${cfg.baseUrl}，API Key ${cfg.hasApiKey ? '已配置' : '未配置'}`);
     // 密码相关的两个入口都指到启动日志里：登录后才能改密，忘了密码反而进不去，
     // 所以离线重置这条退路必须让人在第一时间看见，而不是等到真忘了再去翻文档
-    logger.info('修改管理员密码: 登录后点侧边栏头像旁的钥匙图标');
+    logger.info('修改管理员密码: 管理员可在「管理后台 → 账号安全」里改');
     logger.info('已忘记密码: npm run admin:password -- <新密码>');
     logger.info(
       `密钥来源: ${SECRET_ORIGIN === 'local' ? '本地自动生成（存在数据库旁边）' : IS_PRODUCTION ? '生产环境变量' : '.env / 系统环境变量'}`,

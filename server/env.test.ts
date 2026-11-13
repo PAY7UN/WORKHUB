@@ -1,16 +1,8 @@
 /**
- * 环境变量读取：单测锁住「新名优先、旧名兜底」这条规则。
+ * 环境变量读取：单测锁住「只认 WORKHUB_ 前缀」这条规则。
  *
- * 这条规则是这次改名的全部安全网。变量名从 MDHUB_ 换成 WORKHUB_ 是
- * 对的方向（产品名早就是 WorkHub 了），但这些变量不是随手配的开关，
- * 而是运行时契约：
- *
- * - SECRET：改名会让已加密的文档永久无法解密（主密钥由它派生）。
- * - DB_V2 / VAULT_DIR：改名会让既有部署找不到库、找不到正文。
- * - PORT：改名会让托盘与服务端指向不同的端口。
- *
- * 所以旧名必须继续能用，而且新名优先——两个都配时以新名为准，
- * 这样「照着新文档改」和「忘了改」两种情况都得到正确结果。
+ * 旧名（MDHUB_）不再兜底：留着兜底等于让两套配置长期并存，
+ * 而「配了旧名却以为生效了」的排查成本，远高于一次性改名。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,17 +12,19 @@ test('新名生效', () => {
   assert.equal(envValueFrom({ WORKHUB_SECRET: 'x' }, 'SECRET'), 'x');
 });
 
-test('旧名仍然生效', () => {
-  assert.equal(envValueFrom({ MDHUB_SECRET: 'x' }, 'SECRET'), 'x');
+test('旧名不再生效', () => {
+  // 旧名不认：配了它等于没配。
+  // 这比「旧名悄悄生效」好——后者会让人以为改了生效了，其实一直在用默认值。
+  assert.equal(envValueFrom({ MDHUB_SECRET: 'x' }, 'SECRET'), '');
 });
 
-test('两个都配时以新名为准', () => {
+test('新旧同时配时只认新名', () => {
   assert.equal(envValueFrom({ WORKHUB_SECRET: 'new', MDHUB_SECRET: 'old' }, 'SECRET'), 'new');
 });
 
-test('空串按「没配」处理，空串挡不住旧名', () => {
+test('空串按「没配」处理', () => {
   // 空串一路传下去会盖住默认值，是很常见的手滑
-  assert.equal(envValueFrom({ WORKHUB_SECRET: '', MDHUB_SECRET: 'old' }, 'SECRET'), 'old');
+  assert.equal(envValueFrom({ WORKHUB_SECRET: '' }, 'SECRET'), '');
   assert.equal(envValueFrom({ WORKHUB_SECRET: '   ' }, 'SECRET'), '');
 });
 
@@ -67,10 +61,10 @@ test('envFlag：值为 1 才算开', () => {
     process.env.WORKHUB_SEED_DEMO = 'true';
     assert.equal(envFlag('SEED_DEMO'), false);
 
-    // 旧名同样认
+    // 旧名不认：MDHUB_SEED_DEMO=1 不该打开开关
     delete process.env.WORKHUB_SEED_DEMO;
     process.env.MDHUB_SEED_DEMO = '1';
-    assert.equal(envFlag('SEED_DEMO'), true);
+    assert.equal(envFlag('SEED_DEMO'), false);
   } finally {
     if (saved === undefined) delete process.env.WORKHUB_SEED_DEMO;
     else process.env.WORKHUB_SEED_DEMO = saved;

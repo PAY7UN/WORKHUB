@@ -350,7 +350,9 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
   // 只有确实没有标题时目录才不占位：空目录没有内容可列，占着位置只是空白。
   // 这个判断同时决定目录列与操作坞右侧的占位块——两者必须同时出现或同时消失，
   // 否则操作坞的居中基准会与正文列错开。
-  const outlineVisible = headings.length > 0;
+  // 少于三个标题就别占这一列：一条目录既导不了航，又白白吃掉正文两百多像素，
+  // 屏幕上就成了「左边一小块正文、右边一条空目录、再右边一截留白」。
+  const outlineVisible = headings.length >= 3;
 
   // 正文一改，序号就可能指向别的标题了，清掉高亮避免误认
   useEffect(() => {
@@ -382,16 +384,6 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
     target.classList.add('outline-flash');
     window.setTimeout(() => target.classList.remove('outline-flash'), 1200);
   };
-
-  // ---------- 分屏时代的遗留 ----------
-  // 这里曾经有一整套「左右分屏的滚动同步」：按源码行号把预览和源码对齐，
-  // 并记住「最后是谁在被用户操作」，好让只有被操作的那一侧带动另一侧。
-  // 那套机制的前提是两栏同屏——行号对齐、块顶对齐都只在并排时才成立。
-  // 现在编辑与预览是互斥的两面，任何一面在场时另一面都不存在，
-  // 同步没有对象，驱动者、抑制窗口、块查找一并失去意义，整套删除。
-  //
-  // 「双击预览跳回源码」同理：那条路径本来就只为并排而生，
-  // 预览面现在是纯粹的阅读界面，要改字请切到编辑面。
 
   // 未持久化的内容（属于 prevIdRef 记录的那篇文档）
   const pendingRef = useRef<string | null>(null);
@@ -948,31 +940,36 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
 
       {/* 标签栏：访客仅展示，不可编辑/删除 */}
       {canEdit ? (
-        (doc.tags?.length || 0) > 0 ? (
-          <div className="flex items-center gap-2 px-4 py-1.5 border-b border-indigo-100/30 dark:border-indigo-900/30 bg-white/30 dark:bg-white/5 shrink-0 flex-wrap">
-            <Tag className="h-3.5 w-3.5 text-indigo-500" />
-            {doc.tags?.map((t) => (
-              <Badge
-                key={t}
-                variant="secondary"
-                className="bg-indigo-100/60 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 hover:bg-indigo-200/80 cursor-pointer"
-                onClick={() => canEdit && handleRemoveTag(t)}
-              >
-                {t}
-                {canEdit && <X className="h-3 w-3 ml-1" />}
-              </Badge>
-            ))}
-            <Input
-              value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleAddTag();
-              }}
-              placeholder="添加标签..."
-              className="h-6 text-xs w-28 bg-white/60 dark:bg-white/5 border-indigo-200/40"
-            />
-          </div>
-        ) : null
+        /*
+         * 常驻，不再「有标签才出现」。
+         *
+         * 条件渲染有两个副作用：一篇没有标签的文档根本没有添加标签的入口
+         * （要先有标签才能加标签，等于死循环）；在文档之间切换时，
+         * 这一行时有时无，正文跟着上下跳三十来像素。
+         */
+        <div className="flex h-9 shrink-0 items-center gap-2 overflow-x-auto border-b border-border/50 bg-white/30 px-4 dark:bg-white/5">
+          <Tag className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+          {doc.tags?.map((t) => (
+            <Badge
+              key={t}
+              variant="secondary"
+              className="shrink-0 cursor-pointer bg-indigo-100/60 text-indigo-700 hover:bg-indigo-200/80 dark:bg-indigo-900/40 dark:text-indigo-300"
+              onClick={() => handleRemoveTag(t)}
+            >
+              {t}
+              <X className="ml-1 h-3 w-3" />
+            </Badge>
+          ))}
+          <Input
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleAddTag();
+            }}
+            placeholder={doc.tags?.length ? '添加标签…' : '添加标签'}
+            className="h-6 w-28 shrink-0 border-border/60 bg-white/60 text-xs dark:bg-white/5"
+          />
+        </div>
       ) : doc.tags && doc.tags.length > 0 ? (
         <div className="flex items-center gap-2 px-4 py-1.5 border-b border-indigo-100/30 dark:border-indigo-900/30 bg-white/30 dark:bg-white/5 shrink-0 flex-wrap">
           <Tag className="h-3.5 w-3.5 text-indigo-400" />

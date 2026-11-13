@@ -46,10 +46,6 @@ export const VAULT_ROOT = resolveVaultDir();
 /** 正文在文件里的扩展名 */
 export const BODY_EXT = '.md';
 
-export function ensureVaultDirs(): void {
-  mkdirSync(VAULT_ROOT, { recursive: true });
-}
-
 /**
  * 把任意名字变成安全的目录名。
  *
@@ -200,13 +196,6 @@ export function readFileSafe(abs: string): string | null {
 /** 内容哈希：用于变更检测与去重 */
 export function contentHash(data: string | Buffer): string {
   return createHash('sha256').update(data).digest('hex');
-}
-
-/** 复制外部文件进 vault（迁移附件时用） */
-export function copyIntoVault(from: string, to: string): void {
-  const target = assertInsideVault(to);
-  mkdirSync(dirname(target), { recursive: true });
-  copyFileSync(from, target);
 }
 
 /**
@@ -470,86 +459,6 @@ function removeTreeByHand(dir: string): void {
 }
 
 /**
- * 导入期间暂存旧仓库目录用的后缀。
- *
- * 带这个后缀的目录是「暂存区」：里面的内容当前没人认领，
- * 但也不能当垃圾随手扫掉——它可能是导入失败时唯一的一份原件。
- */
-export const PARK_SUFFIX = '.import-old-';
-
-/**
- * 把仓库目录挪到一边暂存起来，返回暂存目录名。
- *
- * 覆盖式导入要先把旧内容清掉，但「清掉」这一步本身会失败，
- * 而失败点如果落在「库已经清空、内容还没写进去」之间，
- * 整个资料库就没了：库里是空的，盘上也是空的，内容再也找不回来。
- *
- * 所以这里不删，只挪：改名是原子的，挪不动就说明有文件被占着，
- * 那就整个导入失败——宁可什么都不做，也不要落一个半拉子的状态。
- * 挪开的目录还在盘上，导入失败时能原样挪回来。
- *
- * 目录本来就不在时返回 null（那没什么可暂存的）。
- */
-export function parkRepoDir(repoSlug: string): string | null {
-  const dir = assertInsideVault(join(VAULT_ROOT, repoSlug));
-  if (!existsSync(dir)) return null;
-  const parked = `${repoSlug}${PARK_SUFFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  try {
-    renameSync(dir, assertInsideVault(join(VAULT_ROOT, parked)));
-  } catch (err) {
-    throw new Error(`仓库目录挪不动：${dir}（${(err as Error).message}）`);
-  }
-  return parked;
-}
-
-/**
- * 把暂存的仓库目录挪回原位。
- *
- * 挪之前目标位置得是空的：那里可能已经躺着这次导入写了一半的新内容，
- * 留着它就等于让新内容盖住旧内容——那正是「库是新的、盘是旧的」的乱局。
- */
-export function unparkRepoDir(parked: string, repoSlug: string): void {
-  const src = assertInsideVault(join(VAULT_ROOT, parked));
-  const dest = assertInsideVault(join(VAULT_ROOT, repoSlug));
-  if (!existsSync(src)) return;
-  try {
-    renameSync(src, dest);
-  } catch (err) {
-    throw new Error(`仓库目录还原失败：${src}（${(err as Error).message}）`);
-  }
-}
-
-/**
- * 清掉暂存的旧仓库目录（导入成功后的清场）。
- *
- * 只在导入确实成功之后才调：这时库里的内容已经是新的，
- * 暂存区里的那份是旧的，留着它只是占地方，还会让人误以为有两份资料。
- */
-export function discardParkedRepoDir(parked: string): void {
-  removeRepoDir(parked);
-}
-
-/**
- * 找出还留在盘上的暂存目录。
- *
- * 进程在导入中途被杀掉时，暂存区里的内容会留下来：那时库要么是旧的、
- * 要么是新的，只有对照库才知道哪一份才是该留的。
- * 所以这里只报不改——自动清掉有可能把仅剩的原件删了。
- */
-export function parkedRepoDirs(): string[] {
-  if (!existsSync(VAULT_ROOT)) return [];
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(VAULT_ROOT, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((e) => e.isDirectory() && e.name.includes(PARK_SUFFIX))
-    .map((e) => e.name);
-}
-
-/**
  * 从最深往上删空目录。
  *
  * 文件搬走或删掉之后，原目录往往剩个空壳。留着它没坏处，
@@ -566,52 +475,4 @@ export function pruneEmptyDirs(dir: string): void {
     }
     cur = dirname(cur);
   }
-}
-
-/**
- * 清空 vault。
- *
- * vault 里的东西全是派生数据——每一份都能从数据库重建出来，
- * 所以「全量重建」时直接推倒重来，比小心翼翼地覆盖可靠得多
- * （覆盖式的迁移会留下上一轮的残骸，比如改了命名规则后的旧文件名）。
- *
- * 删除是逐层做的：先删文件，再从最深的目录往上删空目录。
- * 不用递归 rm —— 有些环境会把递归删除改写成「移到回收站」，
- * 一旦失败就是「删不掉旧 vault」，迁移直接卡死。
- */
-export function cleanVault(): void {
-  if (!existsSync(VAULT_ROOT)) {
-    ensureVaultDirs();
-    return;
-  }
-  const entries = readdirSync(VAULT_ROOT, { recursive: true, withFileTypes: true }) as Array<
-    Dirent & { parentPath?: string; path?: string }
-  >;
-  for (const e of entries) {
-    if (!e.isFile()) continue;
-    try {
-      unlinkSync(join(e.parentPath ?? e.path ?? '', e.name));
-    } catch {
-      // 删不掉就留着：下一轮迁移会再试一次
-    }
-  }
-  const dirs = entries
-    .filter((e) => e.isDirectory())
-    .map((e) => join(e.parentPath ?? e.path ?? '', e.name))
-    // 路径长的先删：从最深的目录往上，一层层空掉
-    .sort((a, b) => b.length - a.length);
-  for (const d of dirs) {
-    try {
-      rmdirSync(d);
-    } catch {
-      // 空目录删除失败就再试一次递归删；
-      // 两者都失败就留着——它不占内容位，只是目录层级而已
-      try {
-        rmSync(d, { recursive: true, force: true });
-      } catch {
-        // 保留
-      }
-    }
-  }
-  ensureVaultDirs();
 }

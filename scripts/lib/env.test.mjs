@@ -74,7 +74,7 @@ function jsPort(envText) {
 /** .env 样本：每一条都对应一个真实会踩的写法 */
 const CASES = [
   ['新名直接写', 'WORKHUB_PORT=8787\n'],
-  ['旧名兜底', 'MDHUB_PORT=8788\n'],
+  ['旧名不再兜底', 'MDHUB_PORT=8788\n'],
   ['新旧都写时取新名', 'WORKHUB_PORT=8789\nMDHUB_PORT=9999\n'],
   ['双引号', 'WORKHUB_PORT="8790"\n'],
   ['单引号', "WORKHUB_PORT='8791'\n"],

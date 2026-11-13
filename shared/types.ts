@@ -7,6 +7,17 @@
 
 export type UserRole = 'admin' | 'viewer';
 
+/**
+ * 管理员密码的状态。
+ *
+ * - 'initial-default'：还是公开的默认值 admin（最该提醒改的那一种）
+ * - 'initial-configured'：还是部署时在 .env 里写下的那个值
+ * - 'custom'：已经被使用者改过了
+ *
+ * 服务端判定，界面据此提醒「该改密码了」；改完密码状态自然变成 'custom'，提醒随之消失。
+ */
+export type AdminPasswordState = 'initial-default' | 'initial-configured' | 'custom';
+
 export interface User {
   id: string;
   username: string;
@@ -163,6 +174,28 @@ export interface RepoStat {
   attachmentCount: number;
   /** 仓库占用字节数（文档正文 + 附件） */
   totalSize: number;
+}
+
+/**
+ * 仓库事件：项目仓库自己的历史。
+ *
+ * 仓库删掉就没有行可查了，但「这个项目是什么时候没的、当时带走了多少东西」
+ * 是日后一定会被追问的答案。所以事件表不随仓库级联删除，
+ * 只留仓库 id 与名字快照——事后仍能读懂那条记录说的是哪个项目。
+ */
+export type RepoEventAction = 'created' | 'updated' | 'migrated' | 'deleted';
+
+export interface RepoEvent {
+  id: string;
+  repoId: string;
+  /** 事件发生时的仓库名（改名后仍看得出说的是哪个项目） */
+  repoName: string;
+  action: RepoEventAction;
+  /** 人类可读的一句话说明（改了什么、搬了多少） */
+  detail: string;
+  /** 操作者 id */
+  actor: string;
+  createdAt: number;
 }
 
 /* ------------------------------ 附件 ------------------------------ */

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Bot, Send, Square, Trash2, Settings, X, ShieldAlert, Gauge, Boxes } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -32,11 +33,11 @@ export function AgentPanel({ open, onOpenChange }: AgentPanelProps) {
     canUseAgent,
     agentReason,
     agentConfig,
-    openAdminConsole,
     applyExternalContent,
     polishTaskEpoch,
     repos,
   } = useApp();
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -283,7 +284,7 @@ export function AgentPanel({ open, onOpenChange }: AgentPanelProps) {
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              onClick={() => openAdminConsole('agent')}
+              onClick={() => navigate('/admin/agent')}
               title="Agent 配置（管理后台 · AI Agent）"
             >
               <Settings className="h-3.5 w-3.5" />

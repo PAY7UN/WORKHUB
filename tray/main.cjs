@@ -45,6 +45,15 @@ const {
 // 默认端口。托盘应用目录里没有 shared/（shared/ 在服务 payload 里，路径不通），
 // 所以这里是镜像值。真源在 shared/constants.ts 的 DEFAULT_API_PORT，改端口时一起改。
 const DEFAULT_PORT = 8787;
+/**
+ * 管理员初始密码。
+ *
+ * 固定 admin，不随机：使用者装完就能直接登录，不用翻聊天记录找密码。
+ * 随机密码只适合无人值守的部署，个人使用反而是障碍。
+ * 随机的是 SECRET（会话签名密钥）——那个必须每台机器都不一样。
+ * 装好后可在网页端「管理后台 → 账号安全」里改。
+ */
+const DEFAULT_ADMIN_PASSWORD = 'admin';
 /** 连续崩溃多少次后不再自动重启——服务起不来时反复重启只会刷日志、占 CPU */
 const MAX_RESTARTS = 3;
 /** 崩溃重启的间隔 */
@@ -59,6 +68,7 @@ const DEFAULTS = {
   hotkey: 'Control+Alt+W', // 全局快捷键：按一下就打开网页
   update: {}, // 托盘自更新源（manifest / url / repo），留空则走 GitHub Releases
   setupDone: false, // 首次运行向导问过了没有（问过就不再打扰）
+  autoStart: false, // 安装器里勾了「开机自启动」→ 托盘启动时自己登记
 };
 
 let config = null;
@@ -200,24 +210,17 @@ function log(message) {
 
 /**
  * 找配置文件。按「离用户最近的优先」排：
- * 托盘目录 → 可执行文件旁边（打包后）→ 用户数据目录 → 旧的用户配置目录。
+ * 托盘目录 → 可执行文件旁边（打包后）→ 用户数据目录。
  *
  * 用户数据目录就是 .env、数据库、日志待的那个目录（%LOCALAPPDATA%\WorkHub）：
  * 配置和数据放一处，使用者找东西时只要认一个目录。
- * 早期版本把配置放在 %APPDATA%\WorkHub——跟数据目录分在两处，
- * 「我的东西到底在哪」成了个问题；那个位置仍然认（认到就搬过来），
- * 但不再往那儿写。
  */
 function loadConfig() {
   const dataDir = paths?.dataDir ?? '';
-  const legacy = path.join(process.env.APPDATA || '', 'WorkHub', 'tray.config.json');
   const candidates = [
     path.join(app.getAppPath(), 'tray.config.json'),
     path.join(path.dirname(process.execPath), 'tray.config.json'),
     ...(dataDir ? [path.join(dataDir, 'tray.config.json')] : []),
-    // 旧位置只认打包态：那是旧安装版留下的东西，开发态去读它，
-    // 工作目录会被旧机器上的配置带偏（开发日志、测试库全跑到别处去）。
-    ...(app.isPackaged ? [legacy] : []),
   ];
   for (const file of candidates) {
     try {
@@ -228,7 +231,6 @@ function loadConfig() {
       const parsed = JSON.parse(raw);
       const merged = { ...DEFAULTS, ...parsed };
       merged.configFile = file;
-      if (file === legacy) migrateLegacyConfig(file, dataDir);
       return merged;
     } catch (err) {
       if (err.code === 'ENOENT') continue;
@@ -236,25 +238,6 @@ function loadConfig() {
     }
   }
   return { ...DEFAULTS, configFile: '' };
-}
-
-/**
- * 把旧位置的配置搬到数据目录。
- *
- * 搬而不是删：搬完旧文件还在，万一新位置有问题还能回头找。
- * 新位置已经有配置了就不搬——那说明使用者自己放了一份，以他的为准。
- */
-function migrateLegacyConfig(from, dataDir) {
-  if (!dataDir) return;
-  const to = path.join(dataDir, 'tray.config.json');
-  try {
-    if (fs.existsSync(to)) return;
-    fs.mkdirSync(dataDir, { recursive: true });
-    fs.copyFileSync(from, to);
-    log(`配置已从旧位置搬到数据目录：${to}`);
-  } catch (err) {
-    log(`配置搬迁失败（不影响使用）：${err?.message ?? err}`);
-  }
 }
 
 /**
@@ -497,10 +480,10 @@ async function toggleAutoStart(enabled) {
  *
  * 一致的意思是：**按 Node 的 --env-file 那套规则合并**——
  * 进程环境里已经设过的变量不被 .env 覆盖，剩下的由 .env 补齐，
- * 最后新名优先、旧名兜底地取 PORT。
+ * 最后取 WORKHUB_PORT。
  *
- * 旧名 MDHUB_PORT 也认：改名过渡期机器上还留着它是常事，
- * 服务端认它（server/env.ts），托盘不认就会两边错开。
+ * 旧名 MDHUB_PORT 不再认：服务端也不认（server/env.ts）。
+ * 两边同时收窄才不会出现「服务端读 A、托盘读 B」。
  */
 function readPortFromEnv(envFile) {
   let text = '';
@@ -528,7 +511,7 @@ function warnIgnoredEnvFilePaths() {
     return;
   }
   const parsed = parseEnvFile(text);
-  const ignored = ['WORKHUB_DB_V2', 'MDHUB_DB_V2', 'WORKHUB_VAULT_DIR', 'MDHUB_VAULT_DIR'];
+  const ignored = ['WORKHUB_DB_V2', 'WORKHUB_DB', 'WORKHUB_VAULT_DIR'];
   for (const key of ignored) {
     if (!parsed[key]) continue;
     log(
@@ -547,7 +530,7 @@ function warnIgnoredEnvFilePaths() {
  * 服务端在生产模式下没有 WORKHUB_SECRET / WORKHUB_ADMIN_PASSWORD 就拒绝启动
  * （这是故意的：密钥缺失等于全站权限失守，不能悄悄降级成默认弱口令）。
  * 使用者装完即用，就意味着这两个值得由托盘替他们准备好：
- * 随机密钥 + 随机密码，密码当面告诉他一次。
+ * 随机密钥 + 固定的默认密码（admin），密码当面告诉他一次。
  *
  * 「生成」这一步的坑（.env 带 BOM、.env 没了但库还在）由 tray/envfile.cjs 处理，
  * 那儿有回归测试盯着——出事的话代价是使用者的文档解不开，不能靠人肉发现。
@@ -563,7 +546,7 @@ async function ensureEnvFile() {
     log,
     makeCredentials: () => ({
       secret: randomBytes(32).toString('hex'),
-      password: randomBytes(9).toString('base64url'),
+      password: DEFAULT_ADMIN_PASSWORD,
     }),
   });
   if (result.error) log(result.error);
@@ -1361,10 +1344,21 @@ app.whenReady().then(async () => {
       message: '管理员账号：admin',
       detail:
         `初始密码：${password}\n\n` +
-        '这个密码只显示这一次，请抄进密码管理器。\n' +
-        '之后要改密码，请到「设置 → 账号」里改。',
+        '默认密码就是 admin，装好即可登录。\n' +
+        '之后要改密码，请到网页端「管理后台 → 账号安全」里改；' +
+        '密码还是初始值时，界面会一直提醒你。',
       buttons: ['我记下了'],
     });
+  }
+
+  // 安装器里勾了「开机自启动」→ 这里落地。
+  // 交给托盘自己写注册表（Electron 的登录项），而不是安装器手写：
+  // 注册表项名跟着程序名走，手写容易和 Electron 对不上，
+  // 结果是托盘菜单显示「未开启」，实际却开着一份。
+  if (config.autoStart && !isAutoStartEnabled(app)) {
+    const result = setAutoStart(app, true);
+    if (result.ok) log('已按安装选项开启开机自启动');
+    else log(`开机自启动设置失败：${result.reason ?? '未知原因'}`);
   }
 
   if (config.mode === 'remote') {

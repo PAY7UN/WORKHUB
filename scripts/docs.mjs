@@ -70,18 +70,6 @@ if (!existsSync(DB_PATH)) {
 
 const db = new Database(DB_PATH, { readonly: true });
 
-/**
- * nodes 表在老库里可能还留着 deleted_at 列（回收站早已下线，但列还留着）。
- * 列不在就不能按它过滤——所以先看有没有，再决定过滤条件。
- */
-const nodeCols = new Set(
-  db
-    .prepare("select name from pragma_table_info('nodes')")
-    .all()
-    .map((c) => c.name),
-);
-const deletedFilter = nodeCols.has('deleted_at') ? 'AND n.deleted_at IS NULL' : '';
-
 const rows = db
   .prepare(
     `SELECT n.id, n.repo_id, n.name, n.type, n.parent_id, n.path, n.size, n.tags, n.encrypted,
@@ -89,7 +77,6 @@ const rows = db
             r.slug AS repo_slug, r.name AS repo_name
        FROM nodes n
        JOIN repos r ON r.id = n.repo_id
-      WHERE 1 = 1 ${deletedFilter}
       ORDER BY n.path`,
   )
   .all();

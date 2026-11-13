@@ -52,6 +52,13 @@ function isPreviewable(doc: DocNode): boolean {
 
 interface FolderViewProps {
   folderId: string | null;
+  /**
+   * 数据还在读取。
+   *
+   * 有了它才能把「还没到」和「没有」分开：读取中显示「正在读取…」，
+   * 而不是一句「此目录为空」——后者会被当成资料没了。
+   */
+  loading?: boolean;
   onOpen: (doc: DocNode) => void;
   onRequestRename: (doc: DocNode) => void;
   onRequestDelete: (doc: DocNode) => void;
@@ -62,13 +69,15 @@ interface FolderViewProps {
 
 export function FolderView({
   folderId,
+  loading = false,
   onOpen,
   onRequestRename,
   onRequestDelete,
   onRequestMove,
   onRequestRepo,
 }: FolderViewProps) {
-  const { repoScopedDocs, users, hasPermission, getDoc, getPath, isAdmin } = useApp();
+  const { repoScopedDocs, users, hasPermission, getDoc, getPath, isAdmin, currentRepo, reposStatus } =
+    useApp();
   // 仓库是管理维度：普通访客看不到「归入仓库」这个动作
   const canAssignRepo = Boolean(onRequestRepo) && isAdmin;
   const [search, setSearch] = useState('');
@@ -144,48 +153,104 @@ export function FolderView({
   const canMove = hasPermission('doc.move');
   const canDownload = hasPermission('doc.download');
 
+  /**
+   * 「空」的成因有好几种，指的路不一样，混成一句「此目录为空」就会把人带偏：
+   * - 服务端没连上 → 该去查服务端，不是去建文档；
+   * - 服务端连上了，但一个仓库都没有 → 该去建仓库；
+   * - 仓库在，只是眼下这个目录是空的 → 该去建文档。
+   */
+  const emptyReason = !currentRepo
+    ? reposStatus === 'error'
+      ? 'offline'
+      : 'no-repo'
+    : folderId
+      ? 'empty-folder'
+      : 'empty-repo';
+
+  const EMPTY_TEXT: Record<typeof emptyReason, { title: string; hint: string }> = {
+    offline: { title: '暂时读不到仓库', hint: '请确认服务端在运行，然后刷新页面' },
+    'no-repo': { title: '还没有仓库', hint: '请管理员先建一个仓库，再往里放资料' },
+    'empty-folder': { title: '此目录为空', hint: '通过左侧新建按钮或上传按钮添加内容' },
+    'empty-repo': {
+      title: '这个仓库还没有资料',
+      hint: '用左边的「新建」或上传按钮添加，或在左侧切到别的仓库看看',
+    },
+  };
+
   return (
     <div className="h-full flex flex-col">
       {/* 头部 */}
-      <div className="px-6 py-4 border-b border-indigo-100/40 dark:border-indigo-900/40 glass shrink-0">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="min-w-0">
-            {breadcrumbs.length > 0 && (
-              <div className="flex items-center gap-1 text-xs text-muted-foreground mb-1.5 flex-wrap">
-                <Home className="h-3 w-3" />
-                {breadcrumbs.map((b, i) => (
-                  <span key={b.id} className="flex items-center gap-1">
-                    {i > 0 && <ChevronRight className="h-3 w-3 opacity-50" />}
-                    <span
-                      className={cn(
-                        'hover:text-indigo-600 transition-colors',
-                        i === breadcrumbs.length - 1 && 'text-indigo-600 font-medium',
-                      )}
-                    >
-                      {b.name}
-                    </span>
+      <div className="shrink-0 border-b border-border/60 px-3 py-3 glass sm:px-6 sm:py-4">
+        {/*
+         * 窄屏两行、宽屏一行。
+         * 先前标题与搜索区挤在同一行：窗口一窄，标题被压成一字一行，
+         * 搜索框跟着挤出屏幕。现在搜索区在窄屏独占一行并撑满宽度。
+         */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <div className="min-w-0 flex-1">
+            {/*
+             * 面包屑常驻，根目录也显示（根就是当前仓库）。
+             *
+             * 先前它「有父级才渲染」：从根目录点进一个文件夹，头部凭空多出一行，
+             * 下面的内容整体往下挪二十来像素——每进一层就跳一次。
+             * 现在这一行永远在，深浅目录的头部高度一样；
+             * 换行也去掉了，深层路径改成单行截断，高度不再随路径长短变。
+             */}
+            <div className="mb-1.5 flex h-[18px] min-w-0 items-center gap-1 overflow-hidden text-xs text-muted-foreground">
+              <Home className="h-3 w-3 shrink-0" />
+              <span className="shrink-0">
+                {loading ? '正在读取…' : (currentRepo?.name ?? '全部')}
+              </span>
+              {breadcrumbs.map((b, i) => (
+                <span key={b.id} className="flex min-w-0 items-center gap-1">
+                  <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
+                  <span
+                    className={cn(
+                      'truncate transition-colors hover:text-indigo-600',
+                      i === breadcrumbs.length - 1 && 'font-medium text-indigo-600',
+                    )}
+                  >
+                    {b.name}
                   </span>
-                ))}
-              </div>
-            )}
+                </span>
+              ))}
+            </div>
             <h2 className="text-xl font-semibold flex items-center gap-2">
               <Folder className="h-5 w-5 text-amber-500" />
-              {folder ? folder.name : '我的工作区'}
+              {/*
+               * 根视图的标题就是当前仓库名。
+               *
+               * 早先这里写死「个人记录」（那是仓库出现之前的站点名）：
+               * 面包屑写着「东部公交」，大标题却写着「个人记录」，
+               * 两处说的不是一回事，用户会以为进了错的地方。
+               * 根 = 仓库，标题就该跟着仓库走。
+               */}
+              {loading
+                ? '正在读取…'
+                : folder
+                  ? folder.name
+                  : (currentRepo?.name ?? '个人记录')}
             </h2>
             <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-              <span>{stats.files} 个文档</span>
-              <span>·</span>
-              <span>{stats.folders} 个文件夹</span>
-              {folder && (
+              {loading ? (
+                <span>正在读取…</span>
+              ) : (
                 <>
+                  <span>{stats.files} 个文档</span>
                   <span>·</span>
-                  <span>更新于 {formatRelativeTime(folder.updatedAt)}</span>
+                  <span>{stats.folders} 个文件夹</span>
+                  {folder && (
+                    <>
+                      <span>·</span>
+                      <span>更新于 {formatRelativeTime(folder.updatedAt)}</span>
+                    </>
+                  )}
                 </>
               )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-1 justify-end max-w-md">
+          <div className="flex w-full items-center gap-2 sm:w-auto sm:max-w-md sm:flex-1 sm:justify-end">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
@@ -236,16 +301,23 @@ export function FolderView({
                   : '只看浏览器能直接打开的文件'
               }
             >
-              <Eye className="h-3.5 w-3.5" />
-              只看可预览
+              <Eye className="h-3.5 w-3.5 shrink-0" />
+              {/* 窄屏只留图标：这一行还有搜索框和视图切换，三个都带文字会挤出屏幕 */}
+              <span className="hidden whitespace-nowrap sm:inline">只看可预览</span>
             </button>
           </div>
         </div>
       </div>
 
       {/* 内容 */}
-      <div className="flex-1 overflow-auto scrollbar-thin p-6">
-        {children.length === 0 ? (
+      <div className="scrollbar-thin flex-1 overflow-auto p-3 sm:p-6">
+        {loading ? (
+          /* 读取中只报状态，不报「空」 */
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-12">
+            <div className="text-base font-medium">正在读取…</div>
+            <div className="text-xs mt-1">内容马上就到</div>
+          </div>
+        ) : children.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-12">
             <Folder className="h-16 w-16 mb-3 opacity-30" />
             <div className="text-base font-medium">
@@ -253,14 +325,14 @@ export function FolderView({
                 ? '没有匹配的文档'
                 : onlyPreviewable
                   ? '这个目录里没有能直接打开的文件'
-                  : '此目录为空'}
+                  : EMPTY_TEXT[emptyReason].title}
             </div>
             <div className="text-xs mt-1">
               {search
                 ? '尝试其他关键词'
                 : onlyPreviewable
                   ? '关掉「只看可预览」就能看到目录里的全部文件'
-                  : '通过左侧新建按钮或上传按钮添加内容'}
+                  : EMPTY_TEXT[emptyReason].hint}
             </div>
           </div>
         ) : view === 'grid' ? (
@@ -350,7 +422,16 @@ function DocGridCard({
   return (
     <Card
       onClick={() => onOpen(doc)}
-      className="group glass cursor-pointer p-4 hover:shadow-xl hover:scale-[1.02] hover:border-indigo-300 transition-all relative animate-slide-up"
+      /*
+       * flex-col：标题之后用 mt-auto 把「时间 / 大小 / 创建人」压到卡片底部。
+       * 网格里的卡片本来就被拉成等高，先前内容全挤在上半截、下半截空着，
+       * 一列四张看过去像四张没写完的卡片。压到底之后，等高的留白落在中间，
+       * 视线扫过时每张卡片的元信息都在同一条线上。
+       *
+       * hover 只做轻微上浮：之前是整体放大 2%，网格边缘的卡片会顶到邻居，
+       * 鼠标扫过一排时整片都在动。
+       */
+      className="group glass relative flex cursor-pointer flex-col gap-0 p-4 transition-all animate-slide-up hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-xl"
       style={{ animationDelay: `${delay}ms` }}
     >
       <div className="flex items-start justify-between mb-3">
@@ -465,17 +546,14 @@ function DocGridCard({
         )}
         <span className="truncate">{doc.name}</span>
       </div>
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span className="flex items-center gap-1">
-          <Calendar className="h-3 w-3" />
-          {formatRelativeTime(doc.updatedAt)}
-        </span>
-        {!isFolder && <span>{formatBytes(doc.size)}</span>}
-      </div>
       {doc.tags && doc.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-2">
+        <div className="mt-1.5 flex flex-wrap gap-1">
           {doc.tags.slice(0, 2).map((t) => (
-            <Badge key={t} variant="secondary" className="text-[10px] px-1.5 py-0 bg-indigo-100/60 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+            <Badge
+              key={t}
+              variant="secondary"
+              className="bg-indigo-100/60 px-1.5 py-0 text-[10px] text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
+            >
               {t}
             </Badge>
           ))}
@@ -484,12 +562,21 @@ function DocGridCard({
           )}
         </div>
       )}
-      {updatedBy && (
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-1.5">
-          <UserIcon className="h-2.5 w-2.5" />
-          {updatedBy}
-        </div>
-      )}
+
+      {/* 底部元信息：mt-auto 把它压到卡片底边，等高卡片的信息落在同一条线上 */}
+      <div className="mt-auto flex items-center gap-2 border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-1">
+          <Calendar className="h-3 w-3" />
+          {formatRelativeTime(doc.updatedAt)}
+        </span>
+        {!isFolder && <span className="shrink-0">{formatBytes(doc.size)}</span>}
+        {updatedBy && (
+          <span className="ml-auto flex min-w-0 items-center gap-1" title={`最后由 ${updatedBy} 改动`}>
+            <UserIcon className="h-2.5 w-2.5 shrink-0" />
+            <span className="truncate">{updatedBy}</span>
+          </span>
+        )}
+      </div>
     </Card>
   );
 }

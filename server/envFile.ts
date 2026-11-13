@@ -47,8 +47,7 @@ export function stripBom(text: string): string {
 /**
  * 解析 .env 文本。
  *
- * 返回的键原样保留（WORKHUB_SECRET / MDHUB_SECRET 都认），
- * 前缀的取舍交给 server/env.ts —— 那一层才决定「新名优先、旧名兜底」。
+ * 返回的键原样保留，前缀的取舍交给 server/env.ts —— 那一层只认 WORKHUB_。
  */
 export function parseEnvFile(text: string): Record<string, string> {
   const out: Record<string, string> = {};

@@ -176,7 +176,7 @@ namespace WorkHub
     /// - 值可以带引号（'...' 或 "..."），带引号时 # 是值的一部分；
     /// - 不带引号时，行尾 # 之后是注释；
     /// - 同一个键写多次，后写的赢；
-    /// - 新名 WORKHUB_PORT 优先，旧名 MDHUB_PORT 兜底；
+    /// - 只认 WORKHUB_PORT，旧名 MDHUB_PORT 不再兜底；
     /// - 文件带 UTF-8 BOM 也不影响（BOM 后的第一个键照样读得到）。
     /// </summary>
     internal static class EnvPort
@@ -195,7 +195,6 @@ namespace WorkHub
             catch { return null; }
 
             string newPort = null;
-            string oldPort = null;
             for (int i = 0; i < lines.Length; i++)
             {
                 string line = lines[i];
@@ -205,12 +204,10 @@ namespace WorkHub
                 string value;
                 if (!Split(line, out key, out value)) continue;
                 if (key == "WORKHUB_PORT") newPort = value;
-                else if (key == "MDHUB_PORT") oldPort = value;
             }
 
             int parsed;
             if (newPort != null && TryPort(newPort, out parsed)) return parsed;
-            if (oldPort != null && TryPort(oldPort, out parsed)) return parsed;
             return null;
         }
 

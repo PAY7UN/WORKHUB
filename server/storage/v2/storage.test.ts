@@ -1,18 +1,15 @@
 /**
  * v2 存储层的回归测试。
  *
- * 测试自己造一个旧库，而不是拿真实数据跑：
- * 真实数据会随使用变化，断言写死了就会莫名其妙地红。
- * 造库能把每条边界都摆到明面上——未归档文档、加密文档、同名路径、路径穿越。
+ * 这里只测「现役结构」的行为：路径规范化、仓库 slug、检索索引。
+ * 旧库迁移、补列这类兼容逻辑已经整体下线，不再有测试。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-
-type DatabaseInstance = Database.Database;
 
 // vault 的根目录在模块加载时就定死了，
 // 所以必须先设好环境变量再动态 import——静态 import 会提前求值。
@@ -20,8 +17,8 @@ const workDir = mkdtempSync(join(tmpdir(), 'workhub-v2-test-'));
 process.env.WORKHUB_VAULT_DIR = join(workDir, 'vault');
 
 const { bodyFileName, safeRelPath, slugify } = await import('./vault.ts');
-const { migrate, toMatchQuery, verify } = await import('./migrate.ts');
 const { openV2Db } = await import('./schema.ts');
+const { toMatchQuery, toSearchText } = await import('./search.ts');
 
 test.after(() => {
   try {
@@ -30,105 +27,6 @@ test.after(() => {
     // 临时目录删不掉就留着，不影响断言
   }
 });
-
-/** 造一个最小旧库：字段与迁移器读取的列一致 */
-function makeOldDb(path: string, opts: { withUnassigned?: boolean } = {}): DatabaseInstance {
-  const db = new Database(path);
-  db.exec(`
-    create table repos (
-      id text primary key, name text, description text, color text,
-      allowed_exts text, max_file_size integer, rag_enabled integer,
-      created_at integer, updated_at integer, created_by text, deleted_at integer
-    );
-    create table docs (
-      id text primary key, name text, type text, parent_id text, content text,
-      size integer, created_at integer, updated_at integer, created_by text,
-      updated_by text, encrypted integer default 0, enc_cipher text,
-      enc_master_dek text, deleted_at integer, repo_id text
-    );
-  `);
-  const now = Date.now();
-  db.prepare(
-    'insert into repos values (?,?,?,?,?,?,?,?,?,?,?)',
-  ).run('r-1', '样例项目', '', '#6366f1', '[]', 104857600, 1, now, now, 'u-admin', null);
-  db.prepare(
-    'insert into docs values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-  ).run(
-    'd-1',
-    '样例笔记.md',
-    'file',
-    null,
-    '# 样例\n真机调试 adb install\n',
-    30,
-    now,
-    now,
-    'u-admin',
-    'u-admin',
-    0,
-    null,
-    null,
-    null,
-    opts.withUnassigned ? null : 'r-1',
-  );
-  db.prepare(
-    'insert into docs values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-  ).run(
-    'd-2',
-    '密文样例.md',
-    'file',
-    null,
-    null,
-    0,
-    now,
-    now,
-    'u-admin',
-    'u-admin',
-    1,
-    'v1:iv:tag:ciphertext',
-    'v1:wrapped-dek',
-    null,
-    opts.withUnassigned ? null : 'r-1',
-  );
-  db.prepare(
-    'insert into docs values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-  ).run(
-    'd-3',
-    '子目录',
-    'folder',
-    null,
-    null,
-    0,
-    now,
-    now,
-    'u-admin',
-    'u-admin',
-    0,
-    null,
-    null,
-    null,
-    opts.withUnassigned ? null : 'r-1',
-  );
-  db.prepare(
-    'insert into docs values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-  ).run(
-    'd-4',
-    '笔记.md',
-    'file',
-    'd-3',
-    '内部笔记内容\n',
-    18,
-    now,
-    now,
-    'u-admin',
-    'u-admin',
-    0,
-    null,
-    null,
-    null,
-    opts.withUnassigned ? null : 'r-1',
-  );
-  return db;
-}
 
 test('safeRelPath 拒绝越界与非法路径', () => {
   assert.equal(safeRelPath('正常/路径.md'), '正常/路径.md');
@@ -153,157 +51,126 @@ test('bodyFileName 不产生双扩展名', () => {
   assert.equal(bodyFileName('密文样例.md', true), '密文样例.md.enc');
 });
 
-test('迁移：正文落文件、仓库归属正确、校验通过', () => {
-  const oldPath = join(workDir, 'old.db');
-  const newPath = join(workDir, 'new.db');
-  const oldDb = makeOldDb(oldPath);
-  oldDb.close();
+test('新库的结构就是 SCHEMA：表与列一次到位', () => {
+  // 以前这里还测「老库缺列时自动补上」——兼容逻辑下线后，库只有一种来源：
+  // 直接由 SCHEMA 建出来。结构对不上就是建库出了问题，应该在开库那一刻就看见。
+  const path = join(workDir, 'schema.db');
+  const db = openV2Db(path);
+  const cols = (
+    db.prepare("select name from pragma_table_info('nodes')").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  assert.ok(cols.includes('enc_locked_at'));
+  assert.ok(cols.includes('tags'));
+  assert.ok(cols.includes('repo_id'));
 
-  const report = migrate(oldPath, newPath);
-  assert.equal(report.nodes, 4);
-  assert.equal(report.warnings.length, 0);
-  assert.equal(report.adoptedIntoDefault, 0, '有仓库归属的文档不该进默认仓库');
-
-  const v = verify(oldPath, newPath);
-  assert.equal(v.ok, true, v.mismatches.join('; '));
-  assert.equal(v.checked, 3, '三个文件型文档都要逐字比对');
-
-  const db = openV2Db(newPath);
-  const node = db.prepare('select * from nodes where id=?').get('d-1') as Record<string, unknown>;
-  assert.equal(node.repo_id, 'r-1');
-  assert.equal(node.name, '样例笔记.md');
-  assert.equal(node.path, '样例笔记.md');
-
-  // 子节点路径带上父目录
-  const child = db.prepare('select * from nodes where id=?').get('d-4') as Record<string, unknown>;
-  assert.equal(child.path, '子目录/笔记.md');
-
-  // 正文文件确实存在且内容一致
-  const repo = db.prepare('select slug from repos where id=?').get('r-1') as { slug: string };
-  const body = readFileSync(
-    join(process.env.WORKHUB_VAULT_DIR!, repo.slug, 'docs', '样例笔记.md'),
-    'utf8',
-  );
-  assert.equal(body, '# 样例\n真机调试 adb install\n');
-
-  // 加密文档写成 .md.enc
-  const enc = readFileSync(
-    join(process.env.WORKHUB_VAULT_DIR!, repo.slug, 'docs', '密文样例.md.enc'),
-    'utf8',
-  );
-  assert.equal(enc, 'v1:iv:tag:ciphertext');
-
+  // users 表只有密码哈希，没有明文列
+  const userCols = (
+    db.prepare("select name from pragma_table_info('users')").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  assert.ok(userCols.includes('password_hash'));
+  assert.ok(!userCols.includes('password'), '明文密码列不该存在');
   db.close();
 });
 
-test('迁移：未归档文档被归入默认仓库', () => {
-  const oldPath = join(workDir, 'old-unassigned.db');
-  const newPath = join(workDir, 'new-unassigned.db');
-  const oldDb = makeOldDb(oldPath, { withUnassigned: true });
-  oldDb.close();
-
-  const report = migrate(oldPath, newPath);
-  assert.equal(report.adoptedIntoDefault, 4);
-
-  const db = openV2Db(newPath);
-  const repos = db.prepare('select * from repos').all() as Array<{ id: string; slug: string }>;
-  const defaultRepo = repos.find((r) => r.id === 'r-default');
-  assert.ok(defaultRepo, '应该自动建出默认仓库');
-  const orphan = db.prepare('select count(*) c from nodes where repo_id is null').get() as {
-    c: number;
-  };
-  assert.equal(orphan.c, 0, '新模型里不允许没有归属的节点');
-  db.close();
-});
-
-test('老库缺列时开库自动补上：不然写文档就报 no such column', () => {
-  const path = join(workDir, 'legacy-schema.db');
-  // 造一个「旧版本结构」的库：nodes 少了后来才加的列
+test('旧结构留下的库会被明确挡下，而不是等写入时才炸', () => {
+  // 旧版建的 users 表带一列明文密码：NOT NULL 且没有默认值。
+  // 现役代码不再写这一列，于是 INSERT 会撞「NOT NULL constraint failed」。
+  // 症状是开库正常、登录时才炸，报错里半个字都没提「你的库是旧版」。
+  // 所以结构闸门必须在开库那一刻就说清楚。
+  const path = join(workDir, 'legacy.db');
   const legacy = new Database(path);
   legacy.exec(`
-    create table repos (
-      id text primary key, slug text, name text, description text, color text,
-      allowed_exts text, max_file_size integer, rag_enabled integer, acl text,
-      created_at integer, updated_at integer, created_by text
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      avatar TEXT NOT NULL,
+      color TEXT NOT NULL,
+      password TEXT NOT NULL,
+      password_hash TEXT NOT NULL DEFAULT ''
     );
-    create table nodes (
-      id text primary key, repo_id text, name text, type text, parent_id text,
-      path text, size integer, content_hash text, revision integer default 1,
-      encrypted integer default 0, enc_master_dek text, acl text default '{}',
-      created_at integer, updated_at integer, created_by text, updated_by text,
-      deleted_at integer
+  `);
+  legacy.close();
+
+  assert.throws(
+    () => openV2Db(path),
+    (err: Error) => {
+      assert.match(err.message, /users 多出一列 password/);
+      assert.match(err.message, /备份/, '报错要给出下一步该做什么');
+      return true;
+    },
+  );
+});
+
+test('多出来的可空旧列不拦启动', () => {
+  // 可空列挡不住写入，为了它去重建表是得不偿失——
+  // 重建表正是我们要避免的那类迁移动作。
+  const path = join(workDir, 'extra-col.db');
+  const legacy = new Database(path);
+  legacy.exec(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      avatar TEXT NOT NULL,
+      color TEXT NOT NULL,
+      deleted_at TEXT,
+      password_hash TEXT NOT NULL DEFAULT ''
     );
   `);
   legacy.close();
 
   const db = openV2Db(path);
   const cols = (
-    db.prepare("select name from pragma_table_info('nodes')").all() as Array<{ name: string }>
+    db.prepare("select name from pragma_table_info('users')").all() as Array<{ name: string }>
   ).map((c) => c.name);
-  assert.ok(cols.includes('enc_locked_at'), '后来新增的 enc_locked_at 列应被补上');
-  assert.ok(cols.includes('tags'), '后来新增的 tags 列应被补上');
-
-  // 补完列就能正常写入——这才是重点：补列失败的话，错误会推迟到写入那一刻才炸
-  db.prepare(
-    `insert into nodes (id, repo_id, name, type, parent_id, path, size, content_hash,
-       encrypted, enc_master_dek, enc_locked_at, acl, tags,
-       created_at, updated_at, created_by, updated_by)
-     values ('d-x','r-1','补列测试.md','file',null,'补列测试.md',0,'h',0,null,null,'{}',null,0,0,'u','u')`,
-  ).run();
-  const row = db.prepare('select enc_locked_at, tags from nodes where id=?').get('d-x') as {
-    enc_locked_at: number | null;
-    tags: string | null;
-  };
-  assert.equal(row.enc_locked_at, null, '新补的列对老行应为 NULL');
-  assert.equal(row.tags, null);
-  db.close();
-});
-
-test('补列是幂等的：结构已是最新时不会重复加', () => {
-  const path = join(workDir, 'idempotent-schema.db');
-  const first = openV2Db(path);
-  first.close();
-  const second = openV2Db(path);
-  const cols = (
-    second.prepare("select name from pragma_table_info('nodes')").all() as Array<{ name: string }>
-  ).map((c) => c.name);
-  assert.ok(cols.includes('enc_locked_at'));
-  assert.ok(cols.includes('tags'));
-  second.close();
-});
-
-test('迁移可以重复执行且结果一致', () => {
-  const oldPath = join(workDir, 'old.db');
-  const newPath = join(workDir, 'new.db');
-  const first = migrate(oldPath, newPath);
-  const second = migrate(oldPath, newPath);
-  assert.deepEqual(second, first, '迁移必须是幂等的');
-
-  const db = openV2Db(newPath);
-  const count = db.prepare('select count(*) c from nodes').get() as { c: number };
-  assert.equal(count.c, 4, '重复迁移不该产生重复节点');
+  assert.ok(cols.includes('deleted_at'));
   db.close();
 });
 
 test('全文索引：中文能命中，且密文不进索引', () => {
-  const oldPath = join(workDir, 'old.db');
-  const newPath = join(workDir, 'new.db');
-  migrate(oldPath, newPath);
+  const path = join(workDir, 'fts.db');
+  const db = openV2Db(path);
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO repos (id, slug, name, description, color, allowed_exts, max_file_size, rag_enabled, acl, created_at, updated_at, created_by)
+     VALUES ('r-1', 'sample', '样例', '', '#6366f1', '[]', 104857600, 1, '{}', ?, ?, 'u-admin')`,
+  ).run(now, now);
 
-  const db = openV2Db(newPath);
+  const insertNode = db.prepare(
+    `INSERT INTO nodes (id, repo_id, name, type, parent_id, path, size, content_hash, encrypted, enc_master_dek, acl, created_at, updated_at, created_by, updated_by)
+     VALUES (?, 'r-1', ?, ?, NULL, ?, 0, '', ?, NULL, '{}', ?, ?, 'u-admin', 'u-admin')`,
+  );
+  insertNode.run('d-1', '样例笔记.md', 'file', '样例笔记.md', 0, now, now);
+  insertNode.run('d-2', '密文样例.md', 'file', '密文样例.md', 1, now, now);
+
+  // 加密文档整条不进索引（连名字也不进）——db.ts 里加密成功后会 unindexNode。
+  // 名字若还留在索引里，搜一下它的标题就能把它拽出来，等于绕过加密。
+  db.prepare('insert into node_fts (repo_id, node_id, name, body) values (?, ?, ?, ?)').run(
+    'r-1',
+    'd-1',
+    toSearchText('样例笔记.md'),
+    toSearchText('真机调试 adb install'),
+  );
+
   const hits = db
     .prepare('select node_id from node_fts where node_fts match ?')
     .all(toMatchQuery('调试')) as Array<{ node_id: string }>;
-  const ids = hits.map((h) => h.node_id);
-  assert.ok(ids.includes('d-1'), '「样例笔记.md」正文里有「调试」，应该命中');
+  assert.ok(hits.map((h) => h.node_id).includes('d-1'), '「样例笔记.md」正文里有「调试」，应该命中');
 
-  // 加密文档的正文与名字都不该进索引
+  const encRows = db
+    .prepare('select node_id from node_fts where node_id = ?')
+    .all('d-2') as Array<{ node_id: string }>;
+  assert.equal(encRows.length, 0, '加密文档不能进检索索引，否则等于把密文喂给模型');
+
   const encHits = db
     .prepare('select node_id from node_fts where node_fts match ?')
     .all(toMatchQuery('密文')) as Array<{ node_id: string }>;
   assert.ok(
     !encHits.map((h) => h.node_id).includes('d-2'),
-    '加密文档不能进检索索引，否则等于把密文喂给模型',
+    '加密文档不能被搜出来',
   );
 
   // 索引按仓库过滤

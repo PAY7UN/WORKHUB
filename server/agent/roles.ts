@@ -105,8 +105,3 @@ export function findAgentRole(id: string): AgentRole | undefined {
 
 /** 默认角色（用户不指定时走谁） */
 export const DEFAULT_AGENT_ROLE_ID = LEAD.id;
-
-/** 总控可以派给谁：除自己以外的角色 */
-export function delegateTargets(): AgentRole[] {
-  return AGENT_ROLES.filter((r) => r.id !== LEAD.id);
-}

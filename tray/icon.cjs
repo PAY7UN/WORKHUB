@@ -146,4 +146,194 @@ function makeIconIco() {
   return Buffer.concat([header, entry, png]);
 }
 
-module.exports = { makeTrayImages, makeIconIco };
+/**
+ * 安装器用的品牌位图。
+ *
+ * MUI2 默认拿 NSIS 自带的 win.bmp（欢迎页大图）和 nsis.bmp（顶部横幅），
+ * 那是「一眼就知道是 NSIS 打的」那种素材。这里换成自己的：同一套蓝圆角方块 + 白横线，
+ * 跟托盘图标、exe 图标是同一套视觉语言。
+ *
+ * 仍然用代码画，不往仓库里塞二进制：改一次颜色就是一次 diff。
+ */
+const BRAND_BLUE = [47, 111, 235];
+const BRAND_DEEP = [29, 78, 216];
+const BRAND_VIOLET = [79, 70, 229];
+const BRAND_GREEN = [5, 150, 105];
+const BRAND_GREEN_DEEP = [4, 120, 87];
+const WHITE = [255, 255, 255];
+
+/** 建一张 RGB 画布（不含 alpha：BMP 24 位没有透明通道） */
+function createCanvas(width, height) {
+  return { width, height, data: Buffer.alloc(width * height * 3) };
+}
+
+function setPixel(canvas, x, y, color) {
+  if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return;
+  const off = (y * canvas.width + x) * 3;
+  canvas.data[off] = color[0];
+  canvas.data[off + 1] = color[1];
+  canvas.data[off + 2] = color[2];
+}
+
+/** 对角线性渐变铺底 */
+function fillGradient(canvas, from, to) {
+  for (let y = 0; y < canvas.height; y += 1) {
+    for (let x = 0; x < canvas.width; x += 1) {
+      const t = Math.min(1, (x / canvas.width) * 0.72 + (y / canvas.height) * 0.28);
+      setPixel(canvas, x, y, [
+        Math.round(from[0] + (to[0] - from[0]) * t),
+        Math.round(from[1] + (to[1] - from[1]) * t),
+        Math.round(from[2] + (to[2] - from[2]) * t),
+      ]);
+    }
+  }
+}
+
+/** 圆角矩形填充（跟 drawIcon 里的判定方式一致：算到最近内切矩形的距离） */
+function fillRoundRect(canvas, x0, y0, w, h, radius, color) {
+  for (let y = y0; y < y0 + h; y += 1) {
+    for (let x = x0; x < x0 + w; x += 1) {
+      const px = x + 0.5;
+      const py = y + 0.5;
+      const cx = Math.min(Math.max(px, x0 + radius), x0 + w - radius);
+      const cy = Math.min(Math.max(py, y0 + radius), y0 + h - radius);
+      if (Math.hypot(px - cx, py - cy) > radius) continue;
+      setPixel(canvas, x, y, color);
+    }
+  }
+}
+
+/** 直线（Bresenham），用来画对勾 */
+function drawLine(canvas, x0, y0, x1, y1, width, color) {
+  const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+  for (let i = 0; i <= steps; i += 1) {
+    const t = steps === 0 ? 0 : i / steps;
+    const x = Math.round(x0 + (x1 - x0) * t);
+    const y = Math.round(y0 + (y1 - y0) * t);
+    for (let dy = 0; dy < width; dy += 1) {
+      for (let dx = 0; dx < width; dx += 1) {
+        setPixel(canvas, x + dx, y + dy, color);
+      }
+    }
+  }
+}
+
+/**
+ * 5×7 点阵字模，只够拼出产品名。
+ *
+ * 不引字体渲染库：安装器里的字只有 "WorkHub" 七个字母，
+ * 为它拖进一套字体解析不划算。
+ */
+const GLYPHS = {
+  W: ['10001', '10001', '10001', '10001', '10101', '11011', '01010'],
+  o: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  r: ['11110', '10001', '10001', '11110', '10100', '10010', '10010'],
+  k: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+  H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+  u: ['00000', '00000', '10001', '10001', '10001', '10001', '01110'],
+  b: ['10000', '10000', '11110', '10001', '10001', '10001', '11110'],
+};
+
+function drawText(canvas, text, x, y, scale, color) {
+  let cursor = x;
+  for (const ch of text) {
+    const glyph = GLYPHS[ch];
+    if (glyph) {
+      glyph.forEach((row, ry) => {
+        [...row].forEach((bit, rx) => {
+          if (bit !== '1') return;
+          for (let dy = 0; dy < scale; dy += 1) {
+            for (let dx = 0; dx < scale; dx += 1) {
+              setPixel(canvas, cursor + rx * scale + dx, y + ry * scale + dy, color);
+            }
+          }
+        });
+      });
+    }
+    cursor += 6 * scale;
+  }
+}
+
+/** 蓝底白横线的方块：跟托盘图标同构 */
+function drawBrandMark(canvas, x, y, size, markColor, barColor) {
+  fillRoundRect(canvas, x, y, size, size, Math.round(size * 0.22), markColor);
+  const bars = [
+    { top: 0.33, bottom: 0.42, left: 0.26, right: 0.74 },
+    { top: 0.53, bottom: 0.62, left: 0.26, right: 0.74 },
+  ];
+  for (const bar of bars) {
+    fillRoundRect(
+      canvas,
+      x + Math.round(bar.left * size),
+      y + Math.round(bar.top * size),
+      Math.round((bar.right - bar.left) * size),
+      Math.max(2, Math.round((bar.bottom - bar.top) * size)),
+      1,
+      barColor,
+    );
+  }
+}
+
+/** 24 位 BMP：文件头 14 字节 + DIB 头 40 字节 + 像素（自下而上，行按 4 字节对齐） */
+function encodeBmp(canvas) {
+  const { width, height } = canvas;
+  const rowSize = Math.ceil((width * 3) / 4) * 4;
+  const pixelSize = rowSize * height;
+  const header = Buffer.alloc(54);
+  header.write('BM', 0, 'latin1');
+  header.writeUInt32LE(54 + pixelSize, 2);
+  header.writeUInt32LE(54, 10);
+  header.writeUInt32LE(40, 14);
+  header.writeInt32LE(width, 18);
+  header.writeInt32LE(height, 22);
+  header.writeUInt16LE(1, 26);
+  header.writeUInt16LE(24, 28);
+  header.writeUInt32LE(pixelSize, 34);
+  header.writeInt32LE(2835, 38);
+  header.writeInt32LE(2835, 42);
+  const pixels = Buffer.alloc(pixelSize);
+  for (let y = 0; y < height; y += 1) {
+    const srcRow = height - 1 - y;
+    for (let x = 0; x < width; x += 1) {
+      const src = (srcRow * width + x) * 3;
+      const dst = y * rowSize + x * 3;
+      pixels[dst] = canvas.data[src + 2];
+      pixels[dst + 1] = canvas.data[src + 1];
+      pixels[dst + 2] = canvas.data[src];
+    }
+  }
+  return Buffer.concat([header, pixels]);
+}
+
+/**
+ * 生成安装器要用的三张位图。
+ *
+ * header  150×57   顶部横幅（所有页面都有）
+ * welcome 164×314  欢迎页左侧大图
+ * finish  164×314  完成页左侧大图
+ */
+function makeBrandBitmaps() {
+  const header = createCanvas(150, 57);
+  fillGradient(header, BRAND_BLUE, BRAND_DEEP);
+  drawBrandMark(header, 10, 11, 35, WHITE, BRAND_BLUE);
+  drawText(header, 'WorkHub', 55, 21, 2, WHITE);
+
+  const welcome = createCanvas(164, 314);
+  fillGradient(welcome, BRAND_BLUE, BRAND_VIOLET);
+  drawBrandMark(welcome, 34, 88, 96, WHITE, BRAND_BLUE);
+  drawText(welcome, 'WorkHub', 19, 212, 3, WHITE);
+
+  const finish = createCanvas(164, 314);
+  fillGradient(finish, BRAND_GREEN, BRAND_GREEN_DEEP);
+  drawLine(finish, 50, 158, 76, 186, 6, WHITE);
+  drawLine(finish, 76, 186, 116, 128, 6, WHITE);
+  drawText(finish, 'WorkHub', 19, 212, 3, WHITE);
+
+  return {
+    header: encodeBmp(header),
+    welcome: encodeBmp(welcome),
+    finish: encodeBmp(finish),
+  };
+}
+
+module.exports = { makeTrayImages, makeIconIco, makeBrandBitmaps };
