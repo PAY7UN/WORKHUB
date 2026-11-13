@@ -39,6 +39,7 @@ import { buildAskMessages, retrieveForAsk } from './agentContext.ts';
 import { runAgent } from './agent/runtime.ts';
 import { DEFAULT_AGENT_ROLE_ID, findAgentRole } from './agent/roles.ts';
 import { purgeStashed, stashFile, sweepStashed } from './storage/v2/vault.ts';
+import { startCollectorScheduler, stopCollectorScheduler } from './collector/scheduler.ts';
 import {
   adminPasswordState,
   bulkApproveAccessRequests,
@@ -2103,6 +2104,10 @@ process.on('uncaughtException', (err) => {
 // 扫在清道夫线程里做，不占着启动不放。
 sweepStashed();
 
+// 会话采集器（可选，WORKHUB_COLLECTOR_ENABLED=1 开启）：
+// 定时把本机 CodeBuddy 的会话痕迹汇总进日常日志文档。旁路任务，坏了不影响主服务。
+startCollectorScheduler();
+
 /**
  * 监听端口。
  *
@@ -2158,6 +2163,7 @@ function listenForPort(): void {
  */
 function gracefulShutdown(reason: string): void {
   logger.notice(`收到停止请求（${reason}），正在关闭`);
+  stopCollectorScheduler();
   let done = false;
   const finish = (): void => {
     if (done) return;

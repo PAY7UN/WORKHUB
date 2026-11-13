@@ -130,16 +130,17 @@ const DEFAULT_ADMIN_PASSWORD = 'admin';
  *
  * 显式配置的优先；没配置时用初始部署密码 admin——它必须好记，
  * 因为部署的人要立刻拿它登进去改密码。
- * 生产环境仍然要求显式配置：对外的实例不该挂着一个人人皆知的初始口令。
+ *
+ * 生产环境不再拒绝启动：桌面安装版由托盘拉起（NODE_ENV=production），
+ * 使用者装完即用，密码不该成为一道门槛。防线交给网页端——
+ * 密码还是初始值时界面会一直提醒，改掉即消失。
  */
 function loadAdminPassword(): string {
   if (CONFIGURED_ADMIN_PASSWORD.length > 0) return CONFIGURED_ADMIN_PASSWORD;
 
   if (IS_PRODUCTION) {
-    abortStartup('生产环境未配置 WORKHUB_ADMIN_PASSWORD', [
-      '初始部署密码是公开的默认值，实例一旦对外就等于把门开着。',
-      '请在 .env 或系统环境变量里设置一个自己的密码再启动。',
-    ]);
+    logger.warn('未配置 WORKHUB_ADMIN_PASSWORD：初始密码为 admin，登录后请尽快修改');
+    logger.warn('  密码还是初始值时，网页端会一直提醒；在「管理后台 → 账号安全」里改掉即可');
   }
 
   return DEFAULT_ADMIN_PASSWORD;

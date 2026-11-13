@@ -45,15 +45,6 @@ const {
 // 默认端口。托盘应用目录里没有 shared/（shared/ 在服务 payload 里，路径不通），
 // 所以这里是镜像值。真源在 shared/constants.ts 的 DEFAULT_API_PORT，改端口时一起改。
 const DEFAULT_PORT = 8787;
-/**
- * 管理员初始密码。
- *
- * 固定 admin，不随机：使用者装完就能直接登录，不用翻聊天记录找密码。
- * 随机密码只适合无人值守的部署，个人使用反而是障碍。
- * 随机的是 SECRET（会话签名密钥）——那个必须每台机器都不一样。
- * 装好后可在网页端「管理后台 → 账号安全」里改。
- */
-const DEFAULT_ADMIN_PASSWORD = 'admin';
 /** 连续崩溃多少次后不再自动重启——服务起不来时反复重启只会刷日志、占 CPU */
 const MAX_RESTARTS = 3;
 /** 崩溃重启的间隔 */
@@ -527,16 +518,18 @@ function warnIgnoredEnvFilePaths() {
 /**
  * 打包态首次运行时准备 .env。
  *
- * 服务端在生产模式下没有 WORKHUB_SECRET / WORKHUB_ADMIN_PASSWORD 就拒绝启动
+ * 服务端在生产模式下没有 WORKHUB_SECRET 就拒绝启动
  * （这是故意的：密钥缺失等于全站权限失守，不能悄悄降级成默认弱口令）。
- * 使用者装完即用，就意味着这两个值得由托盘替他们准备好：
- * 随机密钥 + 固定的默认密码（admin），密码当面告诉他一次。
+ * 使用者装完即用，随机密钥由托盘替他们生成好。
+ *
+ * 密码不写进 .env：初始密码是公开的 admin，写明文没有意义；
+ * 网页端在密码还是初始值时会一直提醒。
  *
  * 「生成」这一步的坑（.env 带 BOM、.env 没了但库还在）由 tray/envfile.cjs 处理，
  * 那儿有回归测试盯着——出事的话代价是使用者的文档解不开，不能靠人肉发现。
  */
 async function ensureEnvFile() {
-  if (!paths.packaged) return { password: null, error: null };
+  if (!paths.packaged) return { error: null, created: false };
   const { dbPath } = dataFiles(paths.dataDir);
   const port = await pickFreePort(DEFAULT_PORT);
   const result = ensureEnvFileFile({
@@ -546,7 +539,6 @@ async function ensureEnvFile() {
     log,
     makeCredentials: () => ({
       secret: randomBytes(32).toString('hex'),
-      password: DEFAULT_ADMIN_PASSWORD,
     }),
   });
   if (result.error) log(result.error);
@@ -1316,9 +1308,9 @@ app.whenReady().then(async () => {
     }
   }
 
-  // 首次运行：生成 .env（打包态），并把初始密码当面告诉使用者。
-  // 放在算 target 前面——端口是刚写进 .env 的，得按它来拼地址。
-  const { password, error } = await ensureEnvFile();
+  // 首次运行：生成 .env（打包态）。放在算 target 前面——端口是刚写进
+  // .env 的，得按它来拼地址。
+  const { created, error } = await ensureEnvFile();
   if (error) {
     // 配置没了（比如 .env 被误删/被杀毒软件隔离），而库还在。
     // 这种不拉起服务：缺密钥的服务根本起不来，起来也是一路报错，
@@ -1336,19 +1328,10 @@ app.whenReady().then(async () => {
       buttons: ['知道了'],
     });
   }
-  if (password) {
+  if (created) {
+    // 不弹密码提示：初始密码 admin 是网页端自己的事——密码还是初始值时
+    // 界面会一直提醒，比装的时候当面念一遍更靠得住。
     log('首次运行：已生成 .env');
-    dialog.showMessageBox({
-      type: 'info',
-      title: 'WorkHub 首次启动',
-      message: '管理员账号：admin',
-      detail:
-        `初始密码：${password}\n\n` +
-        '默认密码就是 admin，装好即可登录。\n' +
-        '之后要改密码，请到网页端「管理后台 → 账号安全」里改；' +
-        '密码还是初始值时，界面会一直提醒你。',
-      buttons: ['我记下了'],
-    });
   }
 
   // 安装器里勾了「开机自启动」→ 这里落地。

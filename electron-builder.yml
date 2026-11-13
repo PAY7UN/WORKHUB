@@ -54,6 +54,8 @@ extraResources:
 # 安装目录根层只额外放一份说明：哪些是程序文件、哪些是使用者的数据、
 # 数据默认在哪、怎么改。装完的人打开安装目录第一眼看到的就是它，
 # 不然面对一屏 dll 和 pak，只能靠猜。
+# 另外：安装器装完会把根层的 Electron 运行时噪音（dll/pak/locales…）设为隐藏，
+# 只留入口、卸载器、说明与配置——见 scripts/nsis/installer.nsh 的 WH_HideRuntimeClutter。
 extraFiles:
   - from: tray/使用说明.txt
     to: 使用说明.txt

@@ -35,9 +35,9 @@ function backupPathOf(envFile) {
  * @param {string} options.envFile .env 的路径
  * @param {string} options.dbPath 数据库的路径（用来判断「库还在不在」）
  * @param {number} options.port 写进 .env 的端口
- * @param {() => { secret: string, password: string }} options.makeCredentials 需要新建时调用它造密钥
+ * @param {() => { secret: string }} options.makeCredentials 需要新建时调用它造密钥
  * @param {(message: string) => void} [options.log] 日志出口
- * @returns {{ password: string | null, error: string | null, created: boolean }}
+ * @returns {{ error: string | null, created: boolean }}
  */
 function ensureEnvFile({ envFile, dbPath, port, makeCredentials, log = () => {} }) {
   const backupFile = backupPathOf(envFile);
@@ -45,7 +45,7 @@ function ensureEnvFile({ envFile, dbPath, port, makeCredentials, log = () => {} 
   if (fs.existsSync(envFile)) {
     repairBom(envFile, log);
     backupEnvFile(envFile, backupFile, log);
-    return { password: null, error: null, created: false };
+    return { error: null, created: false };
   }
 
   // .env 没了但备份还在：拿回来，别重新生成密钥。
@@ -53,7 +53,7 @@ function ensureEnvFile({ envFile, dbPath, port, makeCredentials, log = () => {} 
     try {
       fs.copyFileSync(backupFile, envFile);
       log(`已从备份恢复 ${envFile}`);
-      return { password: null, error: null, created: false };
+      return { error: null, created: false };
     } catch (err) {
       log(`从备份恢复 .env 失败：${err.message}`);
     }
@@ -62,7 +62,6 @@ function ensureEnvFile({ envFile, dbPath, port, makeCredentials, log = () => {} 
   // 库还在、密钥没了：不能重新生成。
   if (dbPath && fs.existsSync(dbPath)) {
     return {
-      password: null,
       created: false,
       error:
         `${envFile} 不在了，但数据库还在（${dbPath}）。` +
@@ -71,7 +70,10 @@ function ensureEnvFile({ envFile, dbPath, port, makeCredentials, log = () => {} 
     };
   }
 
-  const { secret, password } = makeCredentials();
+  // 只写密钥与端口，不写密码：初始密码是公开的默认值 admin，
+  // 把它写成明文既没有信息量（它本来就公开）又让 .env 看着像存了凭据。
+  // 网页端在密码还是初始值时会一直提醒，改掉即消失。
+  const { secret } = makeCredentials();
   fs.mkdirSync(path.dirname(envFile), { recursive: true });
   fs.writeFileSync(
     envFile,
@@ -79,8 +81,6 @@ function ensureEnvFile({ envFile, dbPath, port, makeCredentials, log = () => {} 
       '# WorkHub 本地版配置（首次启动自动生成）',
       '# 主密钥：用于 JWT 签名与 API Key 加密，切勿泄露或分享',
       `WORKHUB_SECRET=${secret}`,
-      '# 管理员初始密码：仅首次建库时写入账号，之后改这里不会改密码',
-      `WORKHUB_ADMIN_PASSWORD=${password}`,
       '# 监听端口（托盘按它拼出「打开网页」的地址）',
       `WORKHUB_PORT=${port}`,
       '',
@@ -88,7 +88,7 @@ function ensureEnvFile({ envFile, dbPath, port, makeCredentials, log = () => {} 
     'utf8',
   );
   backupEnvFile(envFile, backupFile, log);
-  return { password, error: null, created: true };
+  return { error: null, created: true };
 }
 
 /**

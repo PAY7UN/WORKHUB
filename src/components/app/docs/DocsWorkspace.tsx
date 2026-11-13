@@ -435,8 +435,7 @@ export function DocsWorkspace() {
          * 操作区：三个按钮等分。
          *
          * 宽度一样（flex-1 + basis-0，不看内容），谁也不多占地方。
-         * 外观仍分主次：「新建」是渐变实心，另外两个是描边图标——
-         * 常用的一眼能认出来，但三块挨在一起时边界是对齐的。
+         * 外观一致：三个都是描边样式，挨在一起时边界是对齐的。
          *
          * 用 flex-1 basis-0 而不是 grid-cols-3：没有上传权限时只剩两个按钮，
          * 这时自动各占一半，grid 会空出一格。
@@ -448,7 +447,7 @@ export function DocsWorkspace() {
                 type="button"
                 onClick={() => openCreate(currentFolderId, 'file')}
                 title="新建文档"
-                className="gradient-bg flex h-8 min-w-0 flex-1 basis-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-transparent text-[11px] font-medium text-white shadow-sm shadow-indigo-500/20 transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-1 focus-visible:outline-none"
+                className="flex h-8 min-w-0 flex-1 basis-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-border/70 bg-white/70 text-slate-600 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:outline-none dark:bg-white/5 dark:text-slate-300 dark:hover:bg-indigo-500/15"
               >
                 <FilePlus className="h-3.5 w-3.5 shrink-0" />
                 <span className="whitespace-nowrap">新建</span>

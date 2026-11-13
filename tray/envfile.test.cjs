@@ -19,7 +19,7 @@ function tempDir() {
 
 /** 造一份「一定会被调用」的凭证 */
 function credentials() {
-  return { secret: 'secret-value', password: 'password-value' };
+  return { secret: 'secret-value' };
 }
 
 test('首次运行生成 .env，并顺手留一份备份', () => {
@@ -29,12 +29,12 @@ test('首次运行生成 .env，并顺手留一份备份', () => {
 
   assert.equal(result.error, null);
   assert.equal(result.created, true);
-  assert.equal(result.password, 'password-value');
 
   const text = fs.readFileSync(envFile, 'utf8');
   assert.match(text, /WORKHUB_SECRET=secret-value/);
-  assert.match(text, /WORKHUB_ADMIN_PASSWORD=password-value/);
   assert.match(text, /WORKHUB_PORT=8787/);
+  // 密码不落 .env：初始密码是公开的 admin，写明文没有意义，网页端会持续提醒
+  assert.ok(!text.includes('WORKHUB_ADMIN_PASSWORD'), '.env 不该有明文密码');
   // 备份留着：.env 丢了还能把密钥找回来
   assert.ok(fs.existsSync(backupPathOf(envFile)), '应当留下 .env.bak');
 });
@@ -60,7 +60,6 @@ test('.env 没了、库还在：不重新生成密钥，把话说明白', () => 
   });
 
   assert.equal(called, false, '不该再造密钥');
-  assert.equal(result.password, null);
   assert.ok(result.error, '应当说明为什么没生成');
   assert.match(result.error, /无法解密|解密/);
   assert.equal(fs.existsSync(envFile), false, '不该写出一个新的 .env');

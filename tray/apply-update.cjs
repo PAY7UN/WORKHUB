@@ -21,7 +21,7 @@
  *                         --version <版本> --pid <托盘 pid> --log <日志路径>
  *                         --exec <重新拉起用的可执行文件> [--exec-arg <参数>...]
  */
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const {
   cpSync,
   existsSync,
@@ -242,6 +242,37 @@ function removeStaleFiles() {
   if (removed.length) log('info', `已清理新版里没有的旧项：${removed.join('、')}`);
 }
 
+/**
+ * 保持安装目录清爽：把 Electron 运行时噪音设为隐藏。
+ *
+ * 安装器（NSIS customInstall）装完会把 dll/pak/locales 这些顶层运行时文件
+ * 藏起来，使用者打开安装目录只看到入口和说明。更新器整块覆盖之后，
+ * 新文件不带隐藏属性——不补这一步的话，更新一次目录就「炸」一次。
+ *
+ * 保持可见的：入口 exe、卸载器、使用说明，以及 PROTECTED 里的数据与配置。
+ * attrib 对文件和目录都适用；失败不致命（只是不好看），记日志继续。
+ */
+const KEEP_VISIBLE = new Set([
+  ...PROTECTED,
+  'WorkHub.exe',
+  '使用说明.txt',
+]);
+
+function hideRuntimeClutter() {
+  let hidden = 0;
+  for (const name of topLevelNames(ROOT)) {
+    if (KEEP_VISIBLE.has(name) || name.startsWith('Uninstall ')) continue;
+    try {
+      const res = spawnSync('attrib', ['+h', join(ROOT, name)], { windowsHide: true });
+      if (!res.error && res.status === 0) hidden += 1;
+      else log('warn', `藏不住 ${name}：${res.error?.message ?? `exit ${res.status}`}`);
+    } catch (err) {
+      log('warn', `藏不住 ${name}：${err.message}`);
+    }
+  }
+  if (hidden) log('info', `已隐藏运行时文件 ${hidden} 项，保持安装目录清爽`);
+}
+
 /** 回滚：把备份恢复回去 */
 function rollback() {
   const names = topLevelNames(BACKUP);
@@ -318,6 +349,7 @@ async function main() {
     backupPayload();
     applyPayload();
     removeStaleFiles();
+    hideRuntimeClutter();
   } catch (err) {
     log('error', `替换文件失败：${err?.stack ?? err}`);
     rollback();

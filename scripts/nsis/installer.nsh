@@ -36,7 +36,8 @@
 !define MUI_WELCOMEPAGE_TITLE "欢迎使用 WorkHub"
 !define MUI_WELCOMEPAGE_TEXT "个人记录与知识管理站点。$\r$\n$\r$\n下一步可以选择数据存放位置，并设置是否开机自动启动。$\r$\n"
 !define MUI_FINISHPAGE_TITLE "安装完成"
-!define MUI_FINISHPAGE_TEXT "WorkHub 已安装完成。$\r$\n$\r$\n管理员账号：admin，初始密码：admin。安装后可在「设置 → 账号」中修改密码。$\r$\n"
+; 初始密码不在这里提醒：网页端在密码还是初始值时会一直提醒，改掉即消失。
+!define MUI_FINISHPAGE_TEXT "WorkHub 已安装完成。$\r$\n$\r$\n打开 WorkHub 即可在浏览器中开始使用。$\r$\n"
 
 Var WH_DataDir       ; 数据存放目录
 Var WH_AutoStart     ; 开机自启动，字符串 "true" / "false"
@@ -51,13 +52,64 @@ Var WH_TitleFont     ; 标题字体
 Var WH_SubTitle      ; 副标题
 Var WH_DataLabel     ; 「数据存放位置」标签
 Var WH_Hint          ; 目录说明
-Var WH_Note          ; 密码说明
 
 ; 默认值（在 .onInit 里，早于页面显示）
 !macro customInit
   StrCpy $WH_DataDir "$LOCALAPPDATA\WorkHub"
   StrCpy $WH_AutoStart "true"
+  ; 重装/升级：安装目录里上一版留下的文件被 customInstall 藏过（隐藏属性）。
+  ; NSIS 的 File 覆盖一个隐藏文件必然失败（CREATE_ALWAYS 拒绝隐藏目标），
+  ; 所以动文件之前先把顶层的属性清掉。
+  Call WH_UnhideTopLevel
 !macroend
+
+; 清掉安装目录顶层所有项的隐藏/系统属性（不递归：File 只覆盖已知路径，
+; 嵌套层的文件本身没有被藏过，藏住的只是顶层目录外壳，不影响里面覆盖）
+Function WH_UnhideTopLevel
+  ClearErrors
+  FindFirst $R0 $R1 "$INSTDIR\*.*"
+  ${While} $R1 != ""
+    ${If} $R1 != "."
+    ${AndIf} $R1 != ".."
+      SetFileAttributes "$INSTDIR\$R1" NORMAL
+    ${EndIf}
+    ClearErrors
+    FindNext $R0 $R1
+  ${EndWhile}
+  FindClose $R0
+FunctionEnd
+
+; 把 Electron 运行时噪音藏起来。
+;
+; 安装目录根层天然躺着一堆使用者看不懂也不敢删的 dll/pak/locales（Electron
+; 的解包布局，electron-builder 不支持收进子目录）。装完把它们设为隐藏，
+; 使用者打开安装目录第一眼只看到能认的东西；程序运行、卸载、自更新都不受影响。
+Function WH_HideRuntimeClutter
+  ClearErrors
+  FindFirst $R0 $R1 "$INSTDIR\*.*"
+  ${While} $R1 != ""
+    ${If} $R1 != "."
+    ${AndIf} $R1 != ".."
+      ${If} $R1 == "WorkHub.exe"
+      ${OrIf} $R1 == "使用说明.txt"
+      ${OrIf} $R1 == "tray.config.json"
+      ${OrIf} $R1 == "data"
+      ${OrIf} $R1 == "logs"
+      ${OrIf} $R1 == ".env"
+      ${OrIf} $R1 == ".env.bak"
+        ; 这些保持可见：入口、说明、配置与数据
+      ${Else}
+        StrCpy $R2 $R1 10
+        ${If} $R2 != "Uninstall "
+          SetFileAttributes "$INSTDIR\$R1" HIDDEN
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+    ClearErrors
+    FindNext $R0 $R1
+  ${EndWhile}
+  FindClose $R0
+FunctionEnd
 
 ; 品牌化欢迎页。electron-builder 的辅助安装器默认不带欢迎页，
 ; 需要自己把 MUI_PAGE_WELCOME 插进来。
@@ -119,11 +171,6 @@ Function WH_CreateOptionsPage
   ${NSD_CreateCheckBox} 120u 106u 195u 14u "开机自动启动 WorkHub"
   Pop $WH_Check
   ${NSD_Check} $WH_Check
-
-  ; 初始密码说明
-  ${NSD_CreateLabel} 120u 128u 195u 30u "管理员账号 admin，初始密码 admin。安装后可在「设置 → 账号」中修改密码。"
-  Pop $WH_Note
-  SetCtlColors $WH_Note "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
 
   Call muiPageLoadFullWindow
   nsDialogs::Show
@@ -243,10 +290,11 @@ Function WH_WriteTrayConfig
   ${EndIf}
 FunctionEnd
 
-; 安装阶段：建目录 + 写配置
+; 安装阶段：建目录 + 写配置 + 藏运行时噪音
 !macro customInstall
   CreateDirectory "$WH_DataDir"
   Call WH_WriteTrayConfig
+  Call WH_HideRuntimeClutter
   DetailPrint "数据存放位置：$WH_DataDir"
   ${If} $WH_AutoStart == "true"
     DetailPrint "已设置开机自动启动 WorkHub。"

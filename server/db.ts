@@ -1789,6 +1789,23 @@ function parseRagScope(raw: string | null | undefined): RagScope {
   }
 }
 
+/* ----------------------------- 采集器游标 ----------------------------- */
+
+/** 读一个会话的游标（最后已处理的 updatedAt）；没处理过返回 undefined */
+export function getCollectorCursor(source: string, sessionId: string): number | undefined {
+  const row = db
+    .prepare('SELECT cursor FROM collector_state WHERE source = ? AND session_id = ?')
+    .get(source, sessionId) as { cursor: number } | undefined;
+  return row?.cursor;
+}
+
+/** 写回游标：存在则覆盖，不存在则插入 */
+export function setCollectorCursor(source: string, sessionId: string, cursor: number): void {
+  db.prepare(
+    'INSERT OR REPLACE INTO collector_state (source, session_id, cursor, updated_at) VALUES (?, ?, ?, ?)',
+  ).run(source, sessionId, cursor, Date.now());
+}
+
 /** 完整配置（含明文 Key，仅服务端内部使用，禁止外发） */
 export function getAgentConfig(): AgentSettings {
   const r = readConfigRow();

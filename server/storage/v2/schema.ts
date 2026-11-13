@@ -261,6 +261,17 @@ CREATE TABLE IF NOT EXISTS access_audit (
   created_at INTEGER NOT NULL
 );
 
+-- 采集器游标：后台采集（本机 AI 会话 → 日常日志）记「每个会话处理到哪」。
+-- cursor 是会话的最后活动时间（updatedAt）：只有长进了游标的会话才重新汇总，
+-- 断电、重启、更新失败都不丢进度。新表对老库零风险（CREATE IF NOT EXISTS）。
+CREATE TABLE IF NOT EXISTS collector_state (
+  source      TEXT NOT NULL,
+  session_id  TEXT NOT NULL,
+  cursor      INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (source, session_id)
+);
+
 -- ---------------------------------------------------------------- 索引
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_repo ON nodes(repo_id);
