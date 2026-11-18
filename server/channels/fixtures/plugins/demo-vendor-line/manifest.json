@@ -1,0 +1,14 @@
+{
+  "id": "demo-vendor-line",
+  "name": "示例厂商行",
+  "version": "1.0.0",
+  "publisher": "示例设备组",
+  "summary": "一行一个 JSON 对象：把 JSON 摊成字段。",
+  "entry": "index.mjs",
+  "protocol": {
+    "name": "示例厂商行",
+    "summary": "以换行结尾的 UTF-8 JSON 对象，一行一条消息。",
+    "framing": { "kind": "delimiter", "delimiter": "0a" },
+    "encoding": "utf8"
+  }
+}

@@ -13,7 +13,6 @@ import {
   Lock,
   Unlock,
   UserCheck,
-  Boxes,
 } from 'lucide-react';
 import type { DocTree, DocNode } from '@/types';
 import { useApp } from '@/context/AppContext';
@@ -36,7 +35,7 @@ interface DocTreeViewProps {
    *
    * 有了它才能把「还没到」和「没有」分开：读取中显示「正在读取…」，
    * 而不是一句「暂无文档」——后者会被当成资料没了，
-   * 用户接着去建仓库、建文件夹，越弄越乱。
+   * 用户接着去建文件夹，越弄越乱。
    */
   loading?: boolean;
   selectedId: string | null;
@@ -58,11 +57,6 @@ interface DocTreeViewProps {
    * 加密文档的访客访问只有这一条路：给某个人开一道口子、可随时收回。
    */
   onRequestAccessGrant?: (node: DocNode) => void;
-  /**
-   * 打开仓库归属选择（跨仓库迁移，仅管理员）。
-   * 搬的是整棵子树：孩子跟着爹走，父子不会分属两个仓库。
-   */
-  onRequestRepo?: (node: DocNode) => void;
 }
 
 type TreeNodeProps = Omit<DocTreeViewProps, 'tree'> & { node: DocTree; depth: number };
@@ -149,18 +143,26 @@ function TreeNode({
   onRequestUpload,
   onRequestEncrypt,
   onRequestAccessGrant,
-  onRequestRepo,
 }: TreeNodeProps) {
   const { hasPermission, isAdmin } = useApp();
-  const isOpen = expanded[node.id] ?? depth < 1;
+  // 目录默认全部收起：进入界面只看到文件树骨架，用户自己点开需要的分支
+  const isOpen = expanded[node.id] ?? false;
   const isSelected = selectedId === node.id;
   const canEdit = hasPermission('doc.edit');
   const canDelete = hasPermission('doc.delete');
   const canCreate = hasPermission('doc.create');
   const canMove = hasPermission('doc.move');
   const canUpload = hasPermission('doc.upload');
+  /**
+   * 内置文档（协议说明书）：内容能改，但不许改名、搬家、删除。
+   *
+   * 服务端也会挡，这里先不显示入口——摆一个点了必然报错的菜单，
+   * 比不摆更让人以为自己哪里做错了。
+   */
+  const isBuiltin = node.builtin === true;
   // 访客模式不显示任何操作入口
-  const showMenu = isAdmin || canEdit || canDelete || canCreate || canMove || canUpload;
+  const showMenu =
+    (isAdmin || canEdit || canDelete || canCreate || canMove || canUpload) && !isBuiltin;
 
   return (
     <div className="animate-slide-in">
@@ -207,6 +209,14 @@ function TreeNode({
           </span>
         )}
         <span className="flex-1 text-sm truncate">{node.name}</span>
+        {isBuiltin ? (
+          <span
+            className="shrink-0 rounded bg-indigo-100/70 px-1 py-px text-[9px] leading-none text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"
+            title="内置文档：跟代码走版本管理，内容可改，但不许改名、搬家或删除"
+          >
+            内置
+          </span>
+        ) : null}
         <span className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
           {formatRelativeTime(node.updatedAt)}
         </span>
@@ -246,11 +256,6 @@ function TreeNode({
               {canMove && (
                 <DropdownMenuItem className="rounded-md transition-colors" onClick={() => onRequestMove(node)}>
                   <FolderInput className="h-4 w-4 mr-2" /> 移动
-                </DropdownMenuItem>
-              )}
-              {isAdmin && onRequestRepo && (
-                <DropdownMenuItem className="rounded-md transition-colors" onClick={() => onRequestRepo(node)}>
-                  <Boxes className="h-4 w-4 mr-2" /> 归入仓库
                 </DropdownMenuItem>
               )}
               {canDelete && (
@@ -317,7 +322,6 @@ function TreeNode({
               onRequestUpload={onRequestUpload}
               onRequestEncrypt={onRequestEncrypt}
               onRequestAccessGrant={onRequestAccessGrant}
-              onRequestRepo={onRequestRepo}
             />
           ))}
         </div>

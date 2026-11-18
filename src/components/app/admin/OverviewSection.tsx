@@ -3,7 +3,6 @@ import {
   ArrowRight,
   Bot,
   FileText,
-  FolderTree,
   Lock,
   ShieldCheck,
   Users,
@@ -60,7 +59,6 @@ export function OverviewSection({ onNavigate }: OverviewSectionProps) {
       value: fileCount,
       icon: FileText,
       hint: `另有 ${folderCount} 个文件夹`,
-      section: 'projects',
     },
     {
       label: '加密文档',
@@ -213,20 +211,6 @@ export function OverviewSection({ onNavigate }: OverviewSectionProps) {
           <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </button>
 
-        <button
-          type="button"
-          onClick={() => onNavigate('projects')}
-          className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-border/70 bg-white/50 px-3 py-2.5 text-left transition-colors hover:border-indigo-300/70 hover:bg-indigo-50/40 dark:bg-white/5 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/20"
-        >
-          <FolderTree className="h-4 w-4 text-indigo-500" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium">项目仓库</span>
-            <span className="block text-[11px] text-muted-foreground">
-              按项目分块留存资料
-            </span>
-          </span>
-          <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        </button>
       </div>
 
     </div>

@@ -60,7 +60,7 @@ import { diffRange } from '../../lib/textDiff';
 /**
  * 「这次改动是外部灌进来的」标记。
  *
- * 外部同步（AI 润色结果、正文改动回写源码）如果再走一遍 onChange，
+ * 外部同步（正文改动回写源码）如果再走一遍 onChange，
  * 就会把「用户在正文里刚敲的字还没转成 Markdown」的那次延迟落库取消掉——
  * 用户会发现自己在正文里打的字凭空消失。带上这个标记就能把外部同步
  * 与用户输入区分开。
@@ -401,8 +401,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
    * 外部值 → 编辑器。
    *
    * 「不乱跳」的关键就在这一处。用户每次输入时，CodeMirror 内部文档已经等于
-   * React 侧收到的 value，两者相等直接返回，编辑器状态零改动；只有应用润色
-   * 结果这类真正的外部覆盖才会写一次 transaction。
+   * React 侧收到的 value，两者相等直接返回，编辑器状态零改动；只有切换文档
+   * 这类真正的外部覆盖才会写一次 transaction。
    *
    * 反例是被替换掉的实现：那里按 props 变化无条件回灌 textarea.value，
    * 恰好打断了输入法正在进行的组字。
@@ -418,14 +418,26 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     const whole = from === 0 && to === cur.length;
     view.dispatch({
       changes: { from, to, insert },
-      // 整篇被替换后，原光标位置失去意义，移到末尾符合直觉；
-      // 局部替换则让 CodeMirror 自己把光标映射过去，不打断正在输入的人
-      ...(whole ? { selection: { anchor: value.length } } : {}),
-      // 不进 undo 栈：润色结果是外部灌进来的，Ctrl+Z 应能把它整体撤掉，
-      // 而不是撤到这一步之前、得到一份「润色前 + 上一次局部编辑」的混合内容
+      // 不进 undo 栈：外部灌进来的内容，Ctrl+Z 应能把它整体撤掉，
+      // 而不是撤到这一步之前、得到一份「覆盖前 + 上一次局部编辑」的混合内容
       annotations: [Transaction.addToHistory.of(false), externalSync.of(true)],
       scrollIntoView: false,
     });
+    /**
+     * 整篇被替换后，原光标位置失去意义，移到末尾符合直觉；
+     * 局部替换则让 CodeMirror 自己把光标映射过去，不打断正在输入的人。
+     *
+     * 末尾位置必须取**替换之后**文档的真实长度，不能用字符串长度：
+     * 正文里只要有 CRLF，编辑器里的文档就比字符串短（换行被规范化掉了），
+     * 用字符串长度会让光标落到文档之外，CodeMirror 当场抛
+     * “Selection points outside of document”，整页白屏。
+     */
+    if (whole) {
+      view.dispatch({
+        selection: { anchor: view.state.doc.length },
+        scrollIntoView: false,
+      });
+    }
   }, [value]);
 
   // 主题切换：只重配高亮样式而非重建实例，undo 历史与滚动位置都得以保留

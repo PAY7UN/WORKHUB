@@ -8,26 +8,24 @@
  *   1. 改一个字要整篇重写 content 列，大文档每次保存都是全量 IO；
  *   2. 库里混着元数据与内容，备份、迁移、排查都得整库搬；
  *   3. 内容被锁死在数据库里——用户没法用任何外部工具打开它，
- *      也无法把它纳入自己的 git 仓库。
+ *      也无法把它纳入自己的版本库。
  *
  * 搬出来之后，「文件」成为位置的唯一真相，数据库退化成索引：
  * 查一篇文档 = 查索引拿路径 → 读文件。
  * 代价是多一次文件 IO，换来的是正文可被外部工具直接消费。
  *
- * 目录布局（没有回收站、没有历史，仓库就是唯一的存放单位）：
- *   vault/<repo-slug>/docs/<路径>.md      正文（明文）
- *   vault/<repo-slug>/docs/<路径>.md.enc  正文（加密，存的是密文字符串）
- *   vault/<repo-slug>/files/<路径>         原件（zip / 图片 / PDF / 代码…，保留原名）
- *   vault/<repo-slug>/assets/<路径>/<名>   附件
+ * 目录布局（没有回收站、没有历史，vault 根就是唯一的存放单位）：
+ *   vault/docs/<路径>.md      正文（明文）
+ *   vault/docs/<路径>.md.enc  正文（加密，存的是密文字符串）
+ *   vault/files/<路径>        原件（zip / 图片 / PDF / 代码…，保留原名）
+ *   vault/assets/<路径>/<名>  附件
  */
 import { createHash } from 'node:crypto';
-import type { Dirent } from 'node:fs';
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   renameSync,
   rmdirSync,
   rmSync,
@@ -45,27 +43,6 @@ export const VAULT_ROOT = resolveVaultDir();
 
 /** 正文在文件里的扩展名 */
 export const BODY_EXT = '.md';
-
-/**
- * 把任意名字变成安全的目录名。
- *
- * 仓库目录名不能直接用仓库名：仓库名允许中文、空格、斜杠，
- * 而目录名要跨平台稳（Windows 不允许 \ / : * ? " < > |）。
- * 这里做的是「可读性优先」的归一化——保留中文与字母数字，
- * 非法字符换成短横线，再补一段 id 前缀防重名。
- */
-export function slugify(name: string, id: string): string {
-  const base =
-    name
-      .trim()
-      .toLowerCase()
-      .replace(/[\\/:*?"<>|]+/g, '-')
-      .replace(/\s+/g, '-')
-      .replace(/[^\p{L}\p{N}_-]+/gu, '')
-      .replace(/-{2,}/g, '-')
-      .replace(/^-+|-+$/g, '') || 'repo';
-  return `${base}-${id.replace(/^r-/, '').slice(0, 8)}`;
-}
 
 /**
  * 把相对路径规整成「目录内相对路径」的形式。
@@ -112,20 +89,20 @@ export function bodyFileName(rel: string, encrypted: boolean): string {
   return encrypted ? `${base}.enc` : base;
 }
 
-/** 仓库下的正文文件绝对路径 */
-export function bodyPath(repoSlug: string, relPath: string, encrypted: boolean): string {
+/** 正文的绝对路径 */
+export function bodyPath(relPath: string, encrypted: boolean): string {
   const rel = safeRelPath(relPath);
   if (!rel) throw new Error(`非法路径：${relPath}`);
-  return assertInsideVault(join(VAULT_ROOT, repoSlug, 'docs', bodyFileName(rel, encrypted)));
+  return assertInsideVault(join(VAULT_ROOT, 'docs', bodyFileName(rel, encrypted)));
 }
 
 /** 附件的绝对路径 */
-export function assetPath(repoSlug: string, relPath: string, fileName: string): string {
+export function assetPath(relPath: string, fileName: string): string {
   const rel = safeRelPath(relPath);
   if (!rel) throw new Error(`非法路径：${relPath}`);
   const name = safeRelPath(fileName);
   if (!name) throw new Error(`非法文件名：${fileName}`);
-  return assertInsideVault(join(VAULT_ROOT, repoSlug, 'assets', rel, name));
+  return assertInsideVault(join(VAULT_ROOT, 'assets', rel, name));
 }
 
 /**
@@ -139,10 +116,10 @@ export function assetPath(repoSlug: string, relPath: string, fileName: string): 
  * 路径里保留原文件名与扩展名：下载回来的东西就该叫它本来的名字，
  * 而不是被改成一串 id。
  */
-export function filePath(repoSlug: string, relPath: string): string {
+export function filePath(relPath: string): string {
   const rel = safeRelPath(relPath);
   if (!rel) throw new Error(`非法路径：${relPath}`);
-  return assertInsideVault(join(VAULT_ROOT, repoSlug, 'files', rel));
+  return assertInsideVault(join(VAULT_ROOT, 'files', rel));
 }
 
 /**
@@ -152,12 +129,12 @@ export function filePath(repoSlug: string, relPath: string): string {
  * 删掉文件夹后这两个目录会空下来——留着它们等于在盘上留一堆空壳，
  * 界面上看着已经删干净了，盘上却还摆着同名文件夹。
  */
-export function folderDirs(repoSlug: string, relPath: string): string[] {
+export function folderDirs(relPath: string): string[] {
   const rel = safeRelPath(relPath);
   if (!rel) return [];
   return [
-    assertInsideVault(join(VAULT_ROOT, repoSlug, 'docs', rel)),
-    assertInsideVault(join(VAULT_ROOT, repoSlug, 'files', rel)),
+    assertInsideVault(join(VAULT_ROOT, 'docs', rel)),
+    assertInsideVault(join(VAULT_ROOT, 'files', rel)),
   ];
 }
 
@@ -204,8 +181,8 @@ export function contentHash(data: string | Buffer): string {
  * 没有回收站，删除就是删除：文件要么在，要么不在。
  * 文件不存在也算成功——幂等，重复删不会报错。
  */
-export function removeBodyFile(repoSlug: string, relPath: string, encrypted: boolean): void {
-  const target = bodyPath(repoSlug, relPath, encrypted);
+export function removeBodyFile(relPath: string, encrypted: boolean): void {
+  const target = bodyPath(relPath, encrypted);
   if (!existsSync(target)) return;
   try {
     unlinkSync(target);
@@ -347,23 +324,14 @@ export function moveFileAt(from: string, to: string): void {
 }
 
 /**
- * 移动正文文件（改名、换父目录、跨仓库搬家时用）。
- *
- * 源与目标可以属于不同仓库：跨仓库搬家时文件要落到目标仓库的目录里。
- * 留在原仓库目录下就成了没人认领的孤儿文件——原仓库一删，文档就只剩空壳。
+ * 移动正文文件（改名、换父目录时用）。
  *
  * 源文件不存在就当无事发生：文件与索引行本来就可能不同步，
  * 移动失败不该阻断一次改名。
  */
-export function moveBodyFile(
-  fromSlug: string,
-  fromRel: string,
-  toSlug: string,
-  toRel: string,
-  encrypted: boolean,
-): void {
-  const from = bodyPath(fromSlug, fromRel, encrypted);
-  const to = bodyPath(toSlug, toRel, encrypted);
+export function moveBodyFile(fromRel: string, toRel: string, encrypted: boolean): void {
+  const from = bodyPath(fromRel, encrypted);
+  const to = bodyPath(toRel, encrypted);
   if (from === to) return;
   if (!existsSync(from)) return;
   mkdirSync(dirname(to), { recursive: true });
@@ -380,18 +348,12 @@ export function moveBodyFile(
 /**
  * 移动附件文件（宿主文档搬家时用）。
  *
- * 附件的位置里嵌着宿主的路径与仓库，所以宿主一搬家，
+ * 附件的位置里嵌着宿主的路径，所以宿主一搬家，
  * 附件的二进制也得跟着换地方。
  */
-export function moveAssetFile(
-  fromSlug: string,
-  fromRel: string,
-  toSlug: string,
-  toRel: string,
-  fileName: string,
-): void {
-  const from = assetPath(fromSlug, fromRel, fileName);
-  const to = assetPath(toSlug, toRel, fileName);
+export function moveAssetFile(fromRel: string, toRel: string, fileName: string): void {
+  const from = assetPath(fromRel, fileName);
+  const to = assetPath(toRel, fileName);
   if (from === to || !existsSync(from)) return;
   mkdirSync(dirname(to), { recursive: true });
   try {
@@ -404,65 +366,10 @@ export function moveAssetFile(
 }
 
 /**
- * 删掉整个仓库目录。
- *
- * 仓库在磁盘上就是一个目录，删仓库就是删目录——比逐个文件删干净，
- * 也不会留下「文件删了但目录还在」的残骸。
- *
- * 删不干净就报错，不假装删掉了：上层靠这个返回值决定
- * 能不能把仓库行也删掉。目录还在就报失败，好过留下没人认领的孤儿文件。
- */
-export function removeRepoDir(repoSlug: string): void {
-  const dir = assertInsideVault(join(VAULT_ROOT, repoSlug));
-  if (!existsSync(dir)) return;
-  try {
-    rmSync(dir, { recursive: true, force: true });
-  } catch {
-    // 递归删有时会被占用或被系统拦下，退回逐个文件删
-    removeTreeByHand(dir);
-  }
-  if (existsSync(dir)) {
-    throw new Error(`仓库目录删不掉：${dir}`);
-  }
-}
-
-/**
- * 递归删目录的兜底实现：先删文件，再从深往上删空目录。
- *
- * 递归删一次不成，不代表逐个删也不行——
- * 被占用的往往只是某一个文件，整块推倒反而更脆。
- */
-function removeTreeByHand(dir: string): void {
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return; // 目录已经不在了
-  }
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      removeTreeByHand(full);
-      try {
-        rmdirSync(full);
-      } catch {
-        // 留着就留着，末尾会检查目录还在不在
-      }
-    } else {
-      try {
-        unlinkSync(full);
-      } catch {
-        // 同上
-      }
-    }
-  }
-}
-
-/**
  * 从最深往上删空目录。
  *
  * 文件搬走或删掉之后，原目录往往剩个空壳。留着它没坏处，
- * 但目录越堆越多时，「这个仓库有哪些内容」就说不清了。
+ * 但目录越堆越多时，「vault 里有哪些内容」就说不清了。
  */
 export function pruneEmptyDirs(dir: string): void {
   const root = resolve(VAULT_ROOT);

@@ -5,13 +5,12 @@ import {
   Upload,
   Home,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import { DocTreeView } from '../DocTreeView';
 import { FolderView } from '../FolderView';
 import { DocEditor } from '../DocEditor';
 import { DropPreview } from '../DropPreview';
-import { RepoSwitcher } from '../RepoSwitcher';
 import {
   CreateDialog,
   RenameDialog,
@@ -19,7 +18,6 @@ import {
   MoveDialog,
   UploadDialog,
   EncryptDocDialog,
-  RepoAssignDialog,
   type UploadBatchResult,
   type UploadProgress,
 } from '../Modal';
@@ -32,7 +30,7 @@ import { toast } from 'sonner';
  * 文档工作区。
  *
  * 这里只放「文档」这一件事：文件树、编辑器、文件夹视图，以及围绕它们的
- * 新建/重命名/删除/移动/上传/加密/换仓库等操作。
+ * 新建/重命名/删除/移动/上传/加密等操作。
  *
  * 全局性的东西（身份、管理后台、AI 助手）不在这里——它们属于整个应用，
  * 挂在 Shell 上，换到工作台时依然在。
@@ -51,14 +49,11 @@ export function DocsWorkspace() {
     visibleDocs,
     encryptDoc,
     decryptDoc,
-    currentRepoId,
-    currentRepo,
-    repos,
-    refreshRepos,
     refreshDocs,
     bootstrapping,
   } = useApp();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -112,12 +107,70 @@ export function DocsWorkspace() {
   // 文档加密：目标文档
   const [encryptTarget, setEncryptTarget] = useState<DocNode | null>(null);
 
-  // 仓库归属：待迁移的文档
-  const [repoTarget, setRepoTarget] = useState<DocNode | null>(null);
+  const tree = useMemo(() => buildTree(), [buildTree]);
 
-  // 按当前所在仓库过滤文件树：只看选中仓库的资料。
-  // 仓库是必选的，所以这里始终带着仓库 id——不存在「所有仓库混在一起」的视图。
-  const tree = useMemo(() => buildTree(currentRepoId || undefined), [buildTree, currentRepoId]);
+  /* ------------------------------ 深链：?doc=<节点 id> ------------------------------ */
+
+  /**
+   * 深链：地址栏里带着 `?doc=<节点 id>` 时，落在这篇文档上。
+   *
+   * 这是「说明书从工具区搬进记录区」之后的关键一环：
+   * 工具区的协议行给的链接就是 `/?doc=<节点 id>`，
+   * 点一下直接落到记录区里那篇说明书，而不是落到记录区的首页。
+   */
+  const deepLinkId = searchParams.get('doc');
+
+  /** 展开一篇文档的祖先目录，否则它在树里是收着的，看不到自己落在哪 */
+  const expandAncestors = useCallback(
+    (doc: DocNode) => {
+      setExpanded((prev) => {
+        const next = { ...prev };
+        let parentId = doc.parentId;
+        while (parentId) {
+          next[parentId] = true;
+          parentId = docs.find((d) => d.id === parentId)?.parentId ?? null;
+        }
+        return next;
+      });
+    },
+    [docs],
+  );
+
+  useEffect(() => {
+    if (!deepLinkId) return;
+    const doc = visibleDocs.find((d) => d.id === deepLinkId);
+    if (!doc) return;
+    // 已经开着了就别再动：否则每次渲染都重新取一遍正文
+    if (editingId === deepLinkId) return;
+    setSelectedId(doc.id);
+    if (doc.type === 'file') {
+      setCurrentFolderId(doc.parentId);
+      setEditingId(doc.id);
+      // 清单里只有元数据，正文得单独取
+      void loadDocContent(doc.id);
+    } else {
+      setCurrentFolderId(doc.id);
+    }
+    expandAncestors(doc);
+  }, [deepLinkId, visibleDocs, editingId, loadDocContent, expandAncestors]);
+
+  /** 地址栏跟着当前打开的文档走：关掉编辑器就把参数撤掉 */
+  const syncDocParam = useCallback(
+    (docId: string | null) => {
+      const current = searchParams.get('doc');
+      if (docId) {
+        if (current === docId) return;
+        const next = new URLSearchParams(searchParams);
+        next.set('doc', docId);
+        setSearchParams(next, { replace: true });
+      } else if (current) {
+        const next = new URLSearchParams(searchParams);
+        next.delete('doc');
+        setSearchParams(next, { replace: true });
+      }
+    },
+    [searchParams, setSearchParams],
+  );
 
   // 统计某节点下所有后代（用于删除前提示影响范围）
   const countDescendants = useCallback(
@@ -149,10 +202,12 @@ export function DocsWorkspace() {
     if (doc.type === 'folder') {
       setCurrentFolderId(doc.id);
       setEditingId(null);
+      syncDocParam(null);
     } else {
       // 点击文件直接打开文章
       setCurrentFolderId(doc.parentId);
       setEditingId(doc.id);
+      syncDocParam(doc.id);
       // 清单里只有元数据，正文得单独取
       void loadDocContent(doc.id);
     }
@@ -162,11 +217,13 @@ export function DocsWorkspace() {
     if (doc.type === 'file') {
       setEditingId(doc.id);
       setSelectedId(doc.id);
+      syncDocParam(doc.id);
       // 清单里只有元数据，正文得单独取
       void loadDocContent(doc.id);
     } else {
       setCurrentFolderId(doc.id);
       setExpanded((p) => ({ ...p, [doc.id]: true }));
+      syncDocParam(null);
     }
   };
 
@@ -265,32 +322,6 @@ export function DocsWorkspace() {
   };
 
   /**
-   * 把文档（连同整棵子树）迁移到另一个仓库。
-   *
-   * 迁移的是归属，不是内容：文档不会被复制一份到新仓库，
-   * 否则两份内容迟早会不一样。子树跟着一起搬，父子不分属两个仓库。
-   *
-   * 文档没有「移出仓库」这个选项：每个文档都必须有归属，
-   * 想换归属就换一个仓库，而不是把它丢在一边。
-   *
-   * 迁完必须重拉文档与仓库：归属信息随文档下发，
-   * 不刷新的话界面显示的还是旧归属，用户会以为没生效。
-   */
-  const handleAssignRepo = async (repoId: string) => {
-    if (!repoTarget) return;
-    const { id, name } = repoTarget;
-    try {
-      const moved = (await api.assignDocsToRepo(repoId, [id])).moved;
-      await Promise.all([refreshDocs(), refreshRepos()]);
-      const repoName = repos.find((r) => r.id === repoId)?.name;
-      const extra = moved > 1 ? `，连带 ${moved - 1} 篇子文档` : '';
-      toast.success(`「${name}」已归入「${repoName ?? '仓库'}」${extra}`);
-    } catch (e) {
-      toast.error((e as Error)?.message ?? '操作失败');
-    }
-  };
-
-  /**
    * 处理一批上传的文件。
    *
    * 两条分流，因为它们是两种东西：
@@ -313,9 +344,6 @@ export function DocsWorkspace() {
     onProgress?: UploadProgress,
   ): Promise<UploadBatchResult> => {
     const result: UploadBatchResult = { ok: 0, failed: [] };
-    // 明确归入当前仓库：文档必须有归属，上传时就把归属定下来，
-    // 免得先落进默认仓库再搬一遍
-    const repoId = currentRepoId || undefined;
     const total = files.length;
     let done = 0;
 
@@ -330,7 +358,7 @@ export function DocsWorkspace() {
       const parentPath = idx >= 0 ? path.slice(0, idx) : '';
       const name = idx >= 0 ? path.slice(idx + 1) : path;
       const parentId = await ensureDir(parentPath);
-      const { doc } = await api.createDoc({ name, type: 'folder', parentId, repoId });
+      const { doc } = await api.createDoc({ name, type: 'folder', parentId });
       dirCache.set(path, doc.id);
       return doc.id;
     };
@@ -344,19 +372,18 @@ export function DocsWorkspace() {
 
         if (ext === '.md' || ext === '.markdown') {
           // 这里直接建文档，不再走 uploadFile：
-          // uploadFile 每传一个文件就刷一次仓库统计，
-          // 一批文件会打出同样多的请求，而这批的统计在末尾统一刷一次就够。
+          // uploadFile 每传一个文件就多一次独立往返，
+          // 一批文件会打出同样多的请求，批量里直接挨个建更省事。
           const { doc } = await api.createDoc({
             name: file.name,
             type: 'file',
             parentId,
             content: await file.text(),
-            ...(repoId !== undefined ? { repoId } : {}),
           });
           result.ok += 1;
           setSelectedId(doc.id);
           setEditingId(doc.id);
-          // 上传的正文在仓库目录的文件里，清单里只有元数据
+          // 上传的正文在 vault 的文件里，清单里只有元数据
           void loadDocContent(doc.id);
         } else {
           // 其它格式（含压缩包）：文件本身就是这个节点。
@@ -365,7 +392,7 @@ export function DocsWorkspace() {
           // 配一份没人写的备注，还让人每次点开都扑个空。
           // 压缩包尤其不该配备注：包里的清单就是它的说明，
           // 而备注不会跟着包一起更新，必然过期。
-          const doc = await api.uploadFile(file, parentId, repoId);
+          const doc = await api.uploadFile(file, parentId);
           result.ok += 1;
           setSelectedId(doc.id);
         }
@@ -376,9 +403,7 @@ export function DocsWorkspace() {
       onProgress?.(done, total, file.name);
     }
 
-    // 文档与仓库统计一起刷新：上传既增了文档数，也增了附件数，
-    // 只刷文档的话仓库里的文件个数会停在旧值上
-    if (result.ok > 0) await Promise.all([refreshDocs(), refreshRepos()]);
+    if (result.ok > 0) await refreshDocs();
     if (result.failed.length === 0 && result.ok > 0) {
       toast.success(`已导入 ${result.ok} 个文件`);
     }
@@ -421,7 +446,6 @@ export function DocsWorkspace() {
       // 从文档菜单进入管理后台的「访问权限」分区，并限定在这一篇文档
       navigate(`/admin/access?doc=${encodeURIComponent(n.id)}`);
     },
-    onRequestRepo: (n: DocNode) => setRepoTarget(n),
   };
 
   const canCreate = hasPermission('doc.create');
@@ -432,10 +456,12 @@ export function DocsWorkspace() {
       {/* 侧边栏：文件树 */}
       <aside className="flex w-52 shrink-0 flex-col border-r border-border/60 glass xl:w-64">
         {/*
-         * 操作区：三个按钮等分。
+         * 操作区：三个按钮等分，全部只留图标。
          *
          * 宽度一样（flex-1 + basis-0，不看内容），谁也不多占地方。
          * 外观一致：三个都是描边样式，挨在一起时边界是对齐的。
+         * 图标是唯一的标识，区分靠 title 与 aria-label——
+         * 「新建文档/新建文件夹」两个按钮挨着，靠文字反而更容易看花。
          *
          * 用 flex-1 basis-0 而不是 grid-cols-3：没有上传权限时只剩两个按钮，
          * 这时自动各占一半，grid 会空出一格。
@@ -447,10 +473,10 @@ export function DocsWorkspace() {
                 type="button"
                 onClick={() => openCreate(currentFolderId, 'file')}
                 title="新建文档"
-                className="flex h-8 min-w-0 flex-1 basis-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-border/70 bg-white/70 text-slate-600 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:outline-none dark:bg-white/5 dark:text-slate-300 dark:hover:bg-indigo-500/15"
+                aria-label="新建文档"
+                className="flex h-8 min-w-0 flex-1 basis-0 cursor-pointer items-center justify-center rounded-lg border border-border/70 bg-white/70 text-slate-600 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:outline-none dark:bg-white/5 dark:text-slate-300 dark:hover:bg-indigo-500/15"
               >
-                <FilePlus className="h-3.5 w-3.5 shrink-0" />
-                <span className="whitespace-nowrap">新建</span>
+                <FilePlus className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
@@ -477,17 +503,14 @@ export function DocsWorkspace() {
         )}
 
         {/*
-         * 工具区入口已经挪到顶部的区域切换条（文档 / 工具 / 管理），
-         * 左侧这一列是文件树与仓库的地盘，不再塞站点级导航进去——
+         * 工具区入口已经挪到顶部的区域切换条（记录 / 工具 / 管理），
+         * 左侧这一列是文件树的地盘，不再塞站点级导航进去——
          * 同一件事有两个入口，人会 unsure 该点哪个。
          */}
-        {/* 仓库切换：按项目圈定当前看得见的资料 */}
-        <RepoSwitcher />
 
         {/* 文件树 */}
-        <div className="scrollbar-thin flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
           <div className="mb-1.5 flex items-center justify-between px-2">
-            {/* 仓库名不在这里重复：上面刚选中的那一行已经标着了 */}
             <span className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
               文件树
             </span>
@@ -507,7 +530,13 @@ export function DocsWorkspace() {
       {/* 主内容区 */}
       <div className="flex-1 min-w-0 flex flex-col">
         {editingDoc ? (
-          <DocEditor doc={editingDoc} onClose={() => setEditingId(null)} />
+          <DocEditor
+            doc={editingDoc}
+            onClose={() => {
+              setEditingId(null);
+              syncDocParam(null);
+            }}
+          />
         ) : (
           <FolderView
             folderId={visibleFolderId}
@@ -525,7 +554,6 @@ export function DocsWorkspace() {
               setMoveTarget(n);
               setMoveOpen(true);
             }}
-            onRequestRepo={(n) => setRepoTarget(n)}
           />
         )}
       </div>
@@ -572,21 +600,7 @@ export function DocsWorkspace() {
         open={uploadOpen}
         onOpenChange={setUploadOpen}
         parentName={uploadParentId ? docs.find((d) => d.id === uploadParentId)?.name : undefined}
-        repoName={currentRepo?.name}
-        allowedExts={currentRepo?.allowedExts}
-        maxFileSize={currentRepo?.maxFileSize}
         onUpload={handleUploadBatch}
-      />
-      {/* 仓库归属：跨仓库迁移（含整棵子树） */}
-      <RepoAssignDialog
-        open={repoTarget !== null}
-        onOpenChange={(v) => {
-          if (!v) setRepoTarget(null);
-        }}
-        docName={repoTarget?.name ?? ''}
-        currentRepoId={repoTarget?.repoId}
-        repos={repos}
-        onConfirm={(repoId) => void handleAssignRepo(repoId)}
       />
       {/* 拖拽预览：把 .md 拖到页面任意位置即可就地阅读（不入库） */}
       <DropPreview
@@ -594,7 +608,7 @@ export function DocsWorkspace() {
         onSaved={(docId) => {
           setSelectedId(docId);
           setEditingId(docId);
-          // 正文在仓库目录的文件里，清单里只有元数据
+          // 正文在 vault 的文件里，清单里只有元数据
           void loadDocContent(docId);
         }}
       />

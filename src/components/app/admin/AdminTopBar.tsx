@@ -16,7 +16,7 @@ interface AdminTopBarProps {
 /**
  * 后台的分区条：六个页面平铺，一条走完。
  *
- * 先前这里是「按区域分两套」的：从顶栏「文档」进来只看见概览与项目仓库，
+ * 先前这里是「按区域分两套」的：从顶栏「文档」进来只看见概览，
  * 从「系统」进来换成访问权限、AI Agent、账号安全。同一个后台两副面孔，
  * 加上顶栏的「系统」和右上角的「管理」按钮，一共三处入口指向同一批页面。
  *
@@ -28,7 +28,7 @@ export function AdminTopBar({ section, pending, onSelect }: AdminTopBarProps) {
     <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border/60 bg-white/60 px-4 backdrop-blur-sm sm:px-6 dark:bg-slate-950/40">
       <span className="shrink-0 text-sm font-semibold">管理后台</span>
 
-      <nav className="scrollbar-thin flex min-w-0 items-center gap-1 overflow-x-auto">
+      <nav className="flex min-w-0 items-center gap-1 overflow-x-auto">
         {ADMIN_SECTIONS.map((s) => {
           const active = section === s;
           return (

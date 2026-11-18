@@ -15,7 +15,6 @@ import {
   Home,
   ChevronRight,
   Lock,
-  Boxes,
   FileWarning,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
@@ -24,7 +23,6 @@ import { toast } from 'sonner';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { downloadAsFile, formatBytes, formatRelativeTime } from '@/utils';
 import type { DocNode } from '@/types';
 import { cn } from '@/lib/utils';
@@ -63,8 +61,6 @@ interface FolderViewProps {
   onRequestRename: (doc: DocNode) => void;
   onRequestDelete: (doc: DocNode) => void;
   onRequestMove: (doc: DocNode) => void;
-  /** 打开仓库归属选择；只有管理员拿得到这个入口 */
-  onRequestRepo?: (doc: DocNode) => void;
 }
 
 export function FolderView({
@@ -74,12 +70,8 @@ export function FolderView({
   onRequestRename,
   onRequestDelete,
   onRequestMove,
-  onRequestRepo,
 }: FolderViewProps) {
-  const { repoScopedDocs, users, hasPermission, getDoc, getPath, isAdmin, currentRepo, reposStatus } =
-    useApp();
-  // 仓库是管理维度：普通访客看不到「归入仓库」这个动作
-  const canAssignRepo = Boolean(onRequestRepo) && isAdmin;
+  const { visibleDocs, users, hasPermission, getDoc, getPath } = useApp();
   const [search, setSearch] = useState('');
   const [view, setView] = useState<'grid' | 'list'>('grid');
   // 「只看可预览」：上传一整个目录时，里面常混着 zip、Office 文档这类
@@ -97,7 +89,7 @@ export function FolderView({
    * 两种东西，两种下载方式：
    * - 原件 → 服务端的下载路由按原始字节与原文件名回传（原件没有「正文」
    *   可导出，本地导出会把一个 zip 变成 0 字节的假文件）；
-   * - 笔记 → 先取正文再存盘。清单里只有元数据（正文在仓库目录的文件里），
+   * - 笔记 → 先取正文再存盘。清单里只有元数据（正文在 vault 的文件里），
    *   直接拿 doc.content 下到的是一个空文件——看着下载成功了，内容却没了。
    */
   const handleDownload = useCallback(async (doc: DocNode) => {
@@ -115,14 +107,14 @@ export function FolderView({
 
   // 目录里的全部条目（搜索后），以及其中能在浏览器里打开的那些
   const matched = useMemo(() => {
-    return repoScopedDocs
+    return visibleDocs
       .filter((d) => d.parentId === folderId)
       .filter((d) => (search ? d.name.toLowerCase().includes(search.toLowerCase()) : true))
       .sort((a, b) => {
         if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
         return a.name.localeCompare(b.name, 'zh-Hans-CN');
       });
-  }, [repoScopedDocs, folderId, search]);
+  }, [visibleDocs, folderId, search]);
 
   const children = useMemo(
     () => (onlyPreviewable ? matched.filter(isPreviewable) : matched),
@@ -136,7 +128,7 @@ export function FolderView({
       const queue = [id];
       while (queue.length) {
         const cur = queue.shift()!;
-        repoScopedDocs.filter((d) => d.parentId === cur).forEach((d) => {
+        visibleDocs.filter((d) => d.parentId === cur).forEach((d) => {
           if (d.type === 'folder') {
             folders++;
             queue.push(d.id);
@@ -146,7 +138,7 @@ export function FolderView({
       return { files, folders };
     };
     return allInFolder(folderId);
-  }, [repoScopedDocs, folderId]);
+  }, [visibleDocs, folderId]);
 
   const canEdit = hasPermission('doc.edit');
   const canDelete = hasPermission('doc.delete');
@@ -156,24 +148,15 @@ export function FolderView({
   /**
    * 「空」的成因有好几种，指的路不一样，混成一句「此目录为空」就会把人带偏：
    * - 服务端没连上 → 该去查服务端，不是去建文档；
-   * - 服务端连上了，但一个仓库都没有 → 该去建仓库；
-   * - 仓库在，只是眼下这个目录是空的 → 该去建文档。
+   * - 服务端连上了，只是眼下这个目录是空的 → 该去建文档。
    */
-  const emptyReason = !currentRepo
-    ? reposStatus === 'error'
-      ? 'offline'
-      : 'no-repo'
-    : folderId
-      ? 'empty-folder'
-      : 'empty-repo';
+  const emptyReason = folderId ? 'empty-folder' : 'empty-root';
 
   const EMPTY_TEXT: Record<typeof emptyReason, { title: string; hint: string }> = {
-    offline: { title: '暂时读不到仓库', hint: '请确认服务端在运行，然后刷新页面' },
-    'no-repo': { title: '还没有仓库', hint: '请管理员先建一个仓库，再往里放资料' },
     'empty-folder': { title: '此目录为空', hint: '通过左侧新建按钮或上传按钮添加内容' },
-    'empty-repo': {
-      title: '这个仓库还没有资料',
-      hint: '用左边的「新建」或上传按钮添加，或在左侧切到别的仓库看看',
+    'empty-root': {
+      title: '还没有资料',
+      hint: '用左边的「新建」或上传按钮添加第一篇文档',
     },
   };
 
@@ -189,7 +172,7 @@ export function FolderView({
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <div className="min-w-0 flex-1">
             {/*
-             * 面包屑常驻，根目录也显示（根就是当前仓库）。
+             * 面包屑常驻，根目录也显示（根就是全部文档）。
              *
              * 先前它「有父级才渲染」：从根目录点进一个文件夹，头部凭空多出一行，
              * 下面的内容整体往下挪二十来像素——每进一层就跳一次。
@@ -198,9 +181,7 @@ export function FolderView({
              */}
             <div className="mb-1.5 flex h-[18px] min-w-0 items-center gap-1 overflow-hidden text-xs text-muted-foreground">
               <Home className="h-3 w-3 shrink-0" />
-              <span className="shrink-0">
-                {loading ? '正在读取…' : (currentRepo?.name ?? '全部')}
-              </span>
+              <span className="shrink-0">{loading ? '正在读取…' : '全部文档'}</span>
               {breadcrumbs.map((b, i) => (
                 <span key={b.id} className="flex min-w-0 items-center gap-1">
                   <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
@@ -218,18 +199,10 @@ export function FolderView({
             <h2 className="text-xl font-semibold flex items-center gap-2">
               <Folder className="h-5 w-5 text-amber-500" />
               {/*
-               * 根视图的标题就是当前仓库名。
-               *
-               * 早先这里写死「个人记录」（那是仓库出现之前的站点名）：
-               * 面包屑写着「东部公交」，大标题却写着「个人记录」，
-               * 两处说的不是一回事，用户会以为进了错的地方。
-               * 根 = 仓库，标题就该跟着仓库走。
+               * 标题跟着当前所在的位置走：进到文件夹就是文件夹名，
+               * 在根目录就写「全部文档」——根不再有别的名字了。
                */}
-              {loading
-                ? '正在读取…'
-                : folder
-                  ? folder.name
-                  : (currentRepo?.name ?? '个人记录')}
+              {loading ? '正在读取…' : (folder ? folder.name : '全部文档')}
             </h2>
             <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
               {loading ? (
@@ -310,7 +283,7 @@ export function FolderView({
       </div>
 
       {/* 内容 */}
-      <div className="scrollbar-thin flex-1 overflow-auto p-3 sm:p-6">
+      <div className="flex-1 overflow-auto p-3 sm:p-6">
         {loading ? (
           /* 读取中只报状态，不报「空」 */
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-12">
@@ -350,7 +323,6 @@ export function FolderView({
                 canDelete={canDelete}
                 canMove={canMove}
                 canDownload={canDownload}
-                onRequestRepo={canAssignRepo ? onRequestRepo : undefined}
                 updatedBy={users.find((u) => u.id === doc.updatedBy)?.displayName}
                 delay={i * 30}
               />
@@ -371,7 +343,6 @@ export function FolderView({
                 canDelete={canDelete}
                 canMove={canMove}
                 canDownload={canDownload}
-                onRequestRepo={canAssignRepo ? onRequestRepo : undefined}
                 updatedBy={users.find((u) => u.id === doc.updatedBy)?.displayName}
                 delay={i * 20}
               />
@@ -395,8 +366,6 @@ interface DocCardProps {
   canDelete: boolean;
   canMove: boolean;
   canDownload: boolean;
-  /** 打开仓库归属选择；管理员才拿得到 */
-  onRequestRepo?: (doc: DocNode) => void;
   updatedBy?: string;
   delay?: number;
 }
@@ -412,13 +381,14 @@ function DocGridCard({
   canDelete,
   canMove,
   canDownload,
-  onRequestRepo,
   updatedBy,
   delay = 0,
 }: DocCardProps) {
   const isFolder = doc.type === 'folder';
   // 浏览器打不开的文件：图标降饱和，别让它和能看的文件长得一模一样
   const previewable = isPreviewable(doc);
+  // 内置文档（协议说明书）：内容能改，但不许改名、搬家、删除
+  const isBuiltin = doc.builtin === true;
   return (
     <Card
       onClick={() => onOpen(doc)}
@@ -473,7 +443,7 @@ function DocGridCard({
               <Download className="h-3.5 w-3.5" />
             </button>
           )}
-          {canEdit && (
+          {canEdit && !isBuiltin && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -485,7 +455,7 @@ function DocGridCard({
               <Pencil className="h-3.5 w-3.5" />
             </button>
           )}
-          {canMove && (
+          {canMove && !isBuiltin && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -497,19 +467,7 @@ function DocGridCard({
               <FolderInput className="h-3.5 w-3.5" />
             </button>
           )}
-          {onRequestRepo && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onRequestRepo(doc);
-              }}
-              className="h-7 w-7 rounded-md hover:bg-white/60 dark:hover:bg-white/10 flex items-center justify-center"
-              title="归入仓库"
-            >
-              <Boxes className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {canDelete && (
+          {canDelete && !isBuiltin && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -546,22 +504,6 @@ function DocGridCard({
         )}
         <span className="truncate">{doc.name}</span>
       </div>
-      {doc.tags && doc.tags.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap gap-1">
-          {doc.tags.slice(0, 2).map((t) => (
-            <Badge
-              key={t}
-              variant="secondary"
-              className="bg-indigo-100/60 px-1.5 py-0 text-[10px] text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
-            >
-              {t}
-            </Badge>
-          ))}
-          {doc.tags.length > 2 && (
-            <span className="text-[10px] text-muted-foreground">+{doc.tags.length - 2}</span>
-          )}
-        </div>
-      )}
 
       {/* 底部元信息：mt-auto 把它压到卡片底边，等高卡片的信息落在同一条线上 */}
       <div className="mt-auto flex items-center gap-2 border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
@@ -592,12 +534,13 @@ function DocListRow({
   canDelete,
   canMove,
   canDownload,
-  onRequestRepo,
   updatedBy,
   delay = 0,
 }: DocCardProps) {
   const isFolder = doc.type === 'folder';
   const previewable = isPreviewable(doc);
+  // 内置文档（协议说明书）：内容能改，但不许改名、搬家、删除
+  const isBuiltin = doc.builtin === true;
   return (
     <div
       onClick={() => onOpen(doc)}
@@ -650,15 +593,6 @@ function DocListRow({
           {updatedBy && <span>· {updatedBy}</span>}
         </div>
       </div>
-      {doc.tags && doc.tags.length > 0 && (
-        <div className="hidden md:flex flex-wrap gap-1 shrink-0">
-          {doc.tags.slice(0, 3).map((t) => (
-            <Badge key={t} variant="secondary" className="text-[10px] px-1.5 py-0 bg-indigo-100/60 text-indigo-700">
-              {t}
-            </Badge>
-          ))}
-        </div>
-      )}
       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
         {/* 「预览」只给打得开的文件：浏览器打不开的格式点进去只会撞上一句
             「这个格式没法在浏览器里直接预览」，那这个按钮就只是在骗人。
@@ -698,22 +632,17 @@ function DocListRow({
             <Download className="h-3.5 w-3.5" />
           </Button>
         )}
-        {canEdit && (
+        {canEdit && !isBuiltin && (
           <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); onRename(doc); }} className="h-7 px-2" title="重命名">
             <Pencil className="h-3.5 w-3.5" />
           </Button>
         )}
-        {canMove && (
+        {canMove && !isBuiltin && (
           <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); onMove(doc); }} className="h-7 px-2" title="移动">
             <FolderInput className="h-3.5 w-3.5" />
           </Button>
         )}
-        {onRequestRepo && (
-          <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); onRequestRepo(doc); }} className="h-7 px-2" title="归入仓库">
-            <Boxes className="h-3.5 w-3.5" />
-          </Button>
-        )}
-        {canDelete && (
+        {canDelete && !isBuiltin && (
           <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); onDelete(doc); }} className="h-7 px-2 text-red-600 hover:text-red-600" title="删除">
             <Trash2 className="h-3.5 w-3.5" />
           </Button>

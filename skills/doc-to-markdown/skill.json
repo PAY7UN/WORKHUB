@@ -1,0 +1,36 @@
+{
+  "id": "doc.to-markdown",
+  "name": "文档转 Markdown",
+  "category": "content",
+  "summary": "把 PDF、Word、网页、表格转成 Markdown，必要时绑到某套协议上当标准文档。",
+  "adminOnly": false,
+  "composable": true,
+  "mode": "request",
+  "params": [
+    {
+      "key": "source",
+      "label": "文档来源",
+      "type": "text",
+      "required": true,
+      "placeholder": "D:/协议/通达LED2协议.pdf 或 https://example.com/protocol.html",
+      "help": "本地文件路径，或 http/https 网址。"
+    },
+    {
+      "key": "title",
+      "label": "标题",
+      "type": "text",
+      "required": false,
+      "placeholder": "通达 LED2 生板屏协议",
+      "help": "留空就用文件名或网页标题。"
+    },
+    {
+      "key": "protocolId",
+      "label": "绑定到协议",
+      "type": "text",
+      "required": false,
+      "placeholder": "tongda-led2",
+      "help": "填了就把转好的文档存成这套协议的标准文档（管理员才能写）。"
+    }
+  ],
+  "returns": "转出来的 Markdown 正文，外加转换方式与需要人工再核一遍的地方。"
+}

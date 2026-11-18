@@ -56,7 +56,7 @@ export function AgentMessageList({ messages, isAdmin, onSuggest }: AgentMessageL
   }, []);
 
   return (
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain scrollbar-thin">
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
       {messages.length === 0 ? (
         <EmptyState onSuggest={onSuggest} />
       ) : (
@@ -152,7 +152,7 @@ function ReasoningBlock({ text }: { text: string }) {
         思考过程（{text.length} 字）
       </button>
       {open ? (
-        <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border bg-muted/40 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground scrollbar-thin">
+        <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border bg-muted/40 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
           {text}
         </p>
       ) : (

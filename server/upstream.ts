@@ -2,9 +2,8 @@
  * 上游模型流式读取。
  *
  * 本模块只负责「读上游 → 解析 SSE 帧 → 分发 reasoning / delta / 错误」，
- * 不持有也不触碰 Express 响应，因此既能服务于问答的边读边转发（SSE 直出），
- * 也能服务于润色的后台任务（客户端断开后仍需继续跑完并留存结果）。
- * 两条链路必须共用本模块，否则错误文案会在润色与问答之间出现分歧。
+ * 不持有也不触碰 Express 响应，因此调用方既能边读边转发（SSE 直出），
+ * 也能把生成过程放到后台推进（客户端断开后仍需继续跑完）。
  */
 import type { AgentSettings } from '../shared/types.ts';
 import { redact } from '../shared/redact.ts';
@@ -52,7 +51,7 @@ export class UpstreamError extends Error {
 /**
  * 发往上游的消息。
  *
- * content 为纯文本：问答与润色两条链路都用字符串形式，因此共用同一个流式读取实现，
+ * content 为纯文本：各条链路都用字符串形式，因此共用同一个流式读取实现，
  * 错误映射与空响应判定不会在两边出现分歧。
  */
 export type UpstreamMessage = {
@@ -71,16 +70,16 @@ function describeUpstreamError(statusCode: number, raw: string): string {
   const detail = raw.trim();
   switch (statusCode) {
     case 1002:
-      return '模型服务限流，请稍后重试，或减少同时进行的润色任务';
+      return '模型服务限流，请稍后重试';
     case 1004:
       return '模型账号额度不足，请检查账户余额';
     case 1008:
       return 'API Key 无效或无权限，请到 Agent 设置中重新填写';
     case 1027:
-      // 输出阶段的内容审核拦截：模型改写到中途被判违规，整篇作废。
-      // 它与文档写得好坏无关，常规手段是压低改动幅度或换一家模型
-      return '模型输出被上游内容审核拦截：改写过程中触发了供应商的敏感词规则，本次润色未产生结果。' +
-        '可改用改动更小的预设（校对 / 精简）、把长文拆开分段润色，或更换模型后重试';
+      // 输出阶段的内容审核拦截：生成到中途被判违规，整篇作废。
+      // 它与提示词写得好坏无关，常规手段是缩短输入或换一家模型
+      return '模型输出被上游内容审核拦截：生成过程中触发了供应商的敏感词规则，本次未产生结果。' +
+        '可缩短提问内容或更换模型后重试';
     default:
       return detail || (Number.isFinite(statusCode) ? `模型服务返回错误（${statusCode}）` : '模型服务返回错误');
   }

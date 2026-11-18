@@ -7,8 +7,6 @@ import '../../lib/markedExt';
 interface MarkdownPreviewProps {
   source: string;
   className?: string;
-  /** 窄容器（Agent 面板等）下启用紧凑排版，见 index.css 的 markdown-body-compact */
-  compact?: boolean;
 }
 
 /**
@@ -32,7 +30,7 @@ function wrapTables(html: string): string {
   if (!holder) return html;
   holder.querySelectorAll('table').forEach((table) => {
     const wrap = holder.ownerDocument.createElement('div');
-    wrap.className = 'md-table-scroll scrollbar-thin';
+    wrap.className = 'md-table-scroll';
     table.replaceWith(wrap);
     wrap.appendChild(table);
   });
@@ -55,7 +53,7 @@ function wrapTables(html: string): string {
  * 各自独立成面，不存在「从预览跳到源码」这条路径，行号标注与双击一并
  * 去掉——留着只是白付一遍 DOM 遍历的代价。
  */
-export function MarkdownPreview({ source, className, compact }: MarkdownPreviewProps) {
+export function MarkdownPreview({ source, className }: MarkdownPreviewProps) {
   const html = useMemo(() => {
     const raw = marked.parse(source || '', { async: false }) as string;
     const safe = DOMPurify.sanitize(raw, {
@@ -66,7 +64,7 @@ export function MarkdownPreview({ source, className, compact }: MarkdownPreviewP
 
   return (
     <div
-      className={`markdown-body ${compact ? 'markdown-body-compact' : ''} ${className ?? ''}`}
+      className={`markdown-body ${className ?? ''}`}
       spellCheck={false}
       dangerouslySetInnerHTML={{ __html: html }}
     />

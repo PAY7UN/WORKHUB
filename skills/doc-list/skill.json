@@ -9,5 +9,5 @@
   "composable": true,
   "mode": "request",
   "params": [],
-  "returns": "文档元数据数组：名称、类型、归属仓库、更新时间。"
+  "returns": "文档元数据数组：名称、类型、更新时间。"
 }

@@ -13,16 +13,58 @@ import type {
   DocNode,
   DocSearchHit,
   GuestIdentity,
-  PolishTask,
   RagScope,
-  Repo,
-  RepoEvent,
-  RepoStat,
   User,
 } from '../../shared/types';
 import type { AgentEvent } from '../../shared/agent';
+import type { PluginSummary } from '../../shared/plugins';
+import type { SkillSummary } from '../../shared/skills';
+import type {
+  ChannelRecord,
+  ChannelSession,
+  DecodedField,
+  ProtocolDocRef,
+  ProtocolTemplate,
+  SerialPortInfo,
+  ToolCategoryDef,
+  ToolDef,
+} from '../../shared/tools';
 import { saveBlob } from '../utils';
 import { readStore, removeStore, writeStore } from './storage';
+
+/**
+ * 解出来的一帧（与服务端 parser 的 DecodedFrame 对齐）。
+ *
+ * 「解码一段 HEX」用：粘贴一段抓到的字节，看看它被解成了什么。
+ */
+export interface DecodedFrame {
+  /** 按编码解码后的文本 */
+  text: string;
+  /** 原始字节的十六进制 */
+  hex: string;
+  /** 模板要求按 JSON 解析时的结构化结果 */
+  parsed?: unknown;
+  /** 具名解码器读出来的字段列表 */
+  fields?: DecodedField[];
+  /** 具名解码器给出的摘要 */
+  summary?: string;
+}
+
+/**
+ * 内置文档（协议说明书）的同步状态。
+ *
+ * 「本地已改」= 现场版跟上次同步时的内置版不一样（有人动过）；
+ * 「代码有新版本」= 代码里的那份比上次同步时新了。
+ * 两者同时成立时：现场版留着不动，只提示有新版，该合还是该换由人决定。
+ */
+export interface BuiltinDocState {
+  /** 协议 id */
+  protocolId: string;
+  /** 代码里的说明书有更新 */
+  hasUpdate: boolean;
+  /** 现场版被人改过 */
+  localModified: boolean;
+}
 
 const TOKEN_KEY = 'workhub.token';
 const BASE = '/api';
@@ -67,7 +109,11 @@ export class ApiError extends Error {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
-  if (init.body) headers['Content-Type'] = 'application/json';
+  // 传了 body 就默认当 JSON；但如果调用方自己指定了 Content-Type
+  // （比如上传原始字节），就别覆盖——服务端按类型决定怎么解析。
+  if (init.body && !headers['Content-Type'] && !headers['content-type']) {
+    headers['Content-Type'] = 'application/json';
+  }
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let res: Response;
@@ -163,7 +209,7 @@ export interface AgentUsageSummary {
   promptTokens: number;
   completionTokens: number;
   callCount: number;
-  byScene: Record<'chat' | 'polish', { calls: number; totalTokens: number }>;
+  byScene: Record<'chat', { calls: number; totalTokens: number }>;
   recent: Array<{ scene: string; model: string; totalTokens: number; createdAt: number }>;
 }
 
@@ -172,6 +218,34 @@ interface AgentUsageEvent {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+}
+
+/** 工具目录：接入大类 + 接入方式 + 协议类型 + 解析插件 + 串口可用性 */
+export interface ToolsCatalog {
+  /** 接入大类：界面上先按大类进，点了才是全屏 */
+  categories: ToolCategoryDef[];
+  tools: ToolDef[];
+  groups: Record<string, string>;
+  /** 协议类型：内置的 + 插件自带的，开通道时由人选一套 */
+  protocols: ProtocolTemplate[];
+  /** 解析插件：内置的与开发者发布的都在这儿 */
+  plugins: PluginSummary[];
+  /** 插件装载时的警告：插件坏了要让人看见，但不该拦住别的功能 */
+  pluginWarnings: string[];
+  serial: { available: boolean; reason: string };
+}
+
+/** 开启通道的请求体 */
+export interface StartSessionBody {
+  /** 接入方式：字节从哪儿来 */
+  tool: string;
+  /** 这一次用哪套协议类型。空串 / 不传 = 调试模式，只记原始字节 */
+  protocolId?: string;
+  /** 这一次用哪个解析插件。不传 = 跟着协议走 */
+  pluginId?: string;
+  config: Record<string, string>;
+  /** 会话显示用的名字 */
+  name?: string;
 }
 
 export const api = {
@@ -223,17 +297,16 @@ export const api = {
   /**
    * 取单篇文档（含正文）。
    *
-   * 清单只回元数据——正文已经落到仓库目录的文件里，
-   * 列全站就把整个仓库读一遍了。打开一篇就取一篇。
+   * 清单只回元数据——正文已经落到 vault 的文件里，
+   * 列全站就把整个库读一遍了。打开一篇就取一篇。
    */
-  getDoc: (id: string) => request<{ doc: DocNode }>(`/docs/${id}`),
+  getDoc: (id: string) =>
+    request<{ doc: DocNode; builtin?: BuiltinDocState }>(`/docs/${id}`),
   createDoc: (input: {
     name: string;
     type: 'file' | 'folder';
     parentId: string | null;
     content?: string;
-    /** 归属仓库；不传则沿用父节点所属仓库 */
-    repoId?: string;
     /** 保留原始文件名（承载附件的条目用），不自动补 .md */
     rawName?: boolean;
   }) => request<{ doc: DocNode }>('/docs', { method: 'POST', body: JSON.stringify(input) }),
@@ -258,14 +331,13 @@ export const api = {
    * 请求体是原始二进制：所有格式的共同点是「一段字节」，
    * 省掉 multipart 解析，也免了 base64 的三分之一体积膨胀。
    */
-  uploadFile: (file: File, parentId: string | null, repoId?: string) => {
+  uploadFile: (file: File, parentId: string | null) => {
     const token = getToken();
     const qs = new URLSearchParams({
       name: file.name,
       mime: file.type || 'application/octet-stream',
     });
     if (parentId) qs.set('parentId', parentId);
-    if (repoId) qs.set('repoId', repoId);
     return fetch(`${BASE}/docs/upload?${qs.toString()}`, {
       method: 'POST',
       headers: {
@@ -490,57 +562,6 @@ export const api = {
   /** 已知访客清单（批量授权时供管理员「选谁」） */
   listKnownGuests: () => request<{ items: Array<{ id: string; name: string }> }>('/access-guests'),
 
-  /* 仓库（项目） */
-
-  /**
-   * 仓库清单。
-   *
-   * 仓库只是资料的组织方式，不是保密边界，所以访客也能读；
-   * 写操作一律要管理员权限。
-   */
-  listRepos: () => request<{ repos: Repo[]; stats: RepoStat[] }>('/repos'),
-
-  createRepo: (input: {
-    name: string;
-    description?: string;
-    color?: string;
-    allowedExts?: string[];
-    maxFileSize?: number;
-    ragEnabled?: boolean;
-  }) => request<{ repo: Repo }>('/repos', { method: 'POST', body: JSON.stringify(input) }),
-
-  updateRepo: (
-    id: string,
-    patch: {
-      name?: string;
-      description?: string;
-      color?: string;
-      allowedExts?: string[];
-      maxFileSize?: number;
-      ragEnabled?: boolean;
-    },
-  ) => request<{ repo: Repo }>(`/repos/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
-
-  /**
-   * 删除仓库：连带其中的文档与附件一起抹掉，不留回收站。
-   *
-   * 返回值给出实际清掉的文档与附件数，界面据此提示「连带删掉了多少东西」。
-   */
-  deleteRepo: (id: string) =>
-    request<{ removed: boolean; docs: number; attachments: number }>(`/repos/${id}`, { method: 'DELETE' }),
-
-  /** 把文档归入仓库（跨仓库迁移，整棵子树一起搬） */
-  assignDocsToRepo: (repoId: string, docIds: string[]) =>
-    request<{ moved: number }>(`/repos/${repoId}/docs`, { method: 'POST', body: JSON.stringify({ docIds }) }),
-
-  /**
-   * 仓库历史（项目仓库的流水）。
-   *
-   * 只有管理员能读：仓库名与规则本就不算秘密，但「这个项目什么时候没的、
-   * 当时带走了多少东西」这种账没必要让访客也看见。
-   */
-  listRepoEvents: () => request<{ events: RepoEvent[] }>('/repos/events'),
-
   /* 附件 */
 
   /** 某篇文档的附件清单 */
@@ -597,15 +618,15 @@ export const api = {
    * 提问并流式接收结果。
    * 服务端先推 sources（引用文档），再逐段推 delta，最后 done 或 error。
    *
-   * scope 可传，用于显式指定「这次只看某个仓库」。
-   * 不传则由服务端按默认规则落点（默认仓库，或问题里点名的仓库）。
-   * 它只能比全局配置更严：服务端会取交集，放宽范围的权限在管理员设置里。
+   * scope 可传，用于显式指定「这次只看哪几篇文档」。
+   * 不传则按全局配置。它只能比全局配置更严：服务端会取交集，
+   * 放宽范围的权限在管理员设置里。
    */
   ask: (
     question: string,
     history: { role: 'user' | 'assistant'; content: string }[],
     handlers: {
-      onSources: (sources: AgentSource[], meta?: AgentScopeInfo) => void;
+      onSources: (sources: AgentSource[]) => void;
       onDelta: (text: string) => void;
       /** 推理模型的思考内容（部分上游才有） */
       onReasoning?: (text: string) => void;
@@ -633,75 +654,180 @@ export const api = {
     },
   ) => chatStream(message, history, handlers),
 
+  /* ------------------------------ 工具区 ------------------------------ */
+
   /**
-   * 提交润色任务，立即返回任务 id，不等待生成结束。
+   * 工具区：接入、协议、解析插件。
    *
-   * 生成在服务端后台推进，用户关闭弹窗或刷新页面都不影响任务；
-   * 进度与结果通过 `streamPolishTask` 订阅。
+   * 串口读回来的字节、别的驱动读回来的字节，落到数据上都是同一件事：
+   * 从字节流里切出一条条记录。
+   * 所以这里只有一套接口——加一种新通道是加一个驱动，不是加一组接口。
    */
-  polish: async (input: {
-    content: string;
-    instruction: string;
-    docId?: string;
-    docName?: string;
-    type?: string;
-  }): Promise<string> => {
-    const { taskId } = await request<{ taskId: string }>('/agent/polish', {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-    return taskId;
-  },
-
-  /** 润色任务列表（进行中/已完成/失败），用于面板展示 */
-  listPolishTasks: async (): Promise<PolishTask[]> => {
-    const { tasks } = await request<{ tasks: PolishTask[] }>('/agent/polish-tasks');
-    return tasks;
-  },
-
-  /** 订阅单个任务的进度。任务已完成时服务端会立即补发终态 */
-  streamPolishTask: (
-    id: string,
-    handlers: {
-      onState: (task: PolishTask) => void;
-      onDelta: (text: string) => void;
-      onReasoning?: (text: string) => void;
-      signal: AbortSignal;
+  tools: {
+    /** 工具目录：有哪些工具、要填什么参数、有哪些协议模板与工具条目 */
+    catalog: async (): Promise<ToolsCatalog> => {
+      return request<ToolsCatalog>('/tools');
     },
-  ): Promise<void> =>
-    openEventStream(
-      `/agent/polish-tasks/${id}/stream`,
-      { method: 'GET' },
-      handlers,
-      '润色任务',
-      (event, raw) => {
-        if (event !== 'state') return;
-        try {
-          handlers.onState(JSON.parse(raw) as PolishTask);
-        } catch {
-          /* 忽略解析失败 */
-        }
-      },
-    ),
 
-  /**
-   * 删除润色任务；任务仍在生成时先中止上游再删除。
-   *
-   * 取消与删除是同一个动作、同一套语义：中止后任务记录一并清除，不会留下
-   * 一条「界面上消失、重新进入面板又出现」的任务。任务已不存在时服务端返回
-   * 404，调用方应视为删除成功。
-   */
-  removePolishTask: async (id: string): Promise<void> => {
-    await request(`/agent/polish-tasks/${id}`, { method: 'DELETE' });
+    /** 本机可用串口 */
+    serialPorts: async (): Promise<SerialPortInfo[]> => {
+      const { ports } = await request<{ ports: SerialPortInfo[] }>('/tools/serial-ports');
+      return ports;
+    },
+
+    /** 全部协议模板（目录接口里已带一份，这里按需单独取） */
+    protocols: async (): Promise<ProtocolTemplate[]> => {
+      const { protocols } = await request<{ protocols: ProtocolTemplate[] }>('/tools');
+      return protocols;
+    },
+
+    /**
+     * 导入协议文档。
+     *
+     * 给文件就传 file，给网址就传 url——服务端转成 Markdown，
+     * 写进记录区里那篇内置文档的正文（而不是另开一份）。
+     */
+    importProtocolDoc: async (
+      protocolId: string,
+      input: { file?: File; url?: string; title?: string },
+    ): Promise<{ doc: ProtocolDocRef; warnings: string[]; kind: string }> => {
+      if (input.file) {
+        const bytes = await input.file.arrayBuffer();
+        const query = `?filename=${encodeURIComponent(input.file.name)}`;
+        return request(`/tools/protocols/${protocolId}/doc${query}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: bytes,
+        });
+      }
+      return request(`/tools/protocols/${protocolId}/doc`, {
+        method: 'POST',
+        body: JSON.stringify({ url: input.url, title: input.title }),
+      });
+    },
+
+    /**
+     * 恢复成内置版本。
+     *
+     * 不是把现场版删掉（那等于让用户自己的稿子消失），
+     * 而是把代码里那份抄回去——抄回去之后它又归代码管了。
+     */
+    resetProtocolDoc: async (
+      protocolId: string,
+    ): Promise<{ reset: boolean; doc?: ProtocolDocRef }> =>
+      request(`/tools/protocols/${protocolId}/doc`, { method: 'DELETE' }),
+
+    /** 当前所有通道会话 */
+    sessions: async (): Promise<ChannelSession[]> => {
+      const { sessions } = await request<{ sessions: ChannelSession[] }>('/tools/sessions');
+      return sessions;
+    },
+
+    /** 开启一个通道 */
+    startSession: async (input: StartSessionBody): Promise<ChannelSession> => {
+      const { session } = await request<{ session: ChannelSession }>('/tools/sessions', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      return session;
+    },
+
+    /** 停掉一个通道 */
+    stopSession: async (id: string): Promise<void> => {
+      await request(`/tools/sessions/${id}`, { method: 'DELETE' });
+    },
+
+    /** 拉记录（after 是游标：只要序号比它大的） */
+    records: async (id: string, after = 0): Promise<{ session: ChannelSession; records: ChannelRecord[] }> => {
+      return request(`/tools/sessions/${id}/records?after=${after}`);
+    },
+
+    /** 往通道里发数据：串口写出去走这里 */
+    send: async (id: string, data: string, format: 'text' | 'hex', peer?: string): Promise<number> => {
+      const { sent } = await request<{ sent: number }>(`/tools/sessions/${id}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ data, format, peer }),
+      });
+      return sent;
+    },
+
+    /** 改记录开关：收到 / 发出的数据要不要记成记录 */
+    setRecording: async (
+      id: string,
+      options: { recordIn?: boolean; recordOut?: boolean },
+    ): Promise<ChannelSession> => {
+      const { session } = await request<{ session: ChannelSession }>(`/tools/sessions/${id}/recording`, {
+        method: 'PATCH',
+        body: JSON.stringify(options),
+      });
+      return session;
+    },
+
+    /**
+     * 解一段十六进制。
+     *
+     * 调试台上的「自定义解析数据」就是这么用的：
+     * 粘一段抓到的字节，点一下就看清它被解成了什么——
+     * 不用先接上设备，也不用先开一条通道。
+     */
+    decode: async (pluginId: string, hex: string): Promise<DecodedFrame> => {
+      const { decoded } = await request<{ decoded: DecodedFrame }>('/tools/decode', {
+        method: 'POST',
+        body: JSON.stringify({ pluginId, hex }),
+      });
+      return decoded;
+    },
+
+    /**
+     * 订阅通道的实时事件。
+     *
+     * 连上先给一份快照（历史记录 + 当前状态），之后才是增量——
+     * 界面不用自己去拼「先拉历史、再接流」之间那点时间差。
+     */
+    streamChannel: (
+      id: string,
+      handlers: {
+        onSnapshot: (snapshot: { session: ChannelSession; records: ChannelRecord[] }) => void;
+        onRecord: (record: ChannelRecord) => void;
+        onStatus: (session: ChannelSession) => void;
+        onPeers: (peers: string[]) => void;
+        signal: AbortSignal;
+      },
+    ): Promise<void> =>
+      openEventStream(
+        `/tools/sessions/${id}/stream`,
+        { method: 'GET' },
+        { onDelta: () => {}, signal: handlers.signal },
+        '通道实时数据',
+        (event, raw) => {
+          try {
+            if (event === 'snapshot') {
+              handlers.onSnapshot(JSON.parse(raw) as { session: ChannelSession; records: ChannelRecord[] });
+            } else if (event === 'record') {
+              handlers.onRecord(JSON.parse(raw) as ChannelRecord);
+            } else if (event === 'status') {
+              handlers.onStatus(JSON.parse(raw) as ChannelSession);
+            } else if (event === 'peers') {
+              handlers.onPeers((JSON.parse(raw) as { peers: string[] }).peers);
+            }
+          } catch {
+            /* 忽略解析失败 */
+          }
+        },
+      ),
   },
 
-  /** 清空所有已结束的润色任务，进行中的原样保留 */
-  clearFinishedPolishTasks: async (): Promise<{
-    removed: string[];
-    cancelled: string[];
-    missing: string[];
-  }> => {
-    return request('/agent/polish-tasks/clear-finished', { method: 'POST' });
+  /* ------------------------------ 能力清单 ------------------------------ */
+
+  /**
+   * 能力（Skill）清单。
+   *
+   * 能力平时只给模型用；「能力清单」那一页靠它摆条目，
+   * 让「有哪些活能干」也看得见，而不是只存在于模型的上下文里。
+   */
+  skills: {
+    list: async (): Promise<{ skills: SkillSummary[]; warnings: string[] }> =>
+      request<{ skills: SkillSummary[]; warnings: string[] }>('/skills'),
   },
 
 };
@@ -736,8 +862,8 @@ async function postEventStream(
 /**
  * 建立 SSE 连接并把事件分派给 handlers，直到流结束。
  *
- * 问答与润色任务的线上格式一致（reasoning / delta / error），仅端点与附加事件不同，
- * 故帧解析与错误处理集中于此，避免两条链路的报错口径出现分歧。
+ * 各条 SSE 链路的线上格式一致（reasoning / delta / error），仅端点与附加事件不同，
+ * 故帧解析与错误处理集中于此，避免各链路的报错口径出现分歧。
  */
 async function openEventStream(
   path: string,
@@ -840,17 +966,6 @@ export interface AgentSource {
 }
 
 /**
- * 本次问答实际落在哪几个仓库。
- *
- * 由服务端在召回后回传：检索范围可能因为问题里点名了某个仓库而临时改变，
- * 界面照抄本地选择就会显示得与实际不符。
- */
-export interface AgentScopeInfo {
-  /** 参与本次检索的仓库名；为空表示范围由管理员的配置决定 */
-  scopeRepos: string[];
-}
-
-/**
  * 对话式 agent 的事件流。
  *
  * 服务端推两类事件：
@@ -893,7 +1008,7 @@ async function askStream(
   question: string,
   history: { role: 'user' | 'assistant'; content: string }[],
   handlers: {
-    onSources: (sources: AgentSource[], meta?: AgentScopeInfo) => void;
+    onSources: (sources: AgentSource[]) => void;
     onDelta: (text: string) => void;
     /** 推理模型的思考内容（部分上游才有） */
     onReasoning?: (text: string) => void;
@@ -906,8 +1021,8 @@ async function askStream(
   await postEventStream('/agent/ask', { question, history, scope }, handlers, '提问', (event, raw) => {
     if (event === 'sources') {
       try {
-        const data = JSON.parse(raw) as { sources: AgentSource[]; scopeRepos?: string[] };
-        handlers.onSources(data.sources, { scopeRepos: data.scopeRepos ?? [] });
+        const data = JSON.parse(raw) as { sources: AgentSource[] };
+        handlers.onSources(data.sources);
       } catch {
         /* 忽略解析失败 */
       }

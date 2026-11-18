@@ -8,6 +8,9 @@ import { PasswordNotice } from '@/components/app/shell/PasswordNotice';
 import { TopBar } from '@/components/app/shell/TopBar';
 import { AdminConsole } from '@/components/app/admin/AdminConsole';
 import { ToolsPage } from '@/components/app/tools/ToolsPage';
+import { AccessPage } from '@/components/app/tools/AccessPage';
+import { ProtocolListPage } from '@/components/app/tools/ProtocolListPage';
+import { CapabilityListPage } from '@/components/app/tools/CapabilityListPage';
 import { readStore, removeStore, writeStore } from '@/lib/storage';
 
 /**
@@ -56,11 +59,23 @@ function AppChrome({ entered, onEnter, onExit }: AppChromeProps) {
    * 顶上再压一条应用的顶栏会把那份排版撑破。
    */
   const onWelcome = location.pathname === '/' && !entered;
+  /**
+   * 接入页是全屏的：它自己有一整条顶栏（返回、状态、停止、发送），
+   * 上面再压一条应用顶栏会把它挤成一条缝，盯数据时寸土寸金。
+   *
+   * 只认真正的接入大类（/tools/serial）。
+   * 协议与能力那两页（/tools/protocols、/tools/capabilities）是普通页面：
+   * 它们是工具区里的下级页面，保留应用顶栏才知道自己在哪儿。
+   */
+  const onFullscreen = /^\/tools\/(?!protocols|capabilities)[^/]+\/?$/.test(location.pathname);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
-      {!onWelcome && <TopBar onGoHome={onExit} />}
-      {!onWelcome && <PasswordNotice />}
+    // 高矮跟视口走，不用 100vh：100vh 不扣掉滚动条占的那一条，
+    // 窗口就会比可视区高出一截，页面自己先滚起来，顶栏被推走，
+    // 右边还挂一条谁也用不上的窗口滚动条。
+    <div className="flex h-full flex-col overflow-hidden">
+      {!onWelcome && !onFullscreen && <TopBar onGoHome={onExit} />}
+      {!onWelcome && !onFullscreen && <PasswordNotice />}
 
       <div className="min-h-0 flex-1">
         <Routes>
@@ -71,6 +86,12 @@ function AppChrome({ entered, onEnter, onExit }: AppChromeProps) {
           />
           {/* 工具区：独立页面，对所有登录用户开放 */}
           <Route path="/tools" element={<ToolsPage />} />
+          {/* 支持的协议：一页索引，展开看说明书入口与解析插件；帧结构与命令码在记录区 */}
+          <Route path="/tools/protocols" element={<ProtocolListPage />} />
+          {/* 能力清单：接进来之后能干哪些活；用法跟 AI 助手说 */}
+          <Route path="/tools/capabilities" element={<CapabilityListPage />} />
+          {/* 接入大类：点进去就是全屏，左边定端口与协议，右边实时看数据——不跳页 */}
+          <Route path="/tools/:category" element={<AccessPage />} />
           {/* 管理后台：区域 + 分区 */}
           <Route path="/admin" element={<Navigate to="/admin/overview" replace />} />
           <Route path="/admin/:section" element={<AdminConsole />} />
@@ -87,7 +108,16 @@ function App() {
     // 深链参数必须在首次渲染前抓住：Workspace 挂载后会立刻去读它，
     // 放进 useEffect 就晚了——子组件的副作用先于父组件的副作用跑。
     captureFocusRequest();
-    return readStore(sessionStorage, ENTERED_KEY) === '1';
+    if (readStore(sessionStorage, ENTERED_KEY) === '1') return true;
+    /**
+     * 深链到某篇文档（?doc=<节点 id>）：直接进工作区。
+     *
+     * 协议说明书搬进记录区之后，「从工具区点一下就落到那篇文档」是主路径。
+     * 中间再插一道欢迎页，等于让人多点一次，还得自己判断该点哪个入口。
+     */
+    const deepLinkToDoc = new URLSearchParams(window.location.search).has('doc');
+    if (deepLinkToDoc) writeStore(sessionStorage, ENTERED_KEY, '1');
+    return deepLinkToDoc;
   });
 
   const handleEnter = () => {

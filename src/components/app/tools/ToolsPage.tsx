@@ -1,52 +1,308 @@
-import { Wrench } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Cable, ChevronRight, Loader2, Square } from 'lucide-react';
+import { toast } from 'sonner';
+import { api, type ToolsCatalog } from '@/lib/api';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import type { ChannelSession, ToolCategory } from '../../../../shared/tools';
+import type { SkillSummary } from '../../../../shared/skills';
+
+/** 大类的图标：串口是接一根线 */
+const CATEGORY_ICONS: Record<ToolCategory, typeof Cable> = {
+  serial: Cable,
+};
+
+/** 跑了多久 */
+function duration(startedAt: number, stoppedAt?: number): string {
+  const seconds = Math.max(0, Math.floor(((stoppedAt ?? Date.now()) - startedAt) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`;
+  return `${Math.floor(minutes / 60)} 时 ${minutes % 60} 分`;
+}
 
 /**
- * 工具区（接入与仿真）。
+ * 工具：**入口页**。
  *
- * 独立路由页，不在管理后台里：
- * 工具是对所有登录用户开放的，监听一旦跑起来还会在服务端长驻，
- * 实时数据流更不能被一个后台页面的生命周期绑住。
+ * 这一页只干三件事：
  *
- * 顶栏由 App 层统一提供（品牌 + 文档/工具/系统），这里只剩页面本身。
+ * 1. **接入方式**：数据从哪儿进来——点进去定端口、波特率与协议；
+ * 2. **正在跑的接入**：谁在跑，怎么打开、怎么停；
+ * 3. **再往里看**：协议与能力各去各的页面看。
  *
- * 现在这一页是空的。
+ * 以前这里还摆着「协议」「解析插件」「文档技能」三块橱窗，看着热闹，
+ * 其实是同一件事说了三遍：
  *
- * 网页监听、串口监听、网口监听、虚拟服务器——这四样东西看着不一样，
- * 落到数据上其实是同一种东西的四种来源：字节流，
- * 共用同一条流水线「数据源 → 协议解析 → 落成文档」，
- * 区别只在「字节从哪儿来」和「按哪套协议拆」。
+ * - 协议与解析插件在「支持的协议」那一页里已经摊得开；
+ * - 说明书住在记录区，这儿再抄一份摘要，只是让人多点一次；
+ * - 能力平时是跟 AI 助手说的，列在这儿等于把模型的清单再抄一遍。
  *
- * 正因为如此，页里将来也只按这一条流水线组织，
- * 而不是把四种通道铺成四张卡片——每多一种通道就多一块，
- * 而它们对用户来说本来就不是四件事。
+ * 所以这里只留入口。想细看，点过去看。
  */
 export function ToolsPage() {
-  return (
-    <div className="scrollbar-thin h-full overflow-y-auto">
-      <div className="mx-auto max-w-2xl px-5 py-8">
-        <div className="flex items-center gap-2">
-          <Wrench className="h-5 w-5 text-indigo-500" />
-          <h1 className="text-lg font-semibold">接入与仿真</h1>
-        </div>
-        <p className="mt-1 text-[12px] text-muted-foreground">
-          还没进库的数据怎么进来：网页、串口、网口监听与虚拟服务器。
-        </p>
+  const navigate = useNavigate();
+  const [catalog, setCatalog] = useState<ToolsCatalog | null>(null);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [sessions, setSessions] = useState<ChannelSession[]>([]);
+  const [loading, setLoading] = useState(true);
 
-        {/* 空状态：这一区现在确实还没有东西 */}
-        <div className="mt-6 rounded-2xl border border-dashed border-border/70 px-6 py-16 text-center">
-          <Wrench className="mx-auto h-7 w-7 text-indigo-400" />
-          <h2 className="mt-4 text-base font-semibold">工具区还空着</h2>
-          <p className="mx-auto mt-2 max-w-md text-[12px] leading-relaxed text-muted-foreground">
-            网页监听、串口监听、网口监听、虚拟服务器——这四类通道都在规划中。
-            做好了会先放到这一页；现在这里什么都不摆，
-            免得摆四个点不着的按钮，让人以为已经能用。
-          </p>
-          <p className="mx-auto mt-4 max-w-md text-[11px] leading-relaxed text-muted-foreground/80">
-            这一区对所有登录用户开放：谁需要接设备、谁需要联调，不用先找管理员开权限。
-            通道参数（端口、设备、协议模板）属于服务器上的配置，等通道发布时一并给出。
-          </p>
+  /** 读工具目录 */
+  const loadCatalog = useCallback(async () => {
+    try {
+      setCatalog(await api.tools.catalog());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '读取工具目录失败');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  /** 读正在跑的通道 */
+  const loadSessions = useCallback(async () => {
+    try {
+      setSessions(await api.tools.sessions());
+    } catch {
+      /* 拿不到就先空着，不打断页面 */
+    }
+  }, []);
+
+  /** 读能力清单：只在跳转入口上要个数量 */
+  const loadSkills = useCallback(async () => {
+    try {
+      const result = await api.skills.list();
+      setSkills(result.skills);
+    } catch {
+      /* 拿不到就不显示数量，不影响别的 */
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCatalog();
+    void loadSessions();
+    void loadSkills();
+  }, [loadCatalog, loadSessions, loadSkills]);
+
+  /** 通道可能是在别的窗口开的，定期刷一下列表 */
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void loadSessions();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [loadSessions]);
+
+  /** 协议名：会话只带协议 id，名字要从模板里查 */
+  const protocolName = useCallback(
+    (session: ChannelSession) =>
+      catalog?.protocols.find((t) => t.id === session.templateId)?.name ?? session.templateId,
+    [catalog],
+  );
+
+  /** 工具名 */
+  const toolName = useCallback(
+    (session: ChannelSession) => catalog?.tools.find((t) => t.id === session.tool)?.name ?? session.tool,
+    [catalog],
+  );
+
+  /** 停掉一个通道 */
+  const handleStop = async (session: ChannelSession) => {
+    try {
+      await api.tools.stopSession(session.id);
+      await loadSessions();
+      toast.success(`${session.name} 已停止`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const categories = catalog?.categories ?? [];
+  const protocols = catalog?.protocols ?? [];
+  const running = sessions.filter((s) => s.status === 'running');
+  const stopped = sessions.filter((s) => s.status !== 'running');
+
+  /** 这一类下现在有几个在跑 */
+  const runningCount = useCallback(
+    (kinds: string[]) => sessions.filter((s) => kinds.includes(s.tool) && s.status === 'running').length,
+    [sessions],
+  );
+
+  return (
+    <div className="mx-auto flex h-full w-full max-w-4xl flex-col gap-6 overflow-y-auto px-6 py-6">
+      <header className="flex flex-col gap-1">
+        <h1 className="text-xl font-semibold tracking-tight">工具</h1>
+        <p className="text-[13px] leading-relaxed text-muted-foreground">
+          外部数据从这儿进来：接进来，按协议拆成一条条记录。
+        </p>
+      </header>
+
+      {/* ① 接入方式：数据从哪儿进来 */}
+      <section className="flex flex-col gap-2.5">
+        <h2 className="text-[13px] font-medium">接入方式</h2>
+        {loading ? (
+          <div className="flex items-center gap-2 px-1 py-6 text-[12px] text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            正在读取工具目录…
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {categories.map((category) => {
+              const Icon = CATEGORY_ICONS[category.id] ?? Cable;
+              const count = runningCount(category.kinds);
+              return (
+                <button
+                  key={category.id}
+                  type="button"
+                  onClick={() => navigate(`/tools/${category.id}`)}
+                  className="group flex flex-col gap-2.5 rounded-xl border border-border/70 bg-card/40 p-4 text-left transition-colors hover:border-indigo-500/50 hover:bg-card/70"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-500">
+                      <Icon className="h-4 w-4" />
+                    </span>
+                    <span className="text-[14px] font-medium">{category.name}</span>
+                    {count ? (
+                      <Badge className="ml-auto">{count} 个在跑</Badge>
+                    ) : (
+                      <Badge variant="secondary" className="ml-auto">
+                        空闲
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-[12px] leading-relaxed text-muted-foreground">{category.summary}</p>
+                  <p className="mt-auto text-[11px] text-muted-foreground/80">{category.hint}</p>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* ② 正在跑的接入：活的摆在这里 */}
+      <section className="flex flex-col gap-2.5">
+        <div className="flex items-center gap-2">
+          <h2 className="text-[13px] font-medium">正在跑的接入</h2>
+          <Badge variant={running.length ? 'default' : 'secondary'}>{running.length}</Badge>
         </div>
-      </div>
+
+        {running.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-border/70 px-4 py-6 text-center text-[12px] text-muted-foreground">
+            现在没有通道在跑。上面挑一个接入方式，进去开一个。
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {running.map((session) => (
+              <article
+                key={session.id}
+                className="flex flex-col gap-2.5 rounded-xl border border-border/70 bg-card/40 p-3.5"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                  <span className="truncate text-[13px] font-medium">{session.name}</span>
+                  <Badge variant="outline" className="ml-auto shrink-0">
+                    {toolName(session)}
+                  </Badge>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                  <Badge variant="secondary">{protocolName(session)}</Badge>
+                  <span>收 {session.bytesIn} / 发 {session.bytesOut} 字节</span>
+                  <span>· {session.recordCount} 条</span>
+                  <span>· 已运行 {duration(session.startedAt)}</span>
+                </div>
+                <div className="mt-auto flex items-center gap-2 pt-1">
+                  <Button size="sm" onClick={() => navigate(`/tools/serial?session=${session.id}`)}>
+                    打开控制台
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => void handleStop(session)}>
+                    <Square className="h-3.5 w-3.5" />
+                    停止
+                  </Button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+
+        {/* 停掉的：还留着记录，随时能回去看 */}
+        {stopped.length ? (
+          <details className="rounded-xl border border-border/70 bg-card/20 px-3.5 py-2.5">
+            <summary className="cursor-pointer text-[12px] text-muted-foreground">
+              已停止的通道（{stopped.length}）
+            </summary>
+            <div className="mt-2.5 flex flex-col gap-2">
+              {stopped.map((session) => (
+                <div key={session.id} className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/40" />
+                  <span className="truncate">{session.name}</span>
+                  <span>· {protocolName(session)}</span>
+                  <span>· {session.recordCount} 条</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="ml-auto h-7"
+                    onClick={() => navigate(`/tools/serial?session=${session.id}`)}
+                  >
+                    看记录
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
+      </section>
+
+      {/* ③ 再往里看：只给入口，不在这里摊开 */}
+      <section className="flex flex-col gap-2.5">
+        <h2 className="text-[13px] font-medium">再往里看</h2>
+        <div className="grid gap-2.5 sm:grid-cols-2">
+          <JumpCard
+            title="支持的协议"
+            count={`${protocols.length} 套`}
+            desc="字节按哪一套切帧、按哪一套读"
+            onClick={() => navigate('/tools/protocols')}
+          />
+          <JumpCard
+            title="能力清单"
+            count={`${skills.length} 项`}
+            desc="接进来之后能干哪些活"
+            onClick={() => navigate('/tools/capabilities')}
+          />
+        </div>
+      </section>
     </div>
+  );
+}
+
+/**
+ * 一个跳转入口：点一下换一页，不在当前页摊开内容。
+ *
+ * 工具区现在只办事：想看协议就去协议页，想看能力就去能力页。
+ * 同一份清单在两处摆着，两处都会过期，也会让人不知道该信哪一处。
+ */
+function JumpCard({
+  title,
+  count,
+  desc,
+  onClick,
+}: {
+  title: string;
+  count: string;
+  desc: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex flex-col gap-1.5 rounded-xl border border-border/70 bg-card/40 p-3.5 text-left transition-colors hover:border-indigo-500/50 hover:bg-card/70"
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-[13px] font-medium">{title}</span>
+        <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+          {count}
+        </Badge>
+        <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+      </div>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">{desc}</p>
+    </button>
   );
 }

@@ -8,6 +8,7 @@
 export {
   COMMON_EXTENSIONS,
   KIND_LABELS,
+  MAX_ATTACHMENT_SIZE,
   extOf,
   formatBytes,
   isPdf,

@@ -10,6 +10,7 @@ import { envFlag } from './env.ts';
 import { logger } from './logger.ts';
 import { classifyAdminPassword, hashPassword, verifyPassword } from './password.ts';
 import { openV2Db } from './storage/v2/schema.ts';
+import { isBuiltinPath, protocolIdOfBuiltinNode } from './storage/v2/builtin.ts';
 import { resolveDbPath } from './paths.ts';
 import {
   VAULT_ROOT,
@@ -55,7 +56,7 @@ import { SEED_DOCS } from '../shared/seed.ts';
  * 数据库路径。导出供启动日志使用，避免与本文件各写一份而出现「日志说的不是实际那个库」。
  *
  * v2 起只有一个库：表结构统一由 server/storage/v2/schema.ts 定义，
- * 文档正文落在 vault 的仓库目录里，库里只留索引行。
+ * 文档正文落在 vault 里，库里只留索引行。
  */
 export const DB_PATH = resolveDbPath();
 
@@ -155,24 +156,12 @@ function rowToUser(r: UserRow): User {
 if (envFlag('SEED_DEMO')) {
   const docCount = db.prepare('SELECT COUNT(*) AS n FROM nodes').get() as { n: number };
   if (docCount.n === 0) {
-    // 示例文档也要有归属：仓库为空时先建一个，否则文档无处安放
-    const repoCount = db.prepare('SELECT COUNT(*) AS n FROM repos').get() as { n: number };
-    if (repoCount.n === 0) {
-      const ts = Date.now();
-      db.prepare(
-        `INSERT INTO repos (id, slug, name, description, color, allowed_exts, max_file_size, rag_enabled, acl, created_at, updated_at, created_by)
-         VALUES ('r-demo', 'demo', '示例', '示例文档的归属仓库', '#6366f1', '[]', 26214400, 1, '{}', ?, ?, 'u-admin')`,
-      ).run(ts, ts);
-    }
-    const repoId = (db.prepare('SELECT id FROM repos ORDER BY created_at LIMIT 1').get() as { id: string })
-      .id;
     // 文件夹优先插入，满足父键约束
     [...SEED_DOCS]
       .sort((a) => (a.type === 'folder' ? -1 : 1))
       .forEach((d) =>
         insertDoc({
           ...d,
-          repoId,
           content: d.content ?? '',
           size: d.size ?? undefined,
           createdBy: 'u-admin',
@@ -181,19 +170,6 @@ if (envFlag('SEED_DEMO')) {
       );
     logger.info(`已载入 ${SEED_DOCS.length} 篇示例文档（WORKHUB_SEED_DEMO=1）`);
   }
-}
-
-// 每个文档都必须有归属，所以「至少存在一个仓库」是系统的硬前提，
-// 不是可选项：仓库一个都没有，新建的文档就无处安放。
-// 空库启动时先立一个默认仓库，管理员随时可以改名或删掉重建。
-const repoCount = db.prepare('SELECT COUNT(*) AS n FROM repos').get() as { n: number };
-if (repoCount.n === 0) {
-  const ts = Date.now();
-  db.prepare(
-    `INSERT INTO repos (id, slug, name, description, color, allowed_exts, max_file_size, rag_enabled, acl, created_at, updated_at, created_by)
-     VALUES ('r-default', 'default', '默认仓库', '系统自动创建的默认仓库，可改名或换成自己的仓库', '#6366f1', '[]', 26214400, 1, '{}', ?, ?, 'u-admin')`,
-  ).run(ts, ts);
-  logger.info('已创建默认仓库「默认仓库」：文档必须有归属，空库也需要一个落脚的仓库');
 }
 
 // 账号与模型配置和文档数量无关，必须无条件保证存在，
@@ -247,16 +223,15 @@ if (!agentConfigRow) {
  * nodes 表的一行。
  *
  * 与旧模型最大的不同：**没有 content 列**。
- * 正文住在 vault 的仓库目录里，这一行只记「它在哪、多大、是不是加密」。
+ * 正文住在 vault 里，这一行只记「它在哪、多大、是不是加密」。
  * 于是「读一篇文档」变成两件事：查索引拿路径 → 读文件。
  */
 export interface NodeRow {
   id: string;
-  repo_id: string;
   name: string;
   type: 'file' | 'folder';
   parent_id: string | null;
-  /** 仓库内的相对路径，唯一 */
+  /** vault 内的相对路径，唯一 */
   path: string;
   size: number | null;
   content_hash: string | null;
@@ -270,6 +245,7 @@ export interface NodeRow {
   enc_master_dek: string | null;
   enc_locked_at: number | null;
   acl: string;
+  /** 遗留列：标签功能已下线，库里的历史值保留但不再读写 */
   tags: string | null;
   created_at: number;
   updated_at: number;
@@ -277,18 +253,9 @@ export interface NodeRow {
   updated_by: string;
 }
 
-/** 仓库目录名（slug）。仓库改名不会改 slug，所以路径不会断 */
-export function repoSlugOf(repoId: string): string {
-  const row = db.prepare('SELECT slug FROM repos WHERE id = ?').get(repoId) as
-    | { slug: string }
-    | undefined;
-  if (!row) throw new Error(`仓库不存在：${repoId}`);
-  return row.slug;
-}
-
 /** 某节点正文文件的绝对路径 */
 function bodyFileOf(row: NodeRow): string {
-  return bodyPath(repoSlugOf(row.repo_id), row.path, row.encrypted === 1);
+  return bodyPath(row.path, row.encrypted === 1);
 }
 
 /**
@@ -308,8 +275,7 @@ export function kindOf(row: NodeRow): 'note' | 'file' {
  * 凡是「这个节点的文件在哪」的提问都该走这里，别自己拼路径。
  */
 function nodeFileOf(row: NodeRow): string {
-  const slug = repoSlugOf(row.repo_id);
-  return kindOf(row) === 'file' ? filePath(slug, row.path) : bodyPath(slug, row.path, row.encrypted === 1);
+  return kindOf(row) === 'file' ? filePath(row.path) : bodyPath(row.path, row.encrypted === 1);
 }
 
 /**
@@ -388,11 +354,14 @@ export function rowToDoc(r: NodeRow, withContent = false): DocNode {
     updatedAt: r.updated_at,
     createdBy: r.created_by,
     updatedBy: r.updated_by,
-    tags: r.tags ? (JSON.parse(r.tags) as string[]) : undefined,
-    repoId: r.repo_id,
     encrypted: r.encrypted === 1,
     lockedAt: r.enc_locked_at ?? undefined,
     kind,
+    // 内置文档（协议说明书）住在保留路径段里：能改内容，但不许改名、搬家或删除。
+    // 界面据此把删除/重命名入口藏起来。
+    ...(isBuiltinPath(r.path)
+      ? { builtin: true, protocolId: protocolIdOfBuiltinNode(r.id) ?? undefined }
+      : {}),
     // 原件的格式信息只在 kind='file' 时有意义，note 不带这两项
     ...(kind === 'file' ? { mime: r.mime || undefined, ext: r.ext || undefined } : {}),
   };
@@ -457,7 +426,6 @@ export function searchDocs(keyword: string, limit = 50): DocSearchHit[] {
         matchedIn: row.name.toLowerCase().includes(lowerQ) ? 'name' : 'content',
         path: docPathOf(row),
         updatedAt: row.updated_at,
-        tags: row.tags ? (JSON.parse(row.tags) as string[]) : undefined,
       } as DocSearchHit;
     })
     .filter((x): x is DocSearchHit => x !== undefined);
@@ -473,7 +441,7 @@ export function searchDocs(keyword: string, limit = 50): DocSearchHit[] {
  * 和检索单元的分数方向保持一致，合并排序时不用再翻转。
  */
 export function recallDocIds(keyword: string, limit = 40): Array<{ id: string; score: number }> {
-  return searchIndex(db, keyword, limit, undefined, 'recall').map((h) => ({
+  return searchIndex(db, keyword, limit, 'recall').map((h) => ({
     id: h.node_id,
     score: -h.rank,
   }));
@@ -488,7 +456,7 @@ export function recallAttachmentIds(
   keyword: string,
   limit = 40,
 ): Array<{ id: string; score: number }> {
-  return searchAttachmentIndex(db, keyword, limit, undefined, 'recall').map((h) => ({
+  return searchAttachmentIndex(db, keyword, limit, 'recall').map((h) => ({
     id: h.att_id,
     score: -h.rank,
   }));
@@ -501,13 +469,13 @@ function docPathOf(row: NodeRow): string {
 }
 
 /**
- * 算一个节点在仓库里的路径。
+ * 算一个节点的路径。
  *
  * 路径 = 父路径 + 名字。同名冲突不覆盖别人，而是加序号：
  * 「同名」在文件系统里天然存在（不同目录下可以有同名文件），
- * 但同一个仓库里不行——UNIQUE(repo_id, path) 是硬约束。
+ * 但同一处不行——UNIQUE(path) 是硬约束。
  */
-function computePath(repoId: string, parentId: string | null, name: string, excludeId?: string): string {
+function computePath(parentId: string | null, name: string, excludeId?: string): string {
   let parentPath = '';
   if (parentId) {
     const parent = db.prepare('SELECT path FROM nodes WHERE id = ?').get(parentId) as
@@ -516,7 +484,7 @@ function computePath(repoId: string, parentId: string | null, name: string, excl
     parentPath = parent?.path ?? '';
   }
   const base = parentPath ? `${parentPath}/${name}` : name;
-  const taken = db.prepare('SELECT id FROM nodes WHERE repo_id = ? AND path = ?').get(repoId, base) as
+  const taken = db.prepare('SELECT id FROM nodes WHERE path = ?').get(base) as
     | { id: string }
     | undefined;
   if (!taken || taken.id === excludeId) return base;
@@ -524,27 +492,12 @@ function computePath(repoId: string, parentId: string | null, name: string, excl
   let n = 1;
   while (true) {
     const candidate = `${base}~${n}`;
-    const hit = db.prepare('SELECT id FROM nodes WHERE repo_id = ? AND path = ?').get(repoId, candidate) as
+    const hit = db.prepare('SELECT id FROM nodes WHERE path = ?').get(candidate) as
       | { id: string }
       | undefined;
     if (!hit || hit.id === excludeId) return candidate;
     n += 1;
   }
-}
-
-/**
- * 没有指定仓库时的兜底：取库里最早建的那个仓库。
- *
- * v2 起文档必须有归属（nodes.repo_id NOT NULL），
- * 但调用方偶尔会忘了传——这时落到默认仓库，比直接失败更友好，
- * 总比让文档无处安放强。
- */
-export function defaultRepoId(): string {
-  const row = db.prepare('SELECT id FROM repos ORDER BY created_at LIMIT 1').get() as
-    | { id: string }
-    | undefined;
-  if (!row) throw new Error('还没有任何仓库，请先创建一个仓库');
-  return row.id;
 }
 
 /**
@@ -555,10 +508,10 @@ export function defaultRepoId(): string {
  * 临时文件里也只有密文）。
  */
 function writeBody(
-  row: Pick<NodeRow, 'id' | 'repo_id' | 'path' | 'encrypted'>,
+  row: Pick<NodeRow, 'id' | 'path' | 'encrypted'>,
   text: string,
 ): { size: number; hash: string } {
-  const abs = bodyPath(repoSlugOf(row.repo_id), row.path, row.encrypted === 1);
+  const abs = bodyPath(row.path, row.encrypted === 1);
   writeFileAtomic(abs, text);
   const size = Buffer.byteLength(text, 'utf8');
   return { size, hash: contentHash(text) };
@@ -568,17 +521,18 @@ function writeBody(
  * 新建文档（Markdown 笔记）。
  *
  * 正文先落文件、再插索引行：文件写失败就抛错，不会留下一行指向空文件的索引。
+ *
+ * path 默认由父路径与名字算出来；内置文档要落在保留段里，
+ * 所以给它一条固定路径（见 storage/v2/builtin.ts）。
  */
-export function insertDoc(doc: DocNode): DocNode {
-  const repoId = doc.repoId || defaultRepoId();
-  const path = computePath(repoId, doc.parentId, doc.name);
+export function insertDoc(doc: DocNode, opts?: { path?: string }): DocNode {
+  const path = opts?.path ?? computePath(doc.parentId, doc.name);
   const content = doc.content ?? '';
   const size = Buffer.byteLength(content, 'utf8');
   const hash = contentHash(content);
 
   const row: NodeRow = {
     id: doc.id,
-    repo_id: repoId,
     name: doc.name,
     type: doc.type,
     parent_id: doc.parentId,
@@ -592,7 +546,7 @@ export function insertDoc(doc: DocNode): DocNode {
     enc_master_dek: null,
     enc_locked_at: doc.encrypted ? doc.lockedAt ?? null : null,
     acl: '{}',
-    tags: doc.tags ? JSON.stringify(doc.tags) : null,
+    tags: null,
     created_at: doc.createdAt,
     updated_at: doc.updatedAt,
     created_by: doc.createdBy,
@@ -604,20 +558,20 @@ export function insertDoc(doc: DocNode): DocNode {
   }
 
   db.prepare(
-    `INSERT INTO nodes (id, repo_id, name, type, parent_id, path, size, content_hash,
+    `INSERT INTO nodes (id, name, type, parent_id, path, size, content_hash,
         kind, mime, ext,
         encrypted, enc_master_dek, enc_locked_at, acl, tags,
         created_at, updated_at, created_by, updated_by)
-     VALUES (@id, @repo_id, @name, @type, @parent_id, @path, @size, @content_hash,
+     VALUES (@id, @name, @type, @parent_id, @path, @size, @content_hash,
         @kind, @mime, @ext,
         @encrypted, @enc_master_dek, @enc_locked_at, @acl, @tags,
         @created_at, @updated_at, @created_by, @updated_by)`,
   ).run(row);
 
   if (doc.type === 'file' && !row.encrypted) {
-    indexNode(db, doc.id, repoId, doc.name, content);
+    indexNode(db, doc.id, doc.name, content);
   }
-  return { ...doc, repoId, kind: 'note' };
+  return { ...doc, kind: 'note' };
 }
 
 /**
@@ -633,7 +587,6 @@ export function insertDoc(doc: DocNode): DocNode {
  */
 export function insertBinaryDoc(input: {
   id: string;
-  repoId: string;
   name: string;
   parentId: string | null;
   mime: string;
@@ -642,13 +595,11 @@ export function insertBinaryDoc(input: {
   createdBy: string;
   createdAt?: number;
 }): DocNode {
-  const repoId = input.repoId || defaultRepoId();
-  const path = computePath(repoId, input.parentId, input.name);
+  const path = computePath(input.parentId, input.name);
   const ts = input.createdAt ?? Date.now();
 
   const row: NodeRow = {
     id: input.id,
-    repo_id: repoId,
     name: input.name,
     type: 'file',
     parent_id: input.parentId,
@@ -671,20 +622,20 @@ export function insertBinaryDoc(input: {
 
   // 字节先落盘，再插索引行：文件写失败就抛错，
   // 不会留下一行指向空文件的索引（那会让「文件在但下下来是 0 字节」成为常态）
-  writeFileAtomic(filePath(repoSlugOf(repoId), path), input.data);
+  writeFileAtomic(filePath(path), input.data);
 
   db.prepare(
-    `INSERT INTO nodes (id, repo_id, name, type, parent_id, path, size, content_hash,
+    `INSERT INTO nodes (id, name, type, parent_id, path, size, content_hash,
         kind, mime, ext,
         encrypted, enc_master_dek, enc_locked_at, acl, tags,
         created_at, updated_at, created_by, updated_by)
-     VALUES (@id, @repo_id, @name, @type, @parent_id, @path, @size, @content_hash,
+     VALUES (@id, @name, @type, @parent_id, @path, @size, @content_hash,
         @kind, @mime, @ext,
         @encrypted, @enc_master_dek, @enc_locked_at, @acl, @tags,
         @created_at, @updated_at, @created_by, @updated_by)`,
   ).run(row);
 
-  indexNode(db, row.id, repoId, row.name, '');
+  indexNode(db, row.id, row.name, '');
   return rowToDoc(row);
 }
 
@@ -710,7 +661,7 @@ export class DekUnavailableError extends Error {
  * 三类改动分别落到三处：
  *   - 改名字或换父目录 → 路径变了，正文文件要搬家（子孙的路径也跟着变）；
  *   - 改正文 → 重写文件，明文的还要重建索引；
- *   - 改标签 → 只动索引行。
+ *   - 改加密状态 → 只动索引行。
  */
 export function updateDocRow(id: string, patch: Partial<DocNode>, userId: string): boolean {
   const row = db.prepare('SELECT * FROM nodes WHERE id = ?').get(id) as NodeRow | undefined;
@@ -728,17 +679,16 @@ export function updateDocRow(id: string, patch: Partial<DocNode>, userId: string
   const nameOrParentChanged = newName !== row.name || newParent !== row.parent_id;
 
   if (nameOrParentChanged) {
-    const newPath = computePath(row.repo_id, newParent, newName, row.id);
+    const newPath = computePath(newParent, newName, row.id);
     if (newPath !== row.path) {
-      const slug = repoSlugOf(row.repo_id);
       // 笔记与原件的落盘位置不同，搬家时要走各自的通道
       if (kindOf(row) === 'file') {
-        moveFileAt(filePath(slug, row.path), filePath(slug, newPath));
+        moveFileAt(filePath(row.path), filePath(newPath));
       } else {
-        moveBodyFile(slug, row.path, slug, newPath, row.encrypted === 1);
+        moveBodyFile(row.path, newPath, row.encrypted === 1);
       }
       // 附件的位置里嵌着宿主的路径，宿主换地方了附件也得跟着换
-      relocateAttachmentFiles(id, { slug, path: row.path }, { slug, path: newPath });
+      relocateAttachmentFiles(id, { path: row.path }, { path: newPath });
       sets.push('path = @path');
       params.path = newPath;
       targetPath = newPath;
@@ -773,29 +723,23 @@ export function updateDocRow(id: string, patch: Partial<DocNode>, userId: string
         throw new DekUnavailableError(id);
       }
       const cipher = encryptDocContentWithDek(text, dek);
-      const abs = bodyPath(repoSlugOf(row.repo_id), targetPath, true);
+      const abs = bodyPath(targetPath, true);
       writeFileAtomic(abs, cipher);
       sets.push('size = @size', 'content_hash = @hash');
       params.size = Buffer.byteLength(cipher, 'utf8');
       params.hash = contentHash(cipher);
     } else {
-      const abs = bodyPath(repoSlugOf(row.repo_id), targetPath, false);
+      const abs = bodyPath(targetPath, false);
       writeFileAtomic(abs, text);
       sets.push('size = @size', 'content_hash = @hash');
       params.size = Buffer.byteLength(text, 'utf8');
       params.hash = contentHash(text);
-      indexNode(db, id, row.repo_id, targetName, text);
+      indexNode(db, id, targetName, text);
     }
   } else if (targetName !== row.name && row.type === 'file' && row.encrypted !== 1) {
     // 只改了名字：正文没动，但索引里的名字列得跟着改，
     // 否则「按新名字搜」搜不到这篇——索引里躺的还是旧名字。
-    indexNode(db, id, row.repo_id, targetName, readBody({ ...row, path: targetPath }) ?? '');
-  }
-
-  // ---- 标签 ----
-  if (patch.tags !== undefined) {
-    sets.push('tags = @tags');
-    params.tags = patch.tags ? JSON.stringify(patch.tags) : null;
+    indexNode(db, id, targetName, readBody({ ...row, path: targetPath }) ?? '');
   }
 
   if (!sets.length) return false;
@@ -811,7 +755,6 @@ export function updateDocRow(id: string, patch: Partial<DocNode>, userId: string
  */
 function rebaseSubtreePaths(row: NodeRow, newPath: string): void {
   const oldPrefix = row.path;
-  const slug = repoSlugOf(row.repo_id);
   const children = db
     .prepare('SELECT * FROM nodes WHERE parent_id = ?')
     .all(row.id) as NodeRow[];
@@ -819,31 +762,31 @@ function rebaseSubtreePaths(row: NodeRow, newPath: string): void {
   for (const child of children) {
     const childNew = child.path.startsWith(`${oldPrefix}/`)
       ? `${newPath}${child.path.slice(oldPrefix.length)}`
-      : computePath(child.repo_id, row.id, child.name, child.id);
+      : computePath(row.id, child.name, child.id);
     // 正文文件与附件文件都要跟着搬：只改库里的路径而文件留在原地，
     // 打开那篇子文档就只剩空正文了——这种「看着还在、其实没了」的故障
     // 比直接报错更难查。
     if (kindOf(child) === 'file') {
-      moveFileAt(filePath(slug, child.path), filePath(slug, childNew));
+      moveFileAt(filePath(child.path), filePath(childNew));
     } else {
-      moveBodyFile(slug, child.path, slug, childNew, child.encrypted === 1);
+      moveBodyFile(child.path, childNew, child.encrypted === 1);
     }
-    relocateAttachmentFiles(child.id, { slug, path: child.path }, { slug, path: childNew });
+    relocateAttachmentFiles(child.id, { path: child.path }, { path: childNew });
     update.run(childNew, child.id);
     rebaseSubtreePaths({ ...child, path: childNew }, childNew);
   }
 }
 
 /**
- * 把一篇文档的附件搬到新的仓库/路径下。
+ * 把一篇文档的附件搬到新的路径下。
  *
- * 附件的位置里嵌着宿主的路径与仓库，所以文档搬家时附件必须跟着搬：
- * 不搬的话，原仓库一删，附件就只剩一行元数据、二进制没了。
+ * 附件的位置里嵌着宿主的路径，所以文档搬家时附件必须跟着搬：
+ * 不搬的话，附件就只剩一行元数据、二进制没了。
  */
 function relocateAttachmentFiles(
   docId: string,
-  from: { slug: string; path: string },
-  to: { slug: string; path: string },
+  from: { path: string },
+  to: { path: string },
 ): void {
   const rows = db
     .prepare('SELECT id, name FROM attachments WHERE doc_id = ?')
@@ -851,8 +794,8 @@ function relocateAttachmentFiles(
   if (!rows.length) return;
   const update = db.prepare('UPDATE attachments SET storage_key = ? WHERE id = ?');
   for (const r of rows) {
-    moveAssetFile(from.slug, from.path, to.slug, to.path, r.name);
-    update.run(`${to.slug}/assets/${to.path}/${r.name}`, r.id);
+    moveAssetFile(from.path, to.path, r.name);
+    update.run(`assets/${to.path}/${r.name}`, r.id);
   }
 }
 
@@ -877,7 +820,7 @@ export function readDocCipher(id: string): string | undefined {
     .prepare('SELECT * FROM nodes WHERE id = ? AND encrypted = 1')
     .get(id) as NodeRow | undefined;
   if (!row) return undefined;
-  return readFileSafe(bodyPath(repoSlugOf(row.repo_id), row.path, true)) ?? undefined;
+  return readFileSafe(bodyPath(row.path, true)) ?? undefined;
 }
 
 /**
@@ -902,9 +845,9 @@ export function encryptDocRow(
   const ts = Date.now();
 
   // 密文写进 .enc 文件，原来的明文文件删掉——不留明文残留
-  const encAbs = bodyPath(repoSlugOf(row.repo_id), row.path, true);
+  const encAbs = bodyPath(row.path, true);
   writeFileAtomic(encAbs, material.cipher);
-  removeBodyFile(repoSlugOf(row.repo_id), row.path, false);
+  removeBodyFile(row.path, false);
 
   const changed = db
     .prepare(
@@ -934,9 +877,9 @@ export function decryptDocRow(id: string, plain: string, userId: string): boolea
   if (!row) return false;
   const ts = Date.now();
 
-  const plainAbs = bodyPath(repoSlugOf(row.repo_id), row.path, false);
+  const plainAbs = bodyPath(row.path, false);
   writeFileAtomic(plainAbs, plain);
-  removeBodyFile(repoSlugOf(row.repo_id), row.path, true);
+  removeBodyFile(row.path, true);
 
   const changed = db
     .prepare(
@@ -954,7 +897,7 @@ export function decryptDocRow(id: string, plain: string, userId: string): boolea
     }).changes;
 
   if (row.type === 'file') {
-    indexNode(db, id, row.repo_id, row.name, plain);
+    indexNode(db, id, row.name, plain);
   }
   return changed > 0;
 }
@@ -1586,115 +1529,14 @@ export function detachSubtree(rootId: string): { removed: number; files: string[
   const dirs: string[] = [];
   for (const node of nodes) {
     if (kindOf(node) === 'file') {
-      files.push(filePath(repoSlugOf(node.repo_id), node.path));
+      files.push(filePath(node.path));
     } else {
-      files.push(bodyPath(repoSlugOf(node.repo_id), node.path, node.encrypted === 1));
-      dirs.push(...folderDirs(repoSlugOf(node.repo_id), node.path));
+      files.push(bodyPath(node.path, node.encrypted === 1));
+      dirs.push(...folderDirs(node.path));
     }
   }
   files.push(...attachmentFiles);
   return { removed: ids.length, files, dirs };
-}
-
-/* ------------------------------ 跨仓库搬家 ------------------------------ */
-
-/**
- * 把一批文档（连同子孙）整体搬到另一个仓库。
- *
- * 搬的不只是数据库里的那几行：正文文件住在仓库目录里，
- * 仓库变了目录名，文件不跟着走就成了孤儿——索引说它在，磁盘上却读不出来。
- * 所以这里搬文件、搬路径、搬归属，一次做完。
- *
- * 根节点的父指针会置空：它的爹留在原仓库，硬留着会造成
- * 「孩子在 A 仓库、爹在 B 仓库」的错位，按仓库过滤文件树时对不上。
- */
-export function moveNodesToRepo(docIds: string[], targetRepoId: string): number {
-  if (!docIds.length) return 0;
-
-  const all = db.prepare('SELECT id, parent_id FROM nodes').all() as Array<{
-    id: string;
-    parent_id: string | null;
-  }>;
-  const childrenOf = new Map<string, string[]>();
-  all.forEach((r) => {
-    if (!r.parent_id) return;
-    const list = childrenOf.get(r.parent_id);
-    if (list) list.push(r.id);
-    else childrenOf.set(r.parent_id, [r.id]);
-  });
-
-  // 收集所有选中节点及其后代
-  const targets = new Set<string>();
-  const queue = [...docIds];
-  while (queue.length) {
-    const cur = queue.shift()!;
-    if (targets.has(cur)) continue;
-    targets.add(cur);
-    (childrenOf.get(cur) ?? []).forEach((c) => queue.push(c));
-  }
-  if (!targets.size) return 0;
-
-  // 父在前子在后：算新路径时要先知道爹的新路径
-  const ordered: NodeRow[] = [];
-  const seen = new Set<string>();
-  const visit = (id: string) => {
-    if (seen.has(id)) return;
-    seen.add(id);
-    const row = db.prepare('SELECT * FROM nodes WHERE id = ?').get(id) as NodeRow | undefined;
-    if (!row) return;
-    if (row.parent_id && targets.has(row.parent_id)) visit(row.parent_id);
-    ordered.push(row);
-  };
-  docIds.forEach(visit);
-
-  const ts = Date.now();
-  const update = db.prepare(
-    'UPDATE nodes SET repo_id = ?, path = ?, parent_id = ?, updated_at = ? WHERE id = ?',
-  );
-  const roots = new Set(
-    ordered.filter((n) => !n.parent_id || !targets.has(n.parent_id)).map((n) => n.id),
-  );
-
-  db.transaction(() => {
-    for (const node of ordered) {
-      if (node.repo_id === targetRepoId) continue;
-      const sourceSlug = repoSlugOf(node.repo_id);
-      const targetSlug = repoSlugOf(targetRepoId);
-      const newPath = computePath(targetRepoId, node.parent_id, node.name, node.id);
-      // 正文与附件都要搬进目标仓库的目录：留在原仓库下就成了孤儿文件，
-      // 原仓库一删，这些文档就只剩一行元数据、二进制没了。
-      if (kindOf(node) === 'file') {
-        moveFileAt(filePath(sourceSlug, node.path), filePath(targetSlug, newPath));
-      } else {
-        moveBodyFile(sourceSlug, node.path, targetSlug, newPath, node.encrypted === 1);
-      }
-      relocateAttachmentFiles(node.id, { slug: sourceSlug, path: node.path }, { slug: targetSlug, path: newPath });
-      update.run(
-        targetRepoId,
-        newPath,
-        roots.has(node.id) ? null : node.parent_id,
-        ts,
-        node.id,
-      );
-    }
-  })();
-
-  // 索引里的仓库归属也要跟着改：检索是先按仓库圈范围再匹配的，
-  // 归属留在旧仓库的话，搬过去的文档在按仓库检索时就「消失」了。
-  const movedIds = ordered.filter((n) => n.repo_id !== targetRepoId).map((n) => n.id);
-  if (movedIds.length) {
-    const placeholders = movedIds.map(() => '?').join(',');
-    db.prepare(`UPDATE node_fts SET repo_id = ? WHERE node_id IN (${placeholders})`).run(
-      targetRepoId,
-      ...movedIds,
-    );
-    db.prepare(
-      `UPDATE attachment_fts SET repo_id = ?
-        WHERE att_id IN (SELECT id FROM attachments WHERE doc_id IN (${placeholders}))`,
-    ).run(targetRepoId, ...movedIds);
-  }
-
-  return ordered.length;
 }
 
 /* ------------------------------ 附件二进制回收 ------------------------------ */
@@ -1777,10 +1619,9 @@ function parseRagScope(raw: string | null | undefined): RagScope {
   if (!raw) return { ...DEFAULT_RAG_SCOPE };
   try {
     const parsed = JSON.parse(raw) as Partial<RagScope>;
-    const mode: RagScope['mode'] = parsed.mode === 'repos' || parsed.mode === 'docs' ? parsed.mode : 'all';
+    const mode: RagScope['mode'] = parsed.mode === 'docs' ? 'docs' : 'all';
     return {
       mode,
-      repoIds: Array.isArray(parsed.repoIds) ? parsed.repoIds.filter((x) => typeof x === 'string') : [],
       docIds: Array.isArray(parsed.docIds) ? parsed.docIds.filter((x) => typeof x === 'string') : [],
       includeAttachments: parsed.includeAttachments !== false,
     };
@@ -1850,11 +1691,10 @@ export function saveAgentConfig(patch: AgentConfigPatch): void {
     },
   );
   // 范围要整体替换：前端提交的是完整的一份，局部合并反而会留下
-  // 「模式切到 docs 却还留着旧的 repoIds」这种自相矛盾的配置。
+  // 「模式切到 docs 却还留着旧的文档清单」这种自相矛盾的配置。
   if (patch.ragScope) {
     next.ragScope = {
       mode: patch.ragScope.mode,
-      repoIds: [...(patch.ragScope.repoIds ?? [])],
       docIds: [...(patch.ragScope.docIds ?? [])],
       includeAttachments: patch.ragScope.includeAttachments !== false,
     };
@@ -1892,7 +1732,7 @@ export function saveAgentConfig(patch: AgentConfigPatch): void {
  * 采集不全不该在写库这层抛错把主流程带崩。
  */
 export function insertAgentUsage(input: {
-  scene: 'chat' | 'polish';
+  scene: 'chat';
   model: string;
   usage: TokenUsage;
 }): void {
@@ -1916,7 +1756,7 @@ export interface AgentUsageSummary {
   promptTokens: number;
   completionTokens: number;
   callCount: number;
-  byScene: Record<'chat' | 'polish', { calls: number; totalTokens: number }>;
+  byScene: Record<'chat', { calls: number; totalTokens: number }>;
   recent: Array<{ scene: string; model: string; totalTokens: number; createdAt: number }>;
 }
 
@@ -1951,11 +1791,12 @@ export function getAgentUsageSummary(recentLimit = 20): AgentUsageSummary {
 
   const byScene: AgentUsageSummary['byScene'] = {
     chat: { calls: 0, totalTokens: 0 },
-    polish: { calls: 0, totalTokens: 0 },
   };
   for (const r of scenes) {
-    if (r.scene === 'chat' || r.scene === 'polish') {
-      byScene[r.scene] = { calls: r.calls, totalTokens: r.total_tokens };
+    // 只认 'chat'：库里可能残留旧润色功能写入的 scene='polish' 行，
+    // 它们属于历史数据，但已不是本版本会写入的场景，不参与分场景统计。
+    if (r.scene === 'chat') {
+      byScene.chat = { calls: r.calls, totalTokens: r.total_tokens };
     }
   }
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * workhub 文档库工具：查看 / 导出仓库里的文档。
+ * workhub 文档库工具：查看 / 导出库里的文档。
  *
- * v2 之后正文不在库里，而在仓库目录里（data/vault/<仓库 slug>/docs/…），
- * 库里只有索引（路径、哈希、大小）。所以这个工具现在是「把仓库目录整理成
+ * v2 之后正文不在库里，而在 vault 目录里（data/vault/docs/…），
+ * 库里只有索引（路径、哈希、大小）。所以这个工具现在是「把 vault 整理成
  * 一份可发布的文档树」——顺带把 front-matter 补上，方便在 GitHub 上直接看。
  *
  * 用法：
@@ -14,7 +14,7 @@
  *
  * 环境变量：
  *   WORKHUB_DB_V2 / WORKHUB_DB  数据库路径，默认 <项目根>/data/workhub-v2.db
- *   WORKHUB_VAULT_DIR         仓库目录，默认 <项目根>/data/vault
+ *   WORKHUB_VAULT_DIR           vault 目录，默认 <项目根>/data/vault
  */
 
 import {
@@ -72,31 +72,18 @@ const db = new Database(DB_PATH, { readonly: true });
 
 const rows = db
   .prepare(
-    `SELECT n.id, n.repo_id, n.name, n.type, n.parent_id, n.path, n.size, n.tags, n.encrypted,
-            n.created_at, n.updated_at, n.created_by,
-            r.slug AS repo_slug, r.name AS repo_name
-       FROM nodes n
-       JOIN repos r ON r.id = n.repo_id
-      ORDER BY n.path`,
+    `SELECT id, name, type, parent_id, path, size, encrypted,
+            created_at, updated_at, created_by
+       FROM nodes
+      ORDER BY path`,
   )
   .all();
 db.close();
 
-/** 解析标签：库里存的是 JSON 数组，脏数据一律当空数组处理 */
-function parseTags(raw) {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    return [];
-  }
-}
-
 /**
- * 正文在仓库目录里：<vault>/<仓库 slug>/docs/<节点路径>
+ * 正文在 vault 里：<vault>/docs/<节点路径>
  *
- * 文件名跟仓库目录用同一套规则：节点名不带 .md 就补一个（带了就别补，
+ * 文件名跟 vault 用同一套规则：节点名不带 .md 就补一个（带了就别补，
  * 否则磁盘上会出现「xx.md.md」）。规则得跟 vault 一致——
  * 两边各写一套，找文件的时候就会「索引有、正文没有」，而数据其实好好的。
  */
@@ -106,7 +93,7 @@ function bodyFileName(rel) {
 
 function bodyFile(doc) {
   const base = bodyFileName(doc.path);
-  return join(VAULT_DIR, doc.repoSlug, 'docs', doc.encrypted ? `${base}.enc` : base);
+  return join(VAULT_DIR, 'docs', doc.encrypted ? `${base}.enc` : base);
 }
 
 const byId = new Map();
@@ -119,12 +106,9 @@ for (const r of rows) {
     path: r.path,
     size: r.size ?? 0,
     encrypted: r.encrypted === 1,
-    tags: parseTags(r.tags),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     createdBy: r.created_by,
-    repoSlug: r.repo_slug,
-    repoName: r.repo_name,
   });
 }
 
@@ -163,7 +147,7 @@ if (doList) {
   const files = rows.filter((r) => r.type === 'file');
   const folders = rows.filter((r) => r.type === 'folder');
   console.log(`数据库：${DB_PATH}`);
-  console.log(`仓库目录：${VAULT_DIR}`);
+  console.log(`vault 目录：${VAULT_DIR}`);
   console.log(
     `共 ${rows.length} 个节点（${folders.length} 个目录 / ${files.length} 篇文档），` +
       `正文合计 ${(files.reduce((s, r) => s + (r.size ?? 0), 0) / 1024).toFixed(1)} KB`,
@@ -177,14 +161,13 @@ if (doList) {
       for (const child of childrenOf.get(doc.id) ?? []) walk(child, depth + 1);
       return;
     }
-    const tags = doc.tags.length ? `  {${doc.tags.join(', ')}}` : '';
     // 加密文档库里没有明文，正文大小无从谈起，只标出加密状态
     if (doc.encrypted) {
-      console.log(`${pad}📄 ${doc.name}  🔒 已加密${tags}`);
+      console.log(`${pad}📄 ${doc.name}  🔒 已加密`);
       return;
     }
     const kb = ((doc.size ?? 0) / 1024).toFixed(1);
-    console.log(`${pad}📄 ${doc.name}  ${kb} KB${tags}`);
+    console.log(`${pad}📄 ${doc.name}  ${kb} KB`);
   };
   for (const r of roots) walk(r, 0);
 
@@ -197,7 +180,7 @@ if (doList) {
 if (doExport) {
   const outDir = resolve(ROOT, valueOf('--export', 'content'));
 
-  // 保护：输出目录不能是仓库根，也不能盖住数据库或仓库目录本身
+  // 保护：输出目录不能是 vault 根，也不能盖住数据库或 vault 目录本身
   if (outDir === ROOT || outDir === dirname(DB_PATH) || outDir === VAULT_DIR) {
     console.error(`拒绝导出到 ${outDir}：会覆盖项目自身。`);
     process.exit(1);
@@ -217,23 +200,22 @@ if (doExport) {
   const missingBody = [];
 
   /**
-   * 导出路径直接照搬仓库目录里的相对路径：<输出目录>/<仓库 slug>/<节点路径>。
+   * 导出路径直接照搬 vault 里的相对路径：<输出目录>/<节点路径>。
    *
    * 那个路径是入库时算好的（已处理非法字符、已避开重名），照搬它就等于
-   * 「导出结果和仓库目录一一对应」——不必在这儿再猜一遍命名规则，
-   * 两处规则各说各话的话，导出出来的树和真仓库对不上。
+   * 「导出结果和 vault 一一对应」——不必在这儿再猜一遍命名规则，
+   * 两处规则各说各话的话，导出出来的树和真实内容对不上。
    */
   const writeDoc = (doc) => {
-    const target = join(outDir, doc.repoSlug, bodyFileName(doc.path));
+    const target = join(outDir, bodyFileName(doc.path));
 
     if (doc.type === 'folder') {
-      mkdirSync(join(outDir, doc.repoSlug, doc.path), { recursive: true });
+      mkdirSync(join(outDir, doc.path), { recursive: true });
       manifest.push({
         id: doc.id,
         type: 'folder',
         name: doc.name,
-        repo: doc.repoName,
-        path: relative(outDir, join(outDir, doc.repoSlug, doc.path)).replace(/\\/g, '/'),
+        path: relative(outDir, join(outDir, doc.path)).replace(/\\/g, '/'),
       });
       return;
     }
@@ -260,7 +242,6 @@ if (doExport) {
       `id: ${doc.id}`,
       `name: ${JSON.stringify(doc.name)}`,
       `type: file`,
-      `tags: ${JSON.stringify(doc.tags)}`,
       `createdAt: ${new Date(doc.createdAt).toISOString()}`,
       `updatedAt: ${new Date(doc.updatedAt).toISOString()}`,
       `createdBy: ${doc.createdBy}`,
@@ -275,7 +256,6 @@ if (doExport) {
       id: doc.id,
       type: 'file',
       name: doc.name,
-      repo: doc.repoName,
       path: relative(outDir, target).replace(/\\/g, '/'),
       bytes: Buffer.byteLength(content, 'utf8'),
     });
@@ -305,9 +285,9 @@ if (doExport) {
   }
   if (missingBody.length) {
     console.log('');
-    console.log(`⚠ 有 ${missingBody.length} 篇文档在仓库目录里找不到正文文件，已跳过：`);
+    console.log(`⚠ 有 ${missingBody.length} 篇文档在 vault 里找不到正文文件，已跳过：`);
     for (const p of missingBody) console.log(`      - ${p}`);
-    console.log('    索引里有、正文文件却没有，说明这份数据本身就不完整，建议核对仓库目录。');
+    console.log('    索引里有、正文文件却没有，说明这份数据本身就不完整，建议核对 vault 目录。');
   }
   console.log('');
   console.log('提醒：导出的是文档正文，提交到 GitHub 等于公开这些内容。');

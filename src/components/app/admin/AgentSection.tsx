@@ -18,10 +18,9 @@ const TEMPERATURE_PRESETS = [
   { label: '发散', value: 0.7 },
 ];
 
-/** 检索范围的三种模式，标签顺序即界面上呈现的顺序 */
+/** 检索范围的两种模式，标签顺序即界面上呈现的顺序 */
 const SCOPE_MODES: Array<{ value: RagScopeMode; label: string; hint: string }> = [
   { value: 'all', label: '全站', hint: '全部资料都可被检索（加密文档除外）' },
-  { value: 'repos', label: '限定仓库', hint: '只检索选中的仓库' },
   { value: 'docs', label: '限定文档', hint: '只检索选中的文档' },
 ];
 
@@ -89,7 +88,7 @@ function Field({
  * 吸底栏把页面切碎。
  */
 export function AgentSection() {
-  const { agentConfig, refreshAgentStatus, repos, docs } = useApp();
+  const { agentConfig, refreshAgentStatus, docs } = useApp();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -353,47 +352,6 @@ export function AgentSection() {
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               {SCOPE_MODES.find((m) => m.value === draft.ragScope.mode)?.hint}
             </p>
-
-            {draft.ragScope.mode === 'repos' && (
-              <Field label="参与检索的仓库">
-                {repos.length === 0 ? (
-                  <p className="text-[11px] text-muted-foreground">还没有仓库</p>
-                ) : (
-                  <div className="max-h-40 space-y-1 overflow-y-auto rounded border border-border/70 p-1.5">
-                    {repos.map((r) => {
-                      const on = draft.ragScope.repoIds.includes(r.id);
-                      return (
-                        <label key={r.id} className="flex items-center gap-2 px-1 py-0.5 text-[11px]">
-                          <input
-                            type="checkbox"
-                            checked={on}
-                            onChange={(e) =>
-                              setDraft({
-                                ...draft,
-                                ragScope: {
-                                  ...draft.ragScope,
-                                  repoIds: e.target.checked
-                                    ? [...draft.ragScope.repoIds, r.id]
-                                    : draft.ragScope.repoIds.filter((id) => id !== r.id),
-                                },
-                              })
-                            }
-                          />
-                          <span
-                            className="h-2 w-2 shrink-0 rounded-full"
-                            style={{ background: r.color }}
-                          />
-                          <span className="truncate">{r.name}</span>
-                          {!r.ragEnabled && (
-                            <span className="shrink-0 text-muted-foreground">（已关闭检索）</span>
-                          )}
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-              </Field>
-            )}
 
             {draft.ragScope.mode === 'docs' && (
               <Field label="参与检索的文档">

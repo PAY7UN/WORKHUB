@@ -127,7 +127,7 @@ function executeRestart(plan: RestartPlan): void {
 /** 统计库里各表有多少行 */
 function countRows(db: V2Database): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const table of ['repos', 'nodes', 'users']) {
+  for (const table of ['nodes', 'users']) {
     try {
       const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
       counts[table] = row?.n ?? 0;

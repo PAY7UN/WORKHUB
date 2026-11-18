@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 「原件」与访问能力分级的测试。
  *
  * 这里守的是三件事：
@@ -37,12 +37,9 @@ const {
   readNodeRawBytes,
   serializeCapabilities,
 } = await import('./db.ts');
-const { createRepo } = await import('./repos.ts');
 const { previewModeOf } = await import('../shared/files.ts');
 const { MASTER_KEY } = await import('./db.ts');
 const { decryptBytes, encryptBytes, unwrapDekWithMaster } = await import('./docCrypto.ts');
-
-const repo = createRepo({ name: '原件测试仓库', createdBy: 'admin' });
 
 /** 一个真实的 zip 头：PK\x03\x04，后面接几个字节 */
 const ZIP_BYTES = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x10, 0x20, 0x41, 0x42]);
@@ -50,7 +47,6 @@ const ZIP_BYTES = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x10, 0x20, 0
 test('上传压缩包只产生一个原件节点，不生成同名笔记', () => {
   insertBinaryDoc({
     id: 'orig-zip',
-    repoId: repo.id,
     name: '示例归档_20260101.zip',
     parentId: null,
     mime: 'application/zip',
@@ -88,8 +84,6 @@ test('笔记节点不会被当成原件读出字节', () => {
     updatedAt: Date.now(),
     createdBy: 'admin',
     updatedBy: 'admin',
-    tags: [],
-    repoId: repo.id,
   });
   const note = listAllDocs().find((d) => d.id === 'note-md');
   assert.equal(note?.kind, 'note', '普通文档默认是笔记形态');

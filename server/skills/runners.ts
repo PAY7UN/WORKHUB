@@ -9,11 +9,16 @@
  * 与界面共用同一套语义：能力页里手动跑一次，任务里自动跑，
  * 执行逻辑只有这一份。
  */
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { basename, resolve } from 'node:path';
 import { getAgentConfigPublic, listAllDocs, searchDocs } from '../db.ts';
-import { listRepos, repoStats } from '../repos.ts';
 import { listAttachments } from '../attachments.ts';
 import { buildAskMessages, retrieveForAsk } from '../agentContext.ts';
 import { readUpstreamStream } from '../upstream.ts';
+import { isValidProtocolId } from '../channels/protocolDocs.ts';
+import { writeBuiltinDoc } from '../builtinDocs.ts';
+import { refreshPluginRegistry } from '../channels/plugins/registry.ts';
+import { convertDocumentToMarkdown } from '../docToMarkdown.ts';
 import { fetchWeb } from './webFetch.ts';
 import { analyze, formatAnalyzeResult } from './dataAnalyze.ts';
 import type { AgentSettings } from '../../shared/types.ts';
@@ -104,29 +109,6 @@ const docList: SkillRunner = async () => {
     summary: `共 ${docs.length} 篇文档`,
     output: output || '库里还没有文档',
     data: docs.map((d) => ({ id: d.id, name: d.name, type: d.type, updatedAt: d.updatedAt })),
-  };
-};
-
-/** 仓库清单：项目是资料的容器，先看清分了几摊再谈检索 */
-const repoList: SkillRunner = async () => {
-  const repos = listRepos();
-  const stats = repoStats();
-  const statMap = new Map(stats.map((s) => [s.repoId, s]));
-  const rows = repos.map((r) => {
-    const s = statMap.get(r.id);
-    return {
-      id: r.id,
-      name: r.name,
-      docCount: s?.docCount ?? 0,
-      attachmentCount: s?.attachmentCount ?? 0,
-      totalSize: s?.totalSize ?? 0,
-    };
-  });
-  const output = rows.map((r) => `${r.name}：${r.docCount} 篇文档 / ${r.attachmentCount} 个附件`).join('\n');
-  return {
-    summary: `共 ${rows.length} 个仓库`,
-    output: output || '还没有仓库',
-    data: rows,
   };
 };
 
@@ -225,7 +207,7 @@ const agentAsk: SkillRunner = async (params, ctx) => {
   return {
     summary: `回答完成（${cited.join(' / ') || '无引用'}）`,
     output: answer,
-    data: { answer, sources: retrieval.sources, scopeRepos: retrieval.scopeRepos },
+    data: { answer, sources: retrieval.sources },
   };
 };
 
@@ -332,21 +314,84 @@ const dataAnalyze: SkillRunner = async (params, ctx) => {
 };
 
 /**
+ * 文档转 Markdown。
+ *
+ * 协议文档要做成「文档绑定式」——每套协议旁边摆一份能读的说明书，
+ * 那份说明书就得是 Markdown：厂家给的是 PDF、Word、网页，先转过来。
+ *
+ * 写盘只在明确给了协议 id 时发生（写的是那套协议的标准文档），
+ * 而且只对管理员开放——它改的是所有人看到的协议说明。
+ */
+const docToMarkdown: SkillRunner = async (params, ctx) => {
+  const source = param(params, 'source');
+  if (!source) throw new SkillRunError('要转的文档没给：给一个文件路径或网址');
+  const title = param(params, 'title');
+  const protocolId = param(params, 'protocolId');
+
+  let bytes: Buffer | undefined;
+  let filename: string | undefined;
+  let url: string | undefined;
+
+  if (/^https?:\/\//i.test(source)) {
+    url = source;
+  } else {
+    const path = resolve(source);
+    if (!existsSync(path)) throw new SkillRunError(`文件不存在：${source}`);
+    const stat = statSync(path);
+    if (!stat.isFile()) throw new SkillRunError(`不是一个文件：${source}`);
+    if (stat.size > 32 * 1024 * 1024) throw new SkillRunError('文件太大了（超过 32MB），先拆开再转');
+    bytes = readFileSync(path);
+    filename = basename(path);
+  }
+
+  const result = await convertDocumentToMarkdown({ bytes, filename, url, title });
+
+  let bound = false;
+  if (protocolId) {
+    if (!ctx.isAdmin) throw new SkillRunError('绑定协议文档是管理员的活，先转出来让人看');
+    if (!isValidProtocolId(protocolId)) throw new SkillRunError('协议 id 不合法');
+    writeBuiltinDoc(protocolId, result.markdown);
+    await refreshPluginRegistry();
+    bound = true;
+  }
+
+  const notes = result.warnings.length ? `\n\n需要注意：${result.warnings.join('；')}` : '';
+  return {
+    summary: bound
+      ? `已转成 Markdown，并存成协议「${protocolId}」的标准文档`
+      : `已转成 Markdown（${result.kind}）`,
+    output: `${result.markdown}${notes}`,
+    payload: result.markdown,
+    data: {
+      kind: result.kind,
+      title: result.title,
+      warnings: result.warnings,
+      bound,
+      protocolId: protocolId || undefined,
+      markdown: result.markdown,
+    },
+  };
+};
+
+/**
  * 能力执行体注册表。
  *
  * key 与 skills/ 目录里的 id 一一对应。
  * 注意这里只登记「读类 + 智能」能力：会写数据的能力（提交授权申请）
  * 留在能力页手动执行——任务一次跑错就是错数据，代价远高于手动点一下。
+ *
+ * 例外是 doc.to-markdown：它平时只做转换（读文件、读网页），
+ * 只有明确指定了协议 id 才写盘，而那一步限管理员。
  */
 export const SKILL_RUNNERS: Record<string, SkillRunner> = {
   'doc.search': docSearch,
   'doc.list': docList,
-  'repo.list': repoList,
   'attachment.list': attachmentList,
   'agent.status': agentStatus,
   'agent.ask': agentAsk,
   'web.fetch': webFetch,
   'data.analyze': dataAnalyze,
+  'doc.to-markdown': docToMarkdown,
 };
 
 /**

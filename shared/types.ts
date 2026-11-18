@@ -30,42 +30,6 @@ export interface User {
 export type DocType = 'folder' | 'file';
 
 /**
- * 润色任务。
- *
- * 润色是对全文的重写，耗时可达数十秒，故生成过程在服务端后台推进：
- * 关闭弹窗、刷新页面都不影响任务，客户端只是它的观察者。
- * 状态存于服务端内存，进程重启即清空。
- */
-export type PolishTaskStatus = 'running' | 'done' | 'error';
-
-export interface PolishTask {
-  id: string;
-  docId: string;
-  docName: string;
-  /** 提交时的原文快照，用于重新打开后仍能做对比 */
-  content: string;
-  status: PolishTaskStatus;
-  /** 已清洗的润色结果，仅 done 时非空 */
-  result: string;
-  /**
-   * 相对原文的行级改动量（新增行数 + 删除行数），仅 done 时有值。
-   *
-   * 用于让「几乎没改」变得可见：命令清单类文档走风格化预设时，模型往往只
-   * 替换几个词，用户看到的却是「润色完了但文档一模一样」，无从判断是任务
-   * 失败了还是本来就没什么可改。有了这个数字，前端才能给出明确提示。
-   *
-   * 两侧都计，是因为只统计「结果里多出来的行」会让精简与重排这两种真实改动
-   * 显示为 0——前者删掉的行确实不见了，后者每行都还在只是换了位置。
-   */
-  changedLines?: number;
-  /** 推理模型的思考内容，仅供展示，绝不进入结果 */
-  reasoning: string;
-  error: string;
-  createdAt: number;
-  finishedAt: number;
-}
-
-/**
  * 文档形态。
  *
  * - `note`：Markdown 笔记。正文是 UTF-8 文本，落盘为 `.md`，可编辑、可全文检索。
@@ -90,18 +54,6 @@ export interface DocNode {
   updatedAt: number;
   createdBy: string;
   updatedBy: string;
-  tags?: string[];
-  /**
-   * 所属仓库 id。
-   *
-   * 仓库是「一个项目」的容器：不同项目留存的文件格式不同、RAG 范围也不同，
-   * 靠仓库把这些差异隔开，而不是让全站共享一套规则。
-   *
-   * v2 起这是必填项：没有「未归档」这种状态，每篇文档都有明确的归属。
-   * 必填而非可选，是为了让「这份东西属于哪」在类型层面就说清楚——
-   * 免得代码里到处埋 `repoId ?? null` 的兜底，最后又长出一个未归档区。
-   */
-  repoId: string;
   /**
    * 是否已加密。
    *
@@ -119,83 +71,25 @@ export interface DocNode {
    * 下载与预览都按这份描述走，而不是靠文件名的后缀去猜。
    */
   kind?: DocKind;
+  /**
+   * 是否内置文档（系统自带，跟代码走版本管理的那份）。
+   *
+   * 内置文档能改内容——现场拿到厂家 PDF 后要能就地修订——
+   * 但不许改名、搬家或删除：删掉之后代码里那份还在，下次启动又会长回来，
+   * 删的人只会觉得「删了又冒出来」。
+   */
+  builtin?: boolean;
+  /**
+   * 内置文档对应的协议 id（只有内置文档有）。
+   *
+   * 界面据此把「导入/换文档」「恢复内置」这类操作挂到这篇文档上——
+   * 文档操作跟着文档走，而不是散在工具区里。
+   */
+  protocolId?: string;
   /** 原件的 MIME 类型（kind='file' 时有值） */
   mime?: string;
   /** 原件的扩展名（含点，小写）。kind='file' 时有值 */
   ext?: string;
-}
-
-/* ------------------------------ 仓库（项目） ------------------------------ */
-
-/**
- * 仓库：把「一个项目」圈成一块独立领地。
- *
- * 存在的理由是三个差异彼此独立、却都按项目划分：
- * - 留存的文件格式不同（有的项目只放 md，有的要放 pdf 与设计稿）；
- * - Agent 检索范围不同（不该让 A 项目的资料出现在 B 项目的回答里）；
- * - 迁移与归档的边界不同（整块搬走，而不是一棵树里挑几篇）。
- */
-export interface Repo {
-  id: string;
-  /**
-   * 仓库目录名。
-   *
-   * 仓库在磁盘上就是一个目录，目录名一旦定下就不再变——
-   * 改仓库名不该让里面所有文档的路径失效。
-   */
-  slug: string;
-  name: string;
-  description: string;
-  /** 侧栏色标 */
-  color: string;
-  /**
-   * 允许上传的扩展名白名单（小写，含点，如 ['.md', '.pdf']）。
-   * 空数组表示不限制——先放开再收紧，比一开始就锁死更实用。
-   */
-  allowedExts: string[];
-  /** 单个附件的体积上限（字节） */
-  maxFileSize: number;
-  /**
-   * 该仓库是否参与 Agent 检索。
-   * 关掉它相当于「这块资料只留档、不进模型」，是范围控制里最粗的一档。
-   */
-  ragEnabled: boolean;
-  createdAt: number;
-  updatedAt: number;
-  createdBy: string;
-}
-
-/** 仓库统计：管理界面用它显示每个仓库的规模 */
-export interface RepoStat {
-  repoId: string;
-  /** 仓库内文档数（含文件夹） */
-  docCount: number;
-  /** 仓库内附件数 */
-  attachmentCount: number;
-  /** 仓库占用字节数（文档正文 + 附件） */
-  totalSize: number;
-}
-
-/**
- * 仓库事件：项目仓库自己的历史。
- *
- * 仓库删掉就没有行可查了，但「这个项目是什么时候没的、当时带走了多少东西」
- * 是日后一定会被追问的答案。所以事件表不随仓库级联删除，
- * 只留仓库 id 与名字快照——事后仍能读懂那条记录说的是哪个项目。
- */
-export type RepoEventAction = 'created' | 'updated' | 'migrated' | 'deleted';
-
-export interface RepoEvent {
-  id: string;
-  repoId: string;
-  /** 事件发生时的仓库名（改名后仍看得出说的是哪个项目） */
-  repoName: string;
-  action: RepoEventAction;
-  /** 人类可读的一句话说明（改了什么、搬了多少） */
-  detail: string;
-  /** 操作者 id */
-  actor: string;
-  createdAt: number;
 }
 
 /* ------------------------------ 附件 ------------------------------ */
@@ -240,13 +134,12 @@ export interface Attachment {
 /* ------------------------------ RAG 范围 ------------------------------ */
 
 /**
- * 检索范围的三种模式。
+ * 检索范围的两种模式。
  *
- * all：全站（仍会排除加密文档与关闭了检索的仓库）
- * repos：限定若干仓库
+ * all：全站（仍会排除加密文档）
  * docs：限定若干篇具体文档
  */
-export type RagScopeMode = 'all' | 'repos' | 'docs';
+export type RagScopeMode = 'all' | 'docs';
 
 /**
  * Agent 的检索范围。
@@ -256,18 +149,15 @@ export type RagScopeMode = 'all' | 'repos' | 'docs';
  */
 export interface RagScope {
   mode: RagScopeMode;
-  /** mode==='repos' 时生效：这些仓库的文档才进检索 */
-  repoIds: string[];
   /** mode==='docs' 时生效：这些文档才进检索 */
   docIds: string[];
   /** 是否把附件抽出的文本一并纳入检索 */
   includeAttachments: boolean;
 }
 
-/** 全站范围：不限仓库、不限文档、纳入附件 */
+/** 全站范围：不限文档、纳入附件 */
 export const DEFAULT_RAG_SCOPE: RagScope = {
   mode: 'all',
-  repoIds: [],
   docIds: [],
   includeAttachments: true,
 };
@@ -290,7 +180,6 @@ export interface DocSearchHit {
   /** 所在目录的路径，如「产品手册 / 接口说明」 */
   path: string;
   updatedAt: number;
-  tags?: string[];
 }
 
 export interface DocTree extends DocNode {

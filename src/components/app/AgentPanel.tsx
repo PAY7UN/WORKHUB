@@ -1,17 +1,13 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Bot, Send, Square, Trash2, Settings, X, ShieldAlert, Gauge, Boxes } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { useApp } from '@/context/AppContext';
-import { api, type AgentScopeInfo, type AgentUsageSummary } from '@/lib/api';
-import type { PolishTask, RagScope } from '../../../shared/types';
-import { stripPolishArtifacts } from '../../../shared/polish';
+import { api, type AgentUsageSummary } from '@/lib/api';
+import type { RagScope } from '../../../shared/types';
 import { cn } from '@/lib/utils';
 import { AgentMessageList, type AgentMessage, type AgentSource } from './AgentMessageList';
-import { PolishTaskList } from './PolishTaskList';
-import { usePolishTasks } from './usePolishTasks';
 
 interface AgentPanelProps {
   open: boolean;
@@ -28,34 +24,15 @@ function formatTokens(n: number): string {
 }
 
 export function AgentPanel({ open, onOpenChange }: AgentPanelProps) {
-  const {
-    isAdmin,
-    canUseAgent,
-    agentReason,
-    agentConfig,
-    applyExternalContent,
-    polishTaskEpoch,
-    repos,
-  } = useApp();
+  const { isAdmin, canUseAgent, agentReason, agentConfig } = useApp();
   const navigate = useNavigate();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [applyingId, setApplyingId] = useState('');
   const [usage, setUsage] = useState<AgentUsageSummary | null>(null);
   const [lastUsage, setLastUsage] = useState(0);
-  /** 显式指定的仓库；空串表示「默认」（由服务端按默认仓库落点） */
-  const [scopeRepoId, setScopeRepoId] = useState('');
-  /** 服务端回传的实际检索仓库名；为空说明范围由管理员的配置决定 */
-  const [scopeRepos, setScopeRepos] = useState<string[]>([]);
-  const [scopeResolved, setScopeResolved] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-
-  // 润色任务属管理员能力；访客不订阅，避免 403 噪声与越权暗示。
-  // epoch 来自提交方（编辑器里的润色弹窗），任务一提交这里立刻重新拉列表——
-  // 少了它，面板开着时提交的任务会停在「看不见」的状态，只能关开面板才出现
-  const { tasks, live, reasoning, remove, clearFinished } = usePolishTasks(open && isAdmin, polishTaskEpoch);
 
   // token 用量属成本数据，接口同样限管理员：拉取失败只让这一行缺席，
   // 面板其余功能必须照常可用，故此处不提示错误
@@ -84,88 +61,11 @@ export function AgentPanel({ open, onOpenChange }: AgentPanelProps) {
   /**
    * 本次提问的检索范围。
    *
-   * 默认不传范围：服务端会按「默认仓库」落点——问的是这个站点的默认资料，
-   * 而不是把各项目的资料混在一起答。
-   *
-   * 只有用户在面板里明确选了某个仓库，才把范围收窄到那个仓库；
-   * 另外，服务端还会认出问题里点名的仓库（「B 仓库里怎么…」），
-   * 那次就只答 B 仓库的内容。
-   *
-   * 只能收窄不能放宽：服务端会把请求范围与全局配置取交集，
-   * 这里给的越窄越安全，想放宽只能由管理员在后台显式改。
+   * 不传范围：检索范围由管理员在后台统一设定（限定文档与否）。
+   * 面板不再自带范围选择器——范围是全站级的配置，
+   * 放在每个面板里各选各的，只会出现「两个面板答案对不上」的情况。
    */
-  const scope = useMemo<RagScope | undefined>(
-    () =>
-      scopeRepoId
-        ? { mode: 'repos', repoIds: [scopeRepoId], docIds: [], includeAttachments: true }
-        : undefined,
-    [scopeRepoId],
-  );
-
-  /**
-   * 检索范围的实际落点。
-   *
-   * 服务端回传优先：范围可能因为问题里点了某个仓库而临时改变，
-   * 照抄本地选择会显示得与实际不符。
-   */
-  const scopeLabel = useMemo(() => {
-    if (scopeRepos.length === 1) return `仅「${scopeRepos[0]}」`;
-    if (scopeRepos.length > 1) return `仅 ${scopeRepos.join('、')}`;
-    if (scopeResolved) return '管理员设定的范围';
-    if (scopeRepoId) {
-      const name = repos.find((r) => r.id === scopeRepoId)?.name;
-      return name ? `仅「${name}」` : '仅选定仓库';
-    }
-    // 仓库按创建时间排序，第一个即服务端认定的默认仓库
-    const defaultName = repos[0]?.name;
-    return defaultName ? `默认仓库「${defaultName}」` : '默认仓库';
-  }, [scopeRepos, scopeResolved, scopeRepoId, repos]);
-
-  /**
-   * 把润色结果写回原文档。
-   *
-   * 走 applyExternalContent 而非编辑器的 onApply：任务在面板里发起时编辑器可能已关闭，
-   * 只有按 docId 回写才能覆盖这种情况；而该方法会同时通知打开中的编辑器跟随，
-   * 单靠 updateDoc 时编辑器不响应（doc.id 不变，其非受控 content 不会同步）。
-   *
-   * 不传 instruction 做二次清洗是安全的：服务端在流结束时已用
-   * stripPolishArtifacts(buffer, instruction) 清洗并落库，task.result 本身即净文。
-   *
-   * 所有提前返回都必须给出提示。此处任一分支静默 return，用户看到的就是
-   * 「点��到文档但文档没变」且无从判断原因。
-   */
-  const applyPolishResult = useCallback(
-    async (task: PolishTask) => {
-      if (applyingId) {
-        toast.error('另一个润色结果正在应用，请稍候');
-        return;
-      }
-      if (!task.docId) {
-        toast.error('该任务缺少文档标识，无法应用');
-        return;
-      }
-      const finalText = stripPolishArtifacts(task.result);
-      if (!finalText.trim()) {
-        toast.error('润色结果为空，无法应用', { description: '模型未产出可用正文，请重试或更换模型' });
-        return;
-      }
-      setApplyingId(task.id);
-      try {
-        const res = applyExternalContent(task.docId, finalText);
-        if (res.ok) {
-          toast.success(`已应用到「${task.docName}」，任务记录已清理`);
-          // 仅在成功回填后删除。失败时必须留着记录，否则用户拿不到已生成的
-          // 结果也无从重试，而重新润色一次要再等几十秒
-          void remove(task.id);
-        } else toast.error(res.reason);
-      } catch (e) {
-        toast.error('应用失败', { description: (e as Error)?.message });
-      } finally {
-        setApplyingId('');
-      }
-    },
-    [applyingId, applyExternalContent, remove],
-  );
+  const scope = useMemo<RagScope | undefined>(() => undefined, []);
 
   const ask = useCallback(
     async (question: string) => {
@@ -196,10 +96,8 @@ export function AgentPanel({ open, onOpenChange }: AgentPanelProps) {
       try {
         await api.ask(q, history, {
           signal: controller.signal,
-          onSources: (sources: AgentSource[], meta?: AgentScopeInfo) => {
+          onSources: (sources: AgentSource[]) => {
             patch((m) => ({ ...m, sources }));
-            setScopeRepos(meta?.scopeRepos ?? []);
-            setScopeResolved(true);
           },
           onReasoning: (text: string) => patch((m) => ({ ...m, reasoning: (m.reasoning ?? '') + text })),
           onDelta: (text: string) =>
@@ -307,26 +205,6 @@ export function AgentPanel({ open, onOpenChange }: AgentPanelProps) {
           </div>
         )}
 
-        {/* 润色任务：生成在后台进行，此处只做进度与结果的跟踪 */}
-        {isAdmin && (
-          <PolishTaskList
-            tasks={tasks}
-            live={live}
-            reasoning={reasoning}
-            onApply={(task) => void applyPolishResult(task)}
-            onRemove={(id) => void remove(id)}
-            onClearFinished={async () => {
-              try {
-                const result = await clearFinished();
-                toast.success(`已清空 ${result.removed.length} 个已结束的任务`);
-              } catch {
-                toast.error('清空失败，列表已刷新');
-              }
-            }}
-            applyingId={applyingId}
-          />
-        )}
-
         {/* 消息区 */}
         <AgentMessageList
           messages={messages}
@@ -372,25 +250,9 @@ export function AgentPanel({ open, onOpenChange }: AgentPanelProps) {
             <div className="flex items-center justify-between gap-2 px-2 pb-2 pt-0.5">
               <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground">
                 <Boxes className="h-3 w-3 shrink-0" />
-                <select
-                  value={scopeRepoId}
-                  onChange={(e) => {
-                    setScopeRepoId(e.target.value);
-                    // 换范围后旧的那次结论已不适用于新范围，别再显示
-                    setScopeRepos([]);
-                    setScopeResolved(false);
-                  }}
-                  title="默认只检索默认仓库；选定某个仓库则只检索该仓库"
-                  className="min-w-0 max-w-[8.5rem] shrink rounded border border-border bg-background px-1 py-0.5 text-[11px] text-foreground outline-none focus:border-indigo-400"
-                >
-                  <option value="">默认仓库</option>
-                  {repos.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
-                <span className="truncate">{scopeLabel}</span>
+                <span className="truncate" title="检索范围由管理员在后台统一设定">
+                  按管理员设定的范围检索
+                </span>
               </span>
               {loading ? (
                 <Button
@@ -423,7 +285,7 @@ export function AgentPanel({ open, onOpenChange }: AgentPanelProps) {
               <span
                 title={
                   `输入 ${usage.promptTokens.toLocaleString()} / 输出 ${usage.completionTokens.toLocaleString()} tokens` +
-                  `\n问答 ${usage.byScene.chat.calls} 次 · 润色 ${usage.byScene.polish.calls} 次` +
+                  `\n问答 ${usage.byScene.chat.calls} 次` +
                   `\n累计 ${usage.callCount} 次调用`
                 }
               >

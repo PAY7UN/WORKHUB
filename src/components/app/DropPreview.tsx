@@ -336,7 +336,7 @@ export function DropPreview({ parentId, onSaved }: DropPreviewProps) {
             // 半透明会让两行字叠在一起，谁也读不清。全屏本来就是「只看这一篇」。
             fullscreen
               ? 'bg-background top-0 left-0 h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 rounded-none sm:max-w-none'
-              : 'glass-strong max-h-[88vh] sm:max-w-4xl',
+              : 'dialog-panel max-h-[88vh] sm:max-w-4xl',
           )}
         >
           <DialogHeader className="shrink-0 border-b border-indigo-100/40 px-6 py-4 text-left dark:border-indigo-900/40">
@@ -367,7 +367,7 @@ export function DropPreview({ parentId, onSaved }: DropPreviewProps) {
 
           {/* 一次拖了多个文件时，用标签页在它们之间切换 */}
           {files.length > 1 && (
-            <div className="scrollbar-thin flex shrink-0 gap-1 overflow-x-auto border-b border-indigo-100/40 px-4 py-2 dark:border-indigo-900/40">
+            <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-indigo-100/40 px-4 py-2 dark:border-indigo-900/40">
               {files.map((f, i) => (
                 <button
                   key={`${f.name}-${i}`}
@@ -398,7 +398,7 @@ export function DropPreview({ parentId, onSaved }: DropPreviewProps) {
               这一层垫了不透明底：弹窗本身是毛玻璃的，背后的工作区会透进来，
               而目录是一列浅色小字，压在文件卡片上几乎读不出来。 */}
           <div className="@container flex min-h-0 flex-1 overflow-hidden bg-background/85">
-            <div ref={previewRef} className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            <div ref={previewRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               {/* 正文限宽居中，与文档页同一档（68rem）：全屏下正文区很宽，
                   不限宽的话一行能塞进上百个字符，眼睛从行首拉到行尾会漏字。 */}
               <MarkdownPreview source={current?.text ?? ''} className="mx-auto max-w-[68rem]" />

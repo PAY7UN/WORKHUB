@@ -5,7 +5,6 @@ import {
   X,
   Clock,
   User as UserIcon,
-  Tag,
   Check,
   Maximize2,
   Minimize2,
@@ -28,19 +27,20 @@ import {
   Minus,
   Table,
   CheckSquare,
-  Sparkles,
   Lock,
 
   PenLine,
   BookOpen,
   Paperclip,
   ChevronDown,
+  RotateCcw,
+  FileUp,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { toast } from 'sonner';
 import { useApp } from '@/context/AppContext';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { MarkdownPreview } from './MarkdownPreview';
 import { MarkdownEditor, type MarkdownEditorHandle, type EditorContext } from './MarkdownEditor';
@@ -48,10 +48,10 @@ import { DocOutline } from './DocOutline';
 import { LockedDocPanel } from './LockedDocPanel';
 import { useAccessWatch } from './useAccessWatch';
 import { DecryptingPanel } from './DecryptingPanel';
-import { PolishDialog } from './PolishDialog';
 import { AttachmentPanel } from './AttachmentPanel';
 import { FilePreview } from './FilePreview';
-import { api } from '@/lib/api';
+import { api, type BuiltinDocState } from '@/lib/api';
+import { ProtocolDocDialog } from './docs/ProtocolDocDialog';
 import { downloadAsFile, formatBytes, formatRelativeTime, debounce, extractHeadings } from '@/utils';
 import { cn } from '@/lib/utils';
 import type { AccessCapability, DocNode } from '@/types';
@@ -98,23 +98,15 @@ const QUICK_START_ACTIONS: {
 ];
 
 export function DocEditor({ doc, onClose }: DocEditorProps) {
-  const { updateDoc, docSync, hasPermission, users, isAdmin, canUseAgent, revealDoc, repos } = useApp();
+  const { updateDoc, hasPermission, users, isAdmin, revealDoc, refreshDocs, loadDocContent } =
+    useApp();
   const [content, setContent] = useState(doc.content ?? '');
   const [saved, setSaved] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
-  const [tagInput, setTagInput] = useState('');
-  const [polishOpen, setPolishOpen] = useState(false);
   /** 附件区是否展开。默认收起：附件平时不该挤占正文的地方 */
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
 
-  /**
-   * 文档所属仓库。
-   *
-   * 仓库决定了这份文档能挂什么格式的附件、单文件多大——
-   * 不同项目的留存要求本就不一样，所以规则要跟着文档走。
-   */
-  const repo = useMemo(() => repos.find((r) => r.id === doc.repoId), [repos, doc.repoId]);
   // 光标处的格式上下文：工具栏据此高亮「当前正在用的格式」，
   // 让按钮从盲目的快捷键变成有状态的指示器
   const [editorCtx, setEditorCtx] = useState<EditorContext>({
@@ -138,6 +130,81 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
   const { resolvedTheme } = useTheme();
 
   const canEdit = hasPermission('doc.edit');
+
+  /* ---------- 内置文档（协议说明书） ---------- */
+  /**
+   * 这篇是不是内置文档（协议说明书）。
+   *
+   * 内置文档跟代码走版本：内容可以直接改，但代码更新时不会覆盖人改过的内容。
+   * 「本地版 vs 新版」这两件事就靠下面的同步状态来说清楚。
+   */
+  const isBuiltinDoc = doc.builtin === true;
+  const [builtinState, setBuiltinState] = useState<BuiltinDocState | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  /** 拉一次同步状态：现场改过没有？代码里有新版没有？ */
+  const loadBuiltinState = useCallback(async () => {
+    if (!isBuiltinDoc) return;
+    try {
+      const res = await api.getDoc(doc.id);
+      setBuiltinState(res.builtin ?? null);
+    } catch {
+      // 拿不到状态就不显示提示——提示是加分项，
+      // 不该因为它读不到就挡住正文编辑
+    }
+  }, [doc.id, isBuiltinDoc]);
+
+  useEffect(() => {
+    void loadBuiltinState();
+  }, [loadBuiltinState]);
+
+  /** 这篇说明书对应的协议 id：导入/恢复内置都要拿它去调服务端 */
+  const builtinProtocolId = builtinState?.protocolId ?? doc.protocolId ?? null;
+
+  /**
+   * 恢复内置版。
+   *
+   * 不是把现场版删掉（那等于让用户自己的稿子凭空消失），
+   * 而是把代码里那份抄回来——抄回去之后它又归代码管了。
+   */
+  const handleResetBuiltin = async () => {
+    if (!builtinProtocolId) return;
+    setResetting(true);
+    try {
+      await api.tools.resetProtocolDoc(builtinProtocolId);
+      await refreshDocs();
+      await loadDocContent(doc.id);
+      await loadBuiltinState();
+      toast.success('已恢复成内置版本');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '恢复内置版失败');
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  /** 导入之后正文换了：重新取一次，别让人对着旧正文以为没生效 */
+  const handleImported = async () => {
+    await refreshDocs();
+    await loadDocContent(doc.id);
+    await loadBuiltinState();
+  };
+
+  /** 版本状态的一句话说明：不同状态该做的事不一样 */
+  const builtinHint = (() => {
+    if (!builtinState) return '';
+    if (builtinState.localModified && builtinState.hasUpdate) {
+      return '你改过这份说明书，代码里也有一版新的。你的改动原样留着——要换成新版，点「恢复内置版」。';
+    }
+    if (builtinState.localModified) {
+      return '这份说明书被改过。代码以后更新时不会覆盖你的改动。';
+    }
+    if (builtinState.hasUpdate) {
+      return '代码里有一版新的说明书。要用新的，点「恢复内置版」。';
+    }
+    return '这份说明书跟代码里的一模一样。代码更新时它会跟着更新——除非你动过它。';
+  })();
 
   // ---------- 视图形态 ----------
   // 两种形态，互斥——同一时刻只呈现一面：
@@ -279,18 +346,6 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
    * 也不该被塞进 Markdown 编辑器里让人对着一个空壳发呆。
    */
   const isFileDoc = doc.kind === 'file';
-  // 润色入口：需管理员身份 + 可用 Agent + 可编辑 + 正文非空。
-  // 服务端对 /agent/polish 另有 requireAdmin 兜底，此处仅为入口可见性。
-  // 加密文档一律排除：它的正文不应进入模型，服务端也会以 403 拒绝。
-  // 原件也排除：二进制内容送进模型既没意义也不安全。
-  const canPolish =
-    isAdmin &&
-    canEdit &&
-    canUseAgent &&
-    doc.type === 'file' &&
-    !isFileDoc &&
-    !doc.encrypted &&
-    content.trim() !== '';
 
   // ---------- 预览延迟渲染 ----------
   // 原实现把 content 直接喂给 MarkdownPreview，等于每敲一个键就
@@ -414,7 +469,7 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
   }, [doc.id, doc.content, updateDoc, canEdit]);
 
   /**
-   * 正文是异步取回来的：清单里只有元数据（正文在仓库目录的文件里），
+   * 正文是异步取回来的：清单里只有元数据（正文在 vault 的文件里），
    * 打开一篇要单独取一次。取回来之前编辑器是空的，拿到之后得把内容补进去——
    *
    * 上面那个 effect 只管「换文档」，同一篇文档后到的正文它管不着。
@@ -434,26 +489,20 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
 
   const flushSave = useCallback(() => {
     if (pendingRef.current !== null) {
-      updateDoc(doc.id, { content: pendingRef.current });
+      const pending = pendingRef.current;
       pendingRef.current = null;
+      void updateDoc(doc.id, { content: pending }).then(() => {
+        /**
+         * 内置文档改过之后，「本地已改」得马上亮出来。
+         *
+         * 这个状态是服务端算的（拿现场版跟基线比），所以只能在落库完成之后问；
+         * 早一步问，得到的还是「没改过」的旧答案。
+         */
+        if (isBuiltinDoc) void loadBuiltinState();
+      });
     }
     setSaved(true);
-  }, [doc.id, updateDoc]);
-
-  // 外部内容覆盖（当前来自「应用到文档」）。
-  //
-  // 必须清空 pendingRef：它存着本篇文档未落盘的内容，若不清，用户下一次输入会
-  // 经 handleChange 用旧内容覆盖全文，把刚应用的润色结果静默丢弃。依赖用 token
-  // 而非 content——同一篇文档连续应用两次润色时内容可能相同，只比内容会漏掉后一次。
-  const appliedTokenRef = useRef(0);
-  useEffect(() => {
-    if (!docSync || docSync.docId !== doc.id || docSync.token === appliedTokenRef.current) return;
-    appliedTokenRef.current = docSync.token;
-    setContent(docSync.content);
-    setPreviewText(docSync.content);
-    pendingRef.current = null;
-    setSaved(true);
-  }, [docSync, doc.id]);
+  }, [doc.id, updateDoc, isBuiltinDoc, loadBuiltinState]);
 
   // 通过 ref 转发，保证防抖回调始终调用最新的 flushSave（不会捕获过期的 doc.id）
   // 注意：ref 只能在副作用中更新，不能在渲染期间赋值
@@ -509,7 +558,7 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
   // 全屏把文档提到所有浮层之上，鼠标够得到「退出全屏」那个按钮，
   // 键盘用户却没有出口——Esc 是这类浮层的通用退出键。
   //
-  // 有弹窗打开时不抢 Esc：润色对话框、标签输入等自己要用 Esc 关闭，
+  // 有弹窗打开时不抢 Esc：弹窗自己要用 Esc 关闭，
   // 顺手把整篇文档退出全屏会让人以为界面出故障。
   useEffect(() => {
     if (!fullscreen) return;
@@ -577,21 +626,6 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
 
   const updatedBy = users.find((u) => u.id === doc.updatedBy);
   const createdBy = users.find((u) => u.id === doc.createdBy);
-
-  const handleAddTag = () => {
-    const t = tagInput.trim();
-    if (!t) return;
-    if (doc.tags?.includes(t)) {
-      setTagInput('');
-      return;
-    }
-    updateDoc(doc.id, { tags: [...(doc.tags || []), t] });
-    setTagInput('');
-  };
-
-  const handleRemoveTag = (t: string) => {
-    updateDoc(doc.id, { tags: (doc.tags || []).filter((x) => x !== t) });
-  };
 
   // ---------- 工具栏 ----------
   // 源码侧的命令全部交给 CodeMirror 的 transaction 执行，不再手工拼字符串改 content：
@@ -827,7 +861,7 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
               末段不会紧贴卡片下边缘，最后一行也能滚到视区中部附近。 */}
           <div
             ref={previewScrollRef}
-            className="flex-1 min-h-0 overflow-auto scrollbar-thin px-6 sm:px-9 pt-5 pb-24"
+            className="flex-1 min-h-0 overflow-auto px-6 sm:px-9 pt-5 pb-24"
           >
             <MarkdownPreview
               // 统一喂防抖后的 previewText：每敲一个字都整篇
@@ -896,6 +930,16 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
                 原件{doc.ext ? ` · ${doc.ext.replace(/^\./, '')}` : ''}
               </Badge>
             )}
+            {/* 内置说明书标识：跟代码走版本，内容可改，但不会被代码更新覆盖。 */}
+            {isBuiltinDoc && (
+              <Badge
+                variant="outline"
+                className="shrink-0 border-indigo-200/70 text-indigo-600"
+                title="内置说明书：跟代码一起走版本。内容可以直接改，代码更新时不会覆盖你改过的部分。"
+              >
+                <BookOpen className="h-3 w-3 mr-1" /> 内置说明书
+              </Badge>
+            )}
             {doc.encrypted && (
               <Badge
                 variant="secondary"
@@ -933,55 +977,69 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
           </div>
         </div>
 
-        {/* 右侧原本是文档操作按钮（AI 润色 / 下载 / 目录 / 全屏 / 关闭），
+        {/* 右侧原本是文档操作按钮（下载 / 目录 / 全屏 / 关闭），
             现在整体下沉为底部居中的悬浮操作坞。这里只留一个视觉占位，
             头部因此只剩「这是什么文档」这一件事要读。 */}
       </div>
 
-      {/* 标签栏：访客仅展示，不可编辑/删除 */}
-      {canEdit ? (
-        /*
-         * 常驻，不再「有标签才出现」。
-         *
-         * 条件渲染有两个副作用：一篇没有标签的文档根本没有添加标签的入口
-         * （要先有标签才能加标签，等于死循环）；在文档之间切换时，
-         * 这一行时有时无，正文跟着上下跳三十来像素。
-         */
-        <div className="flex h-9 shrink-0 items-center gap-2 overflow-x-auto border-b border-border/50 bg-white/30 px-4 dark:bg-white/5">
-          <Tag className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
-          {doc.tags?.map((t) => (
-            <Badge
-              key={t}
-              variant="secondary"
-              className="shrink-0 cursor-pointer bg-indigo-100/60 text-indigo-700 hover:bg-indigo-200/80 dark:bg-indigo-900/40 dark:text-indigo-300"
-              onClick={() => handleRemoveTag(t)}
-            >
-              {t}
-              <X className="ml-1 h-3 w-3" />
-            </Badge>
-          ))}
-          <Input
-            value={tagInput}
-            onChange={(e) => setTagInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleAddTag();
-            }}
-            placeholder={doc.tags?.length ? '添加标签…' : '添加标签'}
-            className="h-6 w-28 shrink-0 border-border/60 bg-white/60 text-xs dark:bg-white/5"
-          />
-        </div>
-      ) : doc.tags && doc.tags.length > 0 ? (
-        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-indigo-100/30 dark:border-indigo-900/30 bg-white/30 dark:bg-white/5 shrink-0 flex-wrap">
-          <Tag className="h-3.5 w-3.5 text-indigo-400" />
-          {doc.tags.map((t) => (
-            <Badge
-              key={t}
-              variant="secondary"
-              className="bg-indigo-100/50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300"
-            >
-              {t}
-            </Badge>
-          ))}
+      {/* 内置说明书的版本状态条。
+          说明书跟代码走版本，于是有两种可能同时存在：现场被人改过、代码里又更新了。
+          这两件事分别对应两个动作，不能混成一句「有更新」——
+          「本地改过」的人要的是别被覆盖，「代码有新版」的人要的是怎么换。
+          动作跟着文档走，所以这两个按钮待在这篇文档的头部，
+          而不是散在工具区里等人去找。 */}
+      {isBuiltinDoc ? (
+        <div className="shrink-0 border-b border-indigo-100/30 dark:border-indigo-900/30 bg-indigo-50/40 dark:bg-white/[0.03] px-4 py-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-[11px] text-muted-foreground">跟代码走版本</span>
+            {builtinState?.localModified ? (
+              <Badge
+                variant="secondary"
+                className="shrink-0 bg-amber-100/70 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                title="现场这份跟上次同步时的内置版不一样：有人改过它"
+              >
+                本地改过
+              </Badge>
+            ) : null}
+            {builtinState?.hasUpdate ? (
+              <Badge
+                variant="secondary"
+                className="shrink-0 bg-sky-100/70 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
+                title="代码里的说明书比上次同步时更新了"
+              >
+                代码里有新版
+              </Badge>
+            ) : null}
+            {isAdmin ? (
+              <>
+                <span className="flex-1" />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={() => setImportOpen(true)}
+                  title="传一份文档进来，转成 Markdown 后替换掉现在的正文"
+                >
+                  <FileUp className="h-3 w-3" /> 导入/替换
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-[11px]"
+                  disabled={resetting}
+                  onClick={() => void handleResetBuiltin()}
+                  title="把代码里那份抄回来（不是删掉你改过的）"
+                >
+                  <RotateCcw className="h-3 w-3" /> 恢复内置版
+                </Button>
+              </>
+            ) : null}
+          </div>
+          {builtinHint ? (
+            <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{builtinHint}</p>
+          ) : null}
         </div>
       ) : null}
 
@@ -1008,8 +1066,6 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
               <AttachmentPanel
                 docId={doc.id}
                 canEdit={canEdit && !doc.encrypted}
-                allowedExts={repo?.allowedExts ?? []}
-                maxFileSize={repo?.maxFileSize ?? 25 * 1024 * 1024}
               />
             </div>
           )}
@@ -1297,26 +1353,6 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
                 <div className="w-px h-5 bg-indigo-200/70 dark:bg-indigo-800/70 mx-1 shrink-0" />
               </>
             )}
-            {isAdmin && canEdit && !isFileDoc && (
-              <>
-                <button
-                  onClick={() => setPolishOpen(true)}
-                  disabled={!canPolish}
-                  title={
-                    canPolish
-                      ? '用 AI 润色当前文章'
-                      : !canUseAgent
-                        ? '请先在 Agent 设置中配置 API Key'
-                        : '仅支持润色非空的文档正文'
-                  }
-                  aria-label="AI 润色"
-                  className="h-9 w-9 rounded-xl flex items-center justify-center shrink-0 text-indigo-500 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-500/15 transition-all duration-100 active:scale-90 disabled:opacity-35 disabled:pointer-events-none"
-                >
-                  <Sparkles className="h-4 w-4" />
-                </button>
-                <div className="w-px h-5 bg-indigo-200/70 dark:bg-indigo-800/70 mx-1 shrink-0" />
-              </>
-            )}
             {/* 目录不再有开关：它常驻在正文右侧，操作坞里也就不必再放一个
                 「显示/隐藏目录」按钮——按钮的可点状态会随着它变成常态而失去意义，
                 读者只会把它当成一个开关去点，点一下发现什么都没变。 */}
@@ -1380,16 +1416,21 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
         </div>
       </div>
 
-      {/* 润色改为提交后台任务：弹窗关闭不再中断生成，
-          结果与回填统一在 Agent 助手的任务列表中完成 */}
-      <PolishDialog
-        open={polishOpen}
-        onOpenChange={setPolishOpen}
-        docId={doc.id}
-        content={content}
-        docName={doc.name}
-        docType={doc.type}
-      />
+      {/* 导入/替换说明书：动作跟着文档走，所以待在这篇文档里。 */}
+      {isBuiltinDoc && builtinProtocolId ? (
+        <ProtocolDocDialog
+          open={importOpen}
+          protocolId={builtinProtocolId}
+          protocolName={doc.name}
+          caution={
+            builtinState?.localModified
+              ? '这份说明书你改过。导入会用新文档顶掉现在的正文，你的改动就没了——先想清楚。'
+              : undefined
+          }
+          onClose={() => setImportOpen(false)}
+          onImported={() => void handleImported()}
+        />
+      ) : null}
     </div>
   );
 }

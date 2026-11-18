@@ -8,10 +8,9 @@
  *
  * 所以抽到这里，问答路由与任务里的问答步骤用的是同一份实现。
  */
-import { defaultRepoId, getDoc, listAllDocs, recallAttachmentIds, recallDocIds } from './db.ts';
-import { listRepos } from './repos.ts';
+import { getDoc, listAllDocs, recallAttachmentIds, recallDocIds } from './db.ts';
 import { loadAttachmentsWithText } from './attachments.ts';
-import { detectRepoFocus, normalizeRagScope, resolveAskScope, selectAgentCandidates } from './docAccess.ts';
+import { resolveAskScope, selectAgentCandidates } from './docAccess.ts';
 import {
   SYSTEM_PROMPT,
   buildContext,
@@ -45,8 +44,6 @@ export interface AskRetrieval {
   context: string;
   /** 真正参与本次回答的资料 */
   sources: AskSource[];
-  /** 本次实际落在哪几个仓库 */
-  scopeRepos: string[];
   /** 精排后的单元，构造消息时还要用 */
   retrieved: RetrievedUnit[];
 }
@@ -74,30 +71,6 @@ export function retrieveForAsk(opts: {
 }): AskRetrieval {
   const { question, cfg, rawScope, extraContext } = opts;
   const docs = listAllDocs();
-  const repos = listRepos();
-
-  /**
-   * 本次只看哪几个仓库。
-   *
-   * 优先级：界面上明确选定的仓库 → 问题里点名的仓库 → 默认仓库。
-   *
-   * 「默认仓库」是兜底落点：没点名时不该让模型把各项目的资料混着答，
-   * 否则 A 项目的结论会被 B 项目的资料带偏。
-   * 但管理员若已在设置里划定了范围（仓库白名单或指定文档），
-   * 那份划定本身就是「看哪些仓库」的答案，不再叠加默认落点——
-   * 否则默认仓库不在白名单里时，交集直接为空，Agent 会彻底答不出话。
-   */
-  const requestedScope = normalizeRagScope(rawScope);
-  const explicitRepoIds =
-    requestedScope && requestedScope.mode === 'repos' && requestedScope.repoIds.length > 0
-      ? requestedScope.repoIds
-      : detectRepoFocus(question, repos);
-  const focusRepoIds =
-    explicitRepoIds.length > 0
-      ? explicitRepoIds
-      : cfg.ragScope.mode === 'all' && repos.length > 0
-        ? [defaultRepoId()]
-        : [];
 
   /**
    * 本次实际能看的范围。
@@ -107,13 +80,9 @@ export function retrieveForAsk(opts: {
    * 免得有人改个前端参数就把范围绕过去了——范围是安全边界，
    * 它的收紧权只在管理员手里。
    */
-  const scope = resolveAskScope(rawScope, cfg.ragScope, docs, focusRepoIds);
+  const scope = resolveAskScope(rawScope, cfg.ragScope);
 
-  const repoEnabled = new Map(repos.map((r) => [r.id, r.ragEnabled]));
-  const isRepoEnabled = (repoId: string | null | undefined) =>
-    repoId ? repoEnabled.get(repoId) !== false : true;
-
-  const candidates = selectAgentCandidates(docs, { scope, isRepoEnabled });
+  const candidates = selectAgentCandidates(docs, { scope });
   const allowedDocIds = new Set(candidates.map((d) => d.id));
   const docNames = new Map(docs.map((d) => [d.id, d.name]));
 
@@ -157,7 +126,6 @@ export function retrieveForAsk(opts: {
   return {
     context,
     retrieved,
-    scopeRepos: repos.filter((r) => focusRepoIds.includes(r.id)).map((r) => r.name),
     sources: retrieved.map((r) => ({
       id: r.unit.id,
       name: r.unit.name,

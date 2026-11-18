@@ -112,6 +112,15 @@ export const KIND_LABELS: Record<AttachmentKind, string> = {
   binary: '二进制',
 };
 
+/**
+ * 单个附件的体积硬上限（字节）。
+ *
+ * 只剩这一条全站硬线：所有附件一视同仁。
+ * 放在共享层：前端上传前先拦一道，后端再兜一道，
+ * 两边用同一个数字，免得出现「前端放行、后端拒绝」或者反过来。
+ */
+export const MAX_ATTACHMENT_SIZE = 64 * 1024 * 1024;
+
 /** 单文件体积的可读化显示（与服务端 utils 口径一致） */
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0 B';

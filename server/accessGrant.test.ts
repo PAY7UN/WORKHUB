@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 访问授权的判定规则测试。
  *
  * 这里守的是两条安全性质：**撤销即刻生效**、**到期自动失效**。
@@ -30,12 +30,8 @@ const {
   listAccessGrants,
   revokeAccessGrant,
 } = await import('./db.ts');
-const { createRepo } = await import('./repos.ts');
 
 const DOC_ID = 'doc-grant-test';
-
-/** 文档必须有归属：先建一个仓库，文档才有地方放 */
-const repo = createRepo({ name: '授权测试仓库', createdBy: 'admin' });
 
 function ensureDoc() {
   insertDoc({
@@ -49,8 +45,6 @@ function ensureDoc() {
     updatedAt: Date.now(),
     createdBy: 'admin',
     updatedBy: 'admin',
-    tags: [],
-    repoId: repo.id,
   });
 }
 

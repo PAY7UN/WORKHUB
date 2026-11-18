@@ -1,7 +1,7 @@
 name: CI
 
 # 每次推送与 PR 都跑一遍：类型、风格、单测、端到端自检。
-# 端到端自检需要一份可用的库与仓库目录，这里用示例数据现场生成，
+# 端到端自检需要一份可用的库与正文目录，这里用示例数据现场生成，
 # 不依赖任何真实数据——仓库里的 data/ 本来就不该被提交。
 on:
   push:
@@ -48,11 +48,11 @@ jobs:
       - name: 编译服务端（发布态入口）
         run: npm run build:server
 
-      - name: 准备示例库与仓库目录
+      - name: 准备示例库与正文目录
         shell: bash
         run: |
           # 自检脚本要复制一份「正在使用的库」再验证，所以先造一份出来：
-          # 只导入 db.ts 就会建库、灌示例文档，并把正文写进仓库目录。
+          # 只导入 db.ts 就会建库、灌示例文档，并把正文写进正文目录。
           node -e "console.log('WORKHUB_SECRET=' + require('crypto').randomBytes(32).toString('hex'))" > .env
           echo "WORKHUB_ADMIN_PASSWORD=CiCheck#2026a" >> .env
           # --env-file-if-exists 不能省：缺 WORKHUB_SECRET 时服务端会拒绝加载，

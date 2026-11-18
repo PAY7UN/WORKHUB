@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useMemo, type ReactNode } from 'react';
 import type {
   AccessAuditEntry,
   AccessCapability,
@@ -11,8 +11,6 @@ import type {
   DocTree,
   GuestIdentity,
   Permission,
-  Repo,
-  RepoStat,
   User,
 } from '@/types';
 import { ROLE_PERMISSIONS } from '@/types';
@@ -90,7 +88,7 @@ interface AppContextValue {
   /**
    * 取回一篇文档的正文并并入清单。
    *
-   * 清单只有元数据（正文在仓库目录的文件里），打开一篇就取一篇。
+   * 清单只有元数据（正文在 vault 的文件里），打开一篇就取一篇。
    */
   loadDocContent: (id: string) => Promise<void>;
   createDoc: (input: {
@@ -98,86 +96,21 @@ interface AppContextValue {
     type: 'file' | 'folder';
     parentId: string | null;
     content?: string;
-    /** 归属仓库；不传则由服务端沿用父节点或落到默认仓库 */
-    repoId?: string;
   }) => Promise<DocNode | null>;
-  updateDoc: (id: string, patch: Partial<DocNode>) => void;
-  /**
-   * 以外部内容覆盖文档并广播给打开中的编辑器。
-   * 仅供润色结果回写使用——普通编辑保存应继续走 updateDoc。
-   */
-  applyExternalContent: (id: string, content: string) => { ok: true } | { ok: false; reason: string };
-  /** 外部内容同步信号，供 DocEditor 消费 */
-  docSync: { docId: string; content: string; token: number } | null;
-  /** 润色任务创建信号（自增），任务提交方 bump，列表订阅方据此重新拉取 */
-  polishTaskEpoch: number;
-  /** 通知「润色任务列表已变化」，提交成功后调用 */
-  notifyPolishTaskCreated: () => void;
+  /** 更新文档。返回的 promise 在落库完成后 settle，调用方据此同步后续状态 */
+  updateDoc: (id: string, patch: Partial<DocNode>) => Promise<void>;
   /** 删除文档（级联子树）。返回是否真正删除成功，调用方据此决定要不要提示成功 */
   deleteDoc: (id: string) => Promise<boolean>;
   moveDoc: (id: string, newParentId: string | null) => boolean;
-  /**
-   * 上传一个 Markdown 文件成为文档。
-   *
-   * repoId 不传时由服务端沿用父节点的仓库归属。
-   */
-  uploadFile: (file: File, parentId: string | null, repoId?: string) => Promise<DocNode | null>;
-  /**
-   * 重新拉取文档清单。
-   *
-   * 文档的仓库归属会变（跨仓库迁移），而归属信息随文档一起下发，
-   * 因此迁移完成后必须重拉，否则界面仍显示旧的归属。
-   */
+  /** 上传一个文件成为文档（.md 是笔记，其它是原件） */
+  uploadFile: (file: File, parentId: string | null) => Promise<DocNode | null>;
+  /** 重新拉取文档清单 */
   refreshDocs: (opts?: { persist?: boolean }) => Promise<void>;
 
   // 访客可见文档：访客与管理员拿到的是同一份清单（「对访客隐藏」已下线），
   // 故这里直接透传 docs。保留这个别名而非让调用方直接用 docs，
   // 是因为「当前身份可见的文档」是业务语义，与「文档列表」不是一回事。
   visibleDocs: DocNode[];
-
-  /**
-   * 按当前仓库范围收窄后的文档清单。
-   *
-   * 始终只含当前仓库的文档：每个文档都有归属，
-   * 混在一起看既分不清来源，也说不清一份资料适用哪些规则。
-   * 文件树与文件夹视图都基于它渲染，两边看到的范围才不会打架。
-   */
-  repoScopedDocs: DocNode[];
-
-  /* ---- 标签筛选 ---- */
-  /** 当前选中的标签；为 null 表示不筛选 */
-  tagFilter: string | null;
-  /** 选中/取消某个标签；传 null 取消筛选 */
-  setTagFilter: (tag: string | null) => void;
-  /** 全部标签及各自文档数，按数量倒序 */
-  allTags: Array<{ tag: string; count: number }>;
-
-  /* ---- 仓库（项目） ---- */
-  /** 全部在架仓库 */
-  repos: Repo[];
-  /** 各仓库的规模统计（文档数、附件数、占用） */
-  repoStats: RepoStat[];
-  /**
-   * 仓库清单的加载状态。
-   *
-   * 分三态是因为「没连上服务端」和「服务端说一个仓库都没有」
-   * 在界面上是两回事：前者要提示去查服务，后者要提示去建仓库。
-   * 混成一句「还没有仓库」就会把人引到错的方向。
-   */
-  reposStatus: 'loading' | 'ready' | 'error';
-  /** 拉取仓库清单 */
-  refreshRepos: () => Promise<void>;
-  /**
-   * 当前所在仓库。
-   *
-   * 侧边栏按它过滤文件树，Agent 面板按它临时收窄检索范围。
-   * 它始终指向一个真实仓库：文档没有「不属于任何仓库」的状态。
-   */
-  currentRepoId: string;
-  /** 切换所在仓库 */
-  setCurrentRepoId: (id: string) => void;
-  /** 当前仓库对象；还没加载出来时为 undefined */
-  currentRepo: Repo | undefined;
 
   /* ---- 全文搜索 ---- */
   /** 当前搜索词 */
@@ -307,12 +240,8 @@ interface AppContextValue {
   refreshAgentStatus: () => Promise<void>;
 
   // 工具
-  /**
-   * 构建文件树。
-   *
-   * 传入 repoId 则只返回该仓库的文档；不传则返回全部。
-   */
-  buildTree: (repoId?: string) => DocTree[];
+  /** 构建文件树 */
+  buildTree: () => DocTree[];
   getPath: (id: string) => DocNode[];
 }
 
@@ -320,13 +249,6 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 /** 离线兜底缓存：仅在后端不可达时展示，后端恢复后立即以服务端为准 */
 const STORAGE_KEY_DOCS = 'workhub.docs';
-/**
- * 上次停留的仓库。
- *
- * 刷新页面后要回到同一个仓库：工作区切了范围、切了目录，
- * 刷新一下却落在别处（多半是个空仓库），看着就像资料没了。
- */
-const STORAGE_KEY_REPO = 'workhub.currentRepo';
 
 const DEFAULT_AGENT_CONFIG: AgentConfigView = {
   baseUrl: 'https://api.minimaxi.com/v1',
@@ -336,7 +258,7 @@ const DEFAULT_AGENT_CONFIG: AgentConfigView = {
   allowGuest: false,
   topK: 5,
   contextBudget: 24000,
-  ragScope: { mode: 'all', repoIds: [], docIds: [], includeAttachments: true },
+  ragScope: { mode: 'all', docIds: [], includeAttachments: true },
   hasApiKey: false,
 };
 
@@ -375,111 +297,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     role: 'viewer',
   });
   const [agentConfig, setAgentConfig] = useState<AgentConfigView>(DEFAULT_AGENT_CONFIG);
-
-  /* ---- 仓库（项目） ---- */
-  const [repos, setRepos] = useState<Repo[]>([]);
-  const [repoStats, setRepoStats] = useState<RepoStat[]>([]);
-  const [reposStatus, setReposStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-  /**
-   * 当前所在仓库。
-   *
-   * 存 id 而不是对象：仓库设置（名称、允许格式）随时可能变，
-   * 存 id 才能保证界面上显示的永远是最新的一份。
-   *
-   * 初值取自本地存储：刷新页面后要落回同一个仓库，
-   * 而不是每次都被弹回「最早创建的那个」——那个多半是空的。
-   */
-  const [currentRepoId, setCurrentRepoIdState] = useState<string>(
-    () => readStore(localStorage, STORAGE_KEY_REPO) ?? '',
-  );
-
-  /**
-   * 切换所在仓库，并记住它。
-   *
-   * 记住的理由很实际：用户在某个仓库里翻资料，刷新一下就被弹到别处，
-   * 文件树一空，看着就像资料没了——其实只是范围换了。
-   */
-  const setCurrentRepoId = useCallback((id: string) => {
-    setCurrentRepoIdState(id);
-    try {
-      writeStore(localStorage, STORAGE_KEY_REPO, id);
-    } catch {
-      /* 隐私模式忽略：记不住也只是下次回到默认仓库 */
-    }
-  }, []);
-
-  const refreshRepos = useCallback(async () => {
-    try {
-      const { repos: list, stats } = await api.listRepos();
-      setRepos(list);
-      setRepoStats(stats);
-      setReposStatus('ready');
-    } catch (e) {
-      // 拉不到仓库时保留已有列表，不要换成示例仓库：
-      // 换上别的 id 会把「当前仓库」指到一个不存在的地方，
-      // 文件树于是空着——用户只会觉得资料没了，其实只是没连上服务端。
-      log.warn('仓库列表读取失败，沿用已有列表', e);
-      setReposStatus('error');
-    }
-  }, []);
-
-  const currentRepo = useMemo(
-    () => repos.find((r) => r.id === currentRepoId),
-    [repos, currentRepoId],
-  );
-
-  /**
-   * 仓库就位后确定「当前所在仓库」。
-   *
-   * 顺序有讲究：
-   * 1. 记住的那个还在 → 就用它（用户刚才就在这儿，别把人挪走）；
-   * 2. 记住的没了（仓库被删）→ 选文档最多的那个，
-   *    至少第一眼看到的是有内容的仓库，而不是对着空目录发呆；
-   * 3. 全都空 → 第一个。
-   *
-   * 早先是无条件取 repos[0]，也就是「最早创建的那个」，
-   * 而最早创建的那个往往是个还没用的空项目——于是刷新后第一眼永远是空的。
-   *
-   * 加载态也在这里结束：只有「当前落在哪个仓库」定下来了，
-   * 首屏才算读完。提前结束的话，中间会闪一帧「所有仓库混在一起」的内容。
-   */
-  useEffect(() => {
-    if (reposStatus === 'loading') return;
-    if (repos.length > 0 && !repos.some((r) => r.id === currentRepoId)) {
-      const docCount = (id: string) => repoStats.find((s) => s.repoId === id)?.docCount ?? 0;
-      const best = repos.reduce((a, b) => (docCount(b.id) > docCount(a.id) ? b : a), repos[0]);
-      setCurrentRepoId(best.id);
-    }
-    setBootstrapping(false);
-  }, [repos, repoStats, reposStatus, currentRepoId, setCurrentRepoId]);
-
-  /**
-   * 外部内容强制同步信号（当前为「应用到文档」的唯一通道）。
-   *
-   * 为什么不能只靠 docs 变化：DocEditor 的 content 是非受控本地 state，仅在初始化
-   * 与切换文档（doc.id 变化）时同步。润色结果走 updateDoc 回写时文档往往正开着，
-   * doc.id 不变 → 编辑器不跟随，用户看到「点了没反应」；更糟的是编辑器里残留的
-   * 旧内容经防抖保存会把润色结果整个覆盖回去，且无任何提示。
-   *
-   * token 必须递增而非只比 docId：同一篇文档连续应用两次润色，docId 与 content
-   * 都可能相同，用 (docId, content) 判等会漏掉后一次。
-   */
-  const [docSync, setDocSync] = useState<{ docId: string; content: string; token: number } | null>(null);
-  const docSyncTokenRef = useRef(0);
-
-  /**
-   * 润色任务创建信号（自增版本号）。
-   *
-   * 提交入口（编辑器的 PolishDialog）与订阅方（Agent 面板的 usePolishTasks）分属两棵
-   * 互不相干的组件树，彼此拿不到对方的 state，任务列表又只存在于订阅方的本地副本里。
-   * 提交成功后不通知，订阅方的列表就永远停在提交前的样子——面板明明开着，任务却
-   * 「看不见」，且没有任何报错可查。因此这里用自增计数器搭桥，取代「靠轮询兜底」。
-   *
-   * 用计数器而非任务 id 列表：调用方只需表达「列表已失效」，不必知道新任务的形状；
-   * 同一函数也留给未来的批量提交。
-   */
-  const [polishTaskEpoch, setPolishTaskEpoch] = useState(0);
-  const notifyPolishTaskCreated = useCallback(() => setPolishTaskEpoch((n) => n + 1), []);
 
   const currentUser: User = isAdmin ? ADMIN_USER : VIEWER_USER;
 
@@ -553,16 +370,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!cancelled && verified !== null) setIsAdmin(verified);
       const admin = verified ?? isAdmin;
 
-      // 文档与仓库是首屏的两块内容：先把它们拿到，界面才能开始显示。
+      // 文档清单是首屏的地基：先拿到它，界面才能开始显示。
       try {
         await refreshDocs({ persist: admin });
       } catch {
         // 拉不到文档就沿用本地缓存继续
         log.warn('文档清单读取失败，沿用本地缓存');
       }
-      // 注意：这里不结束加载态。「当前落在哪个仓库」由上面那个 effect 决定，
-      // 等它定下来再结束，否则会先闪一帧「所有仓库混在一起」的内容。
-      await refreshRepos();
+      if (!cancelled) setBootstrapping(false);
 
       // Agent 的可用性与配置跟首屏内容无关，慢了就慢了，不该挡住界面。
       try {
@@ -589,48 +404,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // 访客可见文档：访客与管理员拿到的是同一份清单（「对访客隐藏」已下线，
   // 服务端不再按身份裁剪），故这里直接透传 docs。保留这个别名而非让调用方
   // 直接用 docs，是因为「当前身份可见的文档」是业务语义，与「文档列表」不是一回事。
-  //
-  // 叠加标签筛选时，命中的文档连同它的祖先目录一起留下：只留命中文档会把它们
-  // 从目录里连根拔起，用户再也看不出它放在哪个目录下。
-  const [tagFilter, setTagFilter] = useState<string | null>(null);
-
-  const visibleDocs = useMemo(() => {
-    if (!tagFilter) return docs;
-    const byId = new Map(docs.map((d) => [d.id, d]));
-    const keep = new Set<string>();
-    docs.forEach((d) => {
-      if (!d.tags?.includes(tagFilter)) return;
-      let cur: DocNode | undefined = d;
-      const seen = new Set<string>();
-      while (cur && !seen.has(cur.id)) {
-        seen.add(cur.id);
-        keep.add(cur.id);
-        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
-      }
-    });
-    return docs.filter((d) => keep.has(d.id));
-  }, [docs, tagFilter]);
-
-  /**
-   * 按当前仓库范围收窄后的文档清单。
-   *
-   * 始终只留当前仓库的文档（仓库就位前先不筛，避免界面空一片）。
-   * 侧边栏文件树与文件夹视图都基于它渲染，
-   * 否则会出现「文件树只剩某个仓库、文件夹视图却把别的仓库也列出来」的不一致。
-   */
-  const repoScopedDocs = useMemo(
-    () => (currentRepoId ? visibleDocs.filter((d) => d.repoId === currentRepoId) : visibleDocs),
-    [visibleDocs, currentRepoId],
-  );
-
-  /** 全部标签及各自文档数，按数量倒序：先用得多的排前面 */
-  const allTags = useMemo(() => {
-    const counter = new Map<string, number>();
-    docs.forEach((d) => d.tags?.forEach((t) => counter.set(t, (counter.get(t) ?? 0) + 1)));
-    return [...counter.entries()]
-      .map(([tag, count]) => ({ tag, count }))
-      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh-Hans-CN'));
-  }, [docs]);
+  const visibleDocs = docs;
 
   /* ---- 全文搜索 ---- */
 
@@ -745,8 +519,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /**
    * 取回一篇文档的正文，合并进清单。
    *
-   * 清单只有元数据：正文在仓库目录的文件里，服务端不会为了列个目录
-   * 把整个仓库读一遍。所以打开一篇就取一篇，取回来的正文并回原处，
+   * 清单只有元数据：正文在 vault 的文件里，服务端不会为了列个目录
+   * 把整个库读一遍。所以打开一篇就取一篇，取回来的正文并回原处，
    * 免得编辑器再去别处找。
    *
    * 加密文档取不到正文（服务端只存密文），这里保持原样不动——
@@ -1020,68 +794,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   /** 创建文档；重名或失败时抛出错误，由调用方提示 */
   const createDoc: AppContextValue['createDoc'] = useCallback(
-    async ({ name, type, parentId, content, repoId }) => {
+    async ({ name, type, parentId, content }) => {
       if (!isAdmin) return null;
-      const { doc } = await api.createDoc({
-        name,
-        type,
-        parentId,
-        content,
-        // 归属明确给出，省得服务端猜：在哪个仓库建的就落在哪个仓库
-        ...(repoId ? { repoId } : {}),
-      });
+      const { doc } = await api.createDoc({ name, type, parentId, content });
       setDocs((prev) => [...prev, doc]);
-      // 仓库统计跟着走：新建了文档，仓库里的文件个数就该变，
-      // 否则侧边栏与仓库设置里显示的一直是旧值
-      void refreshRepos();
       return doc;
     },
-    [isAdmin, refreshRepos],
+    [isAdmin],
   );
 
   /** 更新文档：先乐观更新，失败回滚 */
   const updateDoc = useCallback(
-    (id: string, patch: Partial<DocNode>) => {
+    async (id: string, patch: Partial<DocNode>): Promise<void> => {
       if (!isAdmin) return;
       const snapshot = docs;
       setDocs((prev) =>
         prev.map((d) => (d.id === id ? { ...d, ...patch, id: d.id, updatedAt: Date.now() } : d)),
       );
-      void api
-        .updateDoc(id, patch)
-        .then(({ doc }) => {
-          // 加密文档的响应里没有正文（服务端只存密文），这里直接用响应覆盖。
-          // 不会清空编辑器里的内容：编辑器有自己的 content state，
-          // 且只在切换文档（doc.id 变化）时才从 doc.content 重新同步。
-          // 也不把明文塞回全局 docs——那会让明文有机会被缓存进 localStorage。
-          replaceDoc(doc);
-        })
-        .catch((e) => {
-          setDocs(snapshot);
-          log.error('更新文档失败', e);
-        });
+      try {
+        const { doc } = await api.updateDoc(id, patch);
+        // 加密文档的响应里没有正文（服务端只存密文），这里直接用响应覆盖。
+        // 不会清空编辑器里的内容：编辑器有自己的 content state，
+        // 且只在切换文档（doc.id 变化）时才从 doc.content 重新同步。
+        // 也不把明文塞回全局 docs——那会让明文有机会被缓存进 localStorage。
+        replaceDoc(doc);
+      } catch (e) {
+        setDocs(snapshot);
+        log.error('更新文档失败', e);
+      }
     },
     [isAdmin, docs, replaceDoc],
-  );
-
-  /**
-   * 以外部内容覆盖指定文档，并通知打开中的编辑器跟随。
-   *
-   * 与 updateDoc 的区别仅在于额外发出 docSync 广播——后者用于「用户自己编辑后保存」
-   * 这类由编辑器自己发起的写入，此时无需（也不能）反向覆盖编辑器 state。
-   * 润色结果来自编辑器之外，必须走这里，否则打开中的文档表面无响应。
-   *
-   * 返回值用于调用方区分失败原因，避免静默失败。
-   */
-  const applyExternalContent = useCallback(
-    (id: string, content: string): { ok: true } | { ok: false; reason: string } => {
-      if (!isAdmin) return { ok: false, reason: '仅管理员可应用润色结果' };
-      updateDoc(id, { content });
-      docSyncTokenRef.current += 1;
-      setDocSync({ docId: id, content, token: docSyncTokenRef.current });
-      return { ok: true };
-    },
-    [isAdmin, updateDoc],
   );
 
   const deleteDoc = useCallback(
@@ -1100,9 +842,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         .then(() => {
           // 以服务端为准回读一次：删除不可逆，避免残留幽灵数据与过期缓存
           void refreshDocs({ persist: true }).catch(() => undefined);
-          // 仓库统计也要重算：删掉文件后仓库里的文件个数必须跟着减，
-          // 否则侧边栏与仓库设置里显示的一直是删除前的旧值
-          void refreshRepos();
           return true;
         })
         .catch(async (e) => {
@@ -1110,11 +849,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           toast.error('删除失败，已恢复服务端状态，请重试');
           // 失败可能发生在服务端已提交之后，必须回读对齐，不能让界面停留在错误状态
           await refreshDocs({ persist: true }).catch(() => undefined);
-          void refreshRepos();
           return false;
         });
     },
-    [isAdmin, refreshDocs, refreshRepos],
+    [isAdmin, refreshDocs],
   );
 
   const moveDoc = useCallback(
@@ -1170,7 +908,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * 那篇空壳倒成了每次都要点开、点开发现什么都没有的东西。
    */
   const uploadFile: AppContextValue['uploadFile'] = useCallback(
-    async (file, parentId, repoId) => {
+    async (file, parentId) => {
       if (!isAdmin) return null;
       if (file.name.toLowerCase().endsWith('.md')) {
         const text = await file.text();
@@ -1179,33 +917,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
           type: 'file',
           parentId,
           content: text,
-          // 明确指定的仓库优先；不传则由服务端沿用父节点的归属
-          ...(repoId !== undefined ? { repoId } : {}),
         });
         setDocs((prev) => [...prev, doc]);
-        void refreshRepos();
         return doc;
       }
       // 原件：文件即节点。名字保留原样（含扩展名），字节原样落盘
-      const doc = await api.uploadFile(file, parentId, repoId);
+      const doc = await api.uploadFile(file, parentId);
       setDocs((prev) => [...prev, doc]);
-      void refreshRepos();
       return doc;
     },
-    [isAdmin, refreshRepos],
+    [isAdmin],
   );
 
   // 构造树（基于可见列表）
-  const buildTree: AppContextValue['buildTree'] = useCallback(
-    (repoId?: string) => {
-      // 按仓库过滤时只看该仓库的文档。
-      // 仓库归属是沿父节点继承的，所以祖先链天然留在同一个仓库里，
-      // 过滤后不会出现「父节点被滤掉、子节点悬空」的情况。
-      const source =
-        repoId === undefined
-          ? visibleDocs
-          : visibleDocs.filter((d) => d.repoId === repoId);
-      const map = new Map<string, DocTree>();
+  const buildTree: AppContextValue['buildTree'] = useCallback(() => {
+    const source = visibleDocs;
+    const map = new Map<string, DocTree>();
       source.forEach((d) => map.set(d.id, { ...d, children: [] }));
       const roots: DocTree[] = [];
       map.forEach((node) => {
@@ -1258,26 +985,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loadDocContent,
       createDoc,
       updateDoc,
-      applyExternalContent,
-      docSync,
-      polishTaskEpoch,
-      notifyPolishTaskCreated,
       deleteDoc,
       moveDoc,
       uploadFile,
       refreshDocs,
       visibleDocs,
-      repoScopedDocs,
-      tagFilter,
-      setTagFilter,
-      allTags,
-      repos,
-      repoStats,
-      reposStatus,
-      refreshRepos,
-      currentRepoId,
-      setCurrentRepoId,
-      currentRepo,
       searchQuery,
       searchHits,
       searching,
@@ -1324,26 +1036,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loadDocContent,
       createDoc,
       updateDoc,
-      applyExternalContent,
-      docSync,
-      polishTaskEpoch,
-      notifyPolishTaskCreated,
       deleteDoc,
       moveDoc,
       uploadFile,
       refreshDocs,
       visibleDocs,
-      repoScopedDocs,
-      tagFilter,
-      setTagFilter,
-      allTags,
-      repos,
-      repoStats,
-      reposStatus,
-      refreshRepos,
-      currentRepoId,
-      setCurrentRepoId,
-      currentRepo,
       searchQuery,
       searchHits,
       searching,

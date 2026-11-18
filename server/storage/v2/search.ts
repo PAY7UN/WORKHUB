@@ -53,16 +53,9 @@ export type IndexQueryMode = 'match' | 'recall';
  * FTS5 虚表没有主键，同一个 node_id 重复写会得到多行。
  * 所以写之前先把该节点已有的行删掉——保证「一个节点一行索引」。
  */
-export function indexNode(
-  db: V2Database,
-  nodeId: string,
-  repoId: string,
-  name: string,
-  body: string,
-): void {
+export function indexNode(db: V2Database, nodeId: string, name: string, body: string): void {
   unindexNode(db, nodeId);
-  db.prepare('insert into node_fts (repo_id, node_id, name, body) values (?, ?, ?, ?)').run(
-    repoId,
+  db.prepare('insert into node_fts (node_id, name, body) values (?, ?, ?)').run(
     nodeId,
     toSearchText(name),
     toSearchText(body),
@@ -76,16 +69,12 @@ export function unindexNode(db: V2Database, nodeId: string): void {
 
 export interface IndexHit {
   node_id: string;
-  repo_id: string;
   /** 匹配得分，越小越相关（FTS5 的 bm25 越小越靠前） */
   rank: number;
 }
 
 /**
  * 在索引里查。
- *
- * repoIds 传了就只在这些仓库里找——这是仓库化检索的关键：
- * 先按仓库圈定范围，再做匹配，不必把全站文档捞出来再筛。
  *
  * mode 决定 token 之间是「全命中」还是「任意命中」：
  * 搜索框用 match（精确），Agent 召回用 recall（宽松）。
@@ -94,30 +83,19 @@ export function searchIndex(
   db: V2Database,
   query: string,
   limit = 50,
-  repoIds?: string[],
   mode: IndexQueryMode = 'match',
 ): IndexHit[] {
   const match = mode === 'recall' ? toRecallQuery(query) : toMatchQuery(query);
   if (!match) return [];
-
-  const scope = repoIds && repoIds.length > 0 ? repoIds : undefined;
-  // 参数一律用位置占位符：better-sqlite3 里命名占位符得配对象传，
-  // 混用会在运行时直接抛「参数个数不对」。
-  const rows = db
+  return db
     .prepare(
-      `select node_id, repo_id, rank
+      `select node_id, rank
          from node_fts
         where node_fts match ?
-          ${scope ? 'and repo_id in (' + scope.map(() => '?').join(',') + ')' : ''}
         order by rank
         limit ?`,
     )
-    .all(...(scope ? [match, ...scope, limit] : [match, limit])) as Array<{
-    node_id: string;
-    repo_id: string;
-    rank: number;
-  }>;
-  return rows;
+    .all(match, limit) as IndexHit[];
 }
 
 /* ------------------------------ 附件索引 ------------------------------ */
@@ -129,17 +107,10 @@ export function searchIndex(
  * 抽不出正文的附件不写索引——空文本进了索引也匹配不到什么，
  * 只会让索引白白变大。
  */
-export function indexAttachment(
-  db: V2Database,
-  attId: string,
-  repoId: string,
-  name: string,
-  body: string,
-): void {
+export function indexAttachment(db: V2Database, attId: string, name: string, body: string): void {
   unindexAttachment(db, attId);
   if (!body) return;
-  db.prepare('insert into attachment_fts (repo_id, att_id, name, body) values (?, ?, ?, ?)').run(
-    repoId,
+  db.prepare('insert into attachment_fts (att_id, name, body) values (?, ?, ?)').run(
     attId,
     toSearchText(name),
     toSearchText(body),
@@ -153,7 +124,6 @@ export function unindexAttachment(db: V2Database, attId: string): void {
 
 export interface AttachmentIndexHit {
   att_id: string;
-  repo_id: string;
   /** 匹配得分，越小越相关（FTS5 的 bm25 越小越靠前） */
   rank: number;
 }
@@ -163,21 +133,17 @@ export function searchAttachmentIndex(
   db: V2Database,
   query: string,
   limit = 50,
-  repoIds?: string[],
   mode: IndexQueryMode = 'recall',
 ): AttachmentIndexHit[] {
   const match = mode === 'recall' ? toRecallQuery(query) : toMatchQuery(query);
   if (!match) return [];
-
-  const scope = repoIds && repoIds.length > 0 ? repoIds : undefined;
   return db
     .prepare(
-      `select att_id, repo_id, rank
+      `select att_id, rank
          from attachment_fts
         where attachment_fts match ?
-          ${scope ? 'and repo_id in (' + scope.map(() => '?').join(',') + ')' : ''}
         order by rank
         limit ?`,
     )
-    .all(...(scope ? [match, ...scope, limit] : [match, limit])) as AttachmentIndexHit[];
+    .all(match, limit) as AttachmentIndexHit[];
 }

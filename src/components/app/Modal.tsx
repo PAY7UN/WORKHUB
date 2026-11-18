@@ -1,10 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
-import { Upload, FileText, AlertCircle, ShieldCheck, Lock, Boxes, FolderUp } from 'lucide-react';
+import { Upload, FileText, AlertCircle, ShieldCheck, Lock, FolderUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import type { Repo } from '@/types';
 
 interface AdminLoginDialogProps {
   open: boolean;
@@ -44,7 +43,7 @@ export function AdminLoginDialog({ open, onOpenChange, onLogin }: AdminLoginDial
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-strong sm:max-w-sm border-0">
+      <DialogContent className="dialog-panel sm:max-w-sm">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-indigo-500" />
@@ -69,7 +68,7 @@ export function AdminLoginDialog({ open, onOpenChange, onLogin }: AdminLoginDial
               if (e.key === 'Enter') handleSubmit();
             }}
             placeholder="请输入管理员密码"
-            className="h-11 bg-white/60 dark:bg-white/5 border-indigo-200/50 focus:border-indigo-400"
+            className="h-11 bg-white dark:bg-white/10 border-indigo-200/80 dark:border-indigo-800/70 focus:border-indigo-400"
           />
           {error && (
             <div className="text-sm text-red-500 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">
@@ -110,7 +109,7 @@ export function CreateDialog({ open, onOpenChange, type, parentName, onConfirm }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-strong sm:max-w-md border-0">
+      <DialogContent className="dialog-panel sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {type === 'file' ? <FileText className="h-5 w-5 text-indigo-500" /> : <Upload className="h-5 w-5 text-indigo-500" />}
@@ -133,7 +132,7 @@ export function CreateDialog({ open, onOpenChange, type, parentName, onConfirm }
                 onOpenChange(false);
               }
             }}
-            className="bg-white/60 dark:bg-white/5"
+            className="h-11 bg-white dark:bg-white/10 border-indigo-200/80 dark:border-indigo-800/70 focus:border-indigo-400"
             autoFocus
           />
         </div>
@@ -177,7 +176,7 @@ export function RenameDialog({ open, onOpenChange, initialName, onConfirm }: Ren
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-strong sm:max-w-md border-0">
+      <DialogContent className="dialog-panel sm:max-w-md">
         <DialogHeader>
           <DialogTitle>重命名</DialogTitle>
           <DialogDescription>修改文件或文件夹的名称</DialogDescription>
@@ -195,7 +194,7 @@ export function RenameDialog({ open, onOpenChange, initialName, onConfirm }: Ren
                 onOpenChange(false);
               }
             }}
-            className="bg-white/60 dark:bg-white/5"
+            className="h-11 bg-white dark:bg-white/10 border-indigo-200/80 dark:border-indigo-800/70 focus:border-indigo-400"
             autoFocus
           />
         </div>
@@ -261,7 +260,7 @@ export function DeleteDialog({ open, onOpenChange, name, isFolder, descendantCou
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-strong sm:max-w-md border-0">
+      <DialogContent className="dialog-panel sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-red-600">
             <AlertCircle className="h-5 w-5" />
@@ -357,12 +356,12 @@ export function MoveDialog({ open, onOpenChange, node, tree, currentParentId, on
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-strong sm:max-w-md border-0">
+      <DialogContent className="dialog-panel sm:max-w-md">
         <DialogHeader>
           <DialogTitle>移动「{node?.name}」</DialogTitle>
           <DialogDescription>选择目标位置（根目录或某个文件夹）</DialogDescription>
         </DialogHeader>
-        <div className="max-h-80 overflow-y-auto scrollbar-thin border border-indigo-100/40 dark:border-indigo-900/40 rounded-lg p-1 bg-white/40 dark:bg-white/5">
+        <div className="max-h-80 overflow-y-auto border border-indigo-100 dark:border-indigo-900/60 rounded-lg p-1 bg-indigo-50/50 dark:bg-white/5">
           <button
             onClick={() => setSelectedId(null)}
             className={`w-full text-left px-3 py-1.5 rounded-md text-sm hover:bg-indigo-50/60 dark:hover:bg-indigo-950/40 transition-colors flex items-center gap-2 ${
@@ -439,7 +438,7 @@ export function EncryptDocDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-strong sm:max-w-md border-0">
+      <DialogContent className="dialog-panel sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Lock className="h-5 w-5 text-indigo-500" />
@@ -495,12 +494,6 @@ interface UploadDialogProps {
   onOpenChange: (v: boolean) => void;
   /** 目标目录名（展示用） */
   parentName?: string;
-  /** 当前仓库名 */
-  repoName?: string;
-  /** 当前仓库允许的格式；空数组表示不限 */
-  allowedExts?: string[];
-  /** 当前仓库的单文件体积上限（字节） */
-  maxFileSize?: number;
   /** 处理一批文件；返回成功数与失败清单 */
   onUpload: (files: File[], onProgress?: UploadProgress) => Promise<UploadBatchResult>;
 }
@@ -523,9 +516,6 @@ export function UploadDialog({
   open,
   onOpenChange,
   parentName,
-  repoName,
-  allowedExts = [],
-  maxFileSize,
   onUpload,
 }: UploadDialogProps) {
   const [dragOver, setDragOver] = useState(false);
@@ -579,7 +569,7 @@ export function UploadDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-strong sm:max-w-md border-0">
+      <DialogContent className="dialog-panel sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Upload className="h-5 w-5 text-indigo-500" />
@@ -608,8 +598,8 @@ export function UploadDialog({
               ? 'border-indigo-500 bg-indigo-50/80 dark:bg-indigo-950/50'
               : // 常态必须自带底色与可辨识的边框：深色模式下仅靠 hover 变化时，
                 // 整个区域与弹窗背景几乎融为一体，看起来像禁用态而非可点击区域
-                'border-indigo-300 bg-indigo-50/40 hover:border-indigo-500 hover:bg-indigo-50/80 ' +
-                  'dark:border-indigo-700 dark:bg-indigo-950/25 hover:border-indigo-500 hover:bg-indigo-950/45'
+                'border-indigo-300 bg-indigo-50/70 hover:border-indigo-500 hover:bg-indigo-50/90 ' +
+                  'dark:border-indigo-700 dark:bg-indigo-950/40 hover:border-indigo-500 hover:bg-indigo-950/60'
           }`}
         >
           <input
@@ -663,12 +653,7 @@ export function UploadDialog({
         </Button>
 
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          {repoName
-            ? allowedExts.length > 0
-              ? `仓库「${repoName}」仅允许 ${allowedExts.join('、')}`
-              : `仓库「${repoName}」不限格式`
-            : '未选定仓库，文件将归入默认仓库'}
-          {maxFileSize ? `，单文件 ≤${Math.round(maxFileSize / 1024 / 1024)}MB` : ''}
+          .md 会变成可编辑的笔记，其它格式（含压缩包）原样存为原件
         </p>
 
         {uploading && progress && (
@@ -685,108 +670,6 @@ export function UploadDialog({
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={uploading}>
             {uploading ? '请稍候…' : '完成'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-interface RepoAssignDialogProps {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  /** 待迁移的文档名 */
-  docName: string;
-  /** 当前归属的仓库 id */
-  currentRepoId?: string;
-  /** 候选仓库 */
-  repos: Repo[];
-  /** 确认后把文档迁到该仓库 */
-  onConfirm: (repoId: string) => void;
-}
-
-/**
- * 文档的仓库归属选择（跨仓库迁移）。
- *
- * 归属跟着文档走，而不是把文档复制一份到另一个仓库：
- * 复制会让两个仓库各有一份，改一处就出现「两份内容不一样」的老问题。
- * 迁移时整棵子树一起搬，父子不分属两个仓库。
- *
- * 这里没有「不归入任何仓库」这一项：每个文档都必须有归属。
- */
-export function RepoAssignDialog({
-  open,
-  onOpenChange,
-  docName,
-  currentRepoId,
-  repos,
-  onConfirm,
-}: RepoAssignDialogProps) {
-  const [selected, setSelected] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) setSelected(currentRepoId ?? null);
-  }, [open, currentRepoId]);
-
-  const optionClass = (id: string | null) =>
-    `w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors text-left cursor-pointer ${
-      selected === id
-        ? 'bg-indigo-100/70 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300'
-        : 'hover:bg-indigo-50/60 dark:hover:bg-indigo-950/40'
-    }`;
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-strong sm:max-w-md border-0">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Boxes className="h-5 w-5 text-indigo-500" />
-            归入仓库
-          </DialogTitle>
-          <DialogDescription>
-            选择「{docName}」归属的仓库。归属之后它会跟随该仓库的留存规则（允许格式、体积上限）与检索开关。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="max-h-72 space-y-1 overflow-y-auto scrollbar-thin rounded-lg border border-indigo-100/40 p-1 dark:border-indigo-900/40">
-          {repos.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              onClick={() => setSelected(r.id)}
-              className={optionClass(r.id)}
-            >
-              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: r.color }} />
-              <span className="min-w-0 flex-1 truncate">{r.name}</span>
-              {!r.ragEnabled && (
-                <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
-                  不检索
-                </span>
-              )}
-              {selected === r.id && <span className="shrink-0 text-[10px] text-muted-foreground">当前</span>}
-            </button>
-          ))}
-          {repos.length === 0 && (
-            <p className="px-3 py-3 text-[11px] text-muted-foreground">
-              还没有仓库。先到「管理后台 · 仓库管理」建一个，再回来选归属。
-            </p>
-          )}
-        </div>
-
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button
-            onClick={() => {
-              if (!selected) return;
-              onConfirm(selected);
-              onOpenChange(false);
-            }}
-            className="gradient-bg hover:opacity-90"
-            disabled={!selected || selected === (currentRepoId ?? null)}
-          >
-            确定
           </Button>
         </DialogFooter>
       </DialogContent>

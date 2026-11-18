@@ -15,7 +15,12 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
-import { extOf, formatBytes, KIND_LABELS, type AttachmentKind } from '@/lib/attachments';
+import {
+  formatBytes,
+  KIND_LABELS,
+  MAX_ATTACHMENT_SIZE,
+  type AttachmentKind,
+} from '@/lib/attachments';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useApp } from '@/context/AppContext';
 import type { Attachment, DocNode } from '@/types';
@@ -24,10 +29,6 @@ interface AttachmentPanelProps {
   docId: string;
   /** 是否可写（管理员才有权上传/删除） */
   canEdit: boolean;
-  /** 该文档所属仓库的允许格式；空数组表示不限 */
-  allowedExts: string[];
-  /** 单文件体积上限（字节） */
-  maxFileSize: number;
 }
 
 /** 按扩展名挑一个图标——附件格式五花八门，一眼能认出类型比文字说明有用 */
@@ -73,8 +74,8 @@ function textStatusHint(a: Attachment): { label: string; tone: string } {
  * 分开之后，附件能按格式留档、能被抽成文本参与检索，
  * 又不会把二进制塞进正文让编辑变卡。
  */
-export function AttachmentPanel({ docId, canEdit, allowedExts, maxFileSize }: AttachmentPanelProps) {
-  const { docs, refreshRepos } = useApp();
+export function AttachmentPanel({ docId, canEdit }: AttachmentPanelProps) {
+  const { docs } = useApp();
   const [items, setItems] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -99,21 +100,16 @@ export function AttachmentPanel({ docId, canEdit, allowedExts, maxFileSize }: At
     void load();
   }, [load]);
 
-  /** 前端也按仓库规则先筛一道：能在上传前就告诉用户哪些文件会被拒 */
-  const accept = allowedExts.length > 0 ? allowedExts.join(',') : undefined;
+  /** 前端也按硬上限先筛一道：能在上传前就告诉用户哪些文件会被拒 */
+  const accept = undefined;
 
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploading(true);
     let ok = 0;
     for (const file of Array.from(files)) {
-      const ext = extOf(file.name);
-      if (allowedExts.length > 0 && !allowedExts.includes(ext)) {
-        toast.error(`「${file.name}」的格式不在本仓库允许的范围内（${allowedExts.join('、')}）`);
-        continue;
-      }
-      if (file.size > maxFileSize) {
-        toast.error(`「${file.name}」超过体积上限（${formatBytes(maxFileSize)}）`);
+      if (file.size > MAX_ATTACHMENT_SIZE) {
+        toast.error(`「${file.name}」超过体积上限（${formatBytes(MAX_ATTACHMENT_SIZE)}）`);
         continue;
       }
       try {
@@ -127,8 +123,6 @@ export function AttachmentPanel({ docId, canEdit, allowedExts, maxFileSize }: At
     if (ok > 0) {
       toast.success(`已上传 ${ok} 个附件`);
       await load();
-      // 仓库统计里的附件数要跟着变，否则侧边栏显示的是上传前的旧值
-      void refreshRepos();
     }
   };
 
@@ -139,7 +133,6 @@ export function AttachmentPanel({ docId, canEdit, allowedExts, maxFileSize }: At
       await api.deleteAttachment(a.id);
       toast.success(`「${a.name}」已删除`);
       await load();
-      void refreshRepos();
     } catch (e) {
       toast.error((e as Error)?.message ?? '删除失败');
     }
@@ -204,7 +197,7 @@ export function AttachmentPanel({ docId, canEdit, allowedExts, maxFileSize }: At
               disabled={uploading}
               onClick={() => inputRef.current?.click()}
               className="flex cursor-pointer items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-              title={allowedExts.length > 0 ? `只允许 ${allowedExts.join('、')}` : '不限格式'}
+              title="不限格式"
             >
               {uploading ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -305,9 +298,9 @@ export function AttachmentPanel({ docId, canEdit, allowedExts, maxFileSize }: At
         </ul>
       )}
 
-      {canEdit && allowedExts.length > 0 && (
+      {canEdit && (
         <p className="text-[10px] text-muted-foreground">
-          本仓库只允许 {allowedExts.join('、')} 格式，单文件不超过 {formatBytes(maxFileSize)}
+          不限格式，单文件不超过 {formatBytes(MAX_ATTACHMENT_SIZE)}
         </p>
       )}
 
@@ -354,7 +347,7 @@ function MoveAttachmentDialog({ attachment, candidates, onClose, onMove }: MoveA
 
   return (
     <Dialog open={attachment !== null} onOpenChange={(v) => (v ? undefined : onClose())}>
-      <DialogContent className="glass-strong sm:max-w-md border-0">
+      <DialogContent className="dialog-panel sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <FolderInput className="h-5 w-5 text-indigo-500" />
@@ -369,10 +362,10 @@ function MoveAttachmentDialog({ attachment, candidates, onClose, onMove }: MoveA
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="搜索目标文档…"
-          className="w-full rounded-md border border-border bg-white/60 px-2.5 py-1.5 text-sm outline-none focus:border-indigo-400 dark:bg-white/5"
+          className="w-full rounded-md border border-indigo-200/80 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-indigo-400 dark:border-indigo-800/70 dark:bg-white/10"
         />
 
-        <div className="max-h-64 space-y-1 overflow-y-auto scrollbar-thin rounded-md border border-border/60 p-1">
+        <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border border-border/60 bg-slate-50/70 p-1 dark:bg-white/5">
           {filtered.length === 0 ? (
             <p className="px-2 py-3 text-[11px] text-muted-foreground">没有可移动到的文档。</p>
           ) : (

@@ -17,14 +17,14 @@ interface RegionTabsProps {
 }
 
 /**
- * 顶栏的区域切换：**文档 / 工具 / 管理**。
+ * 顶栏的区域切换：**记录 / 工具 / 管理**。
  *
  * 全站只有这一排，页面不再各自造导航。
  *
  * 它是「去哪儿」，不是「这页叫什么」：
- * - 文档：工作台，看资料
+ * - 记录：工作台，资料与原件都在这儿
  * - 工具：外部数据怎么进来（独立路由 /tools，对所有登录用户开放）
- * - 管理：后台，五个分区平铺（概览、项目仓库、访问权限、AI Agent、账号安全）
+ * - 管理：后台，五个分区平铺（概览、访问权限、AI Agent、账号安全）
  *
  * 后台不再按「文档/系统」拆成两半——拆开之后同一个后台有两副面孔，
  * 顶栏的「系统」、右上角的「管理」按钮、后台里那排二级 tab，
@@ -40,7 +40,7 @@ export function RegionTabs({
 
   return (
     <nav
-      className="scrollbar-thin flex shrink-0 items-stretch self-stretch overflow-x-auto"
+      className="flex shrink-0 items-stretch self-stretch overflow-x-auto"
       aria-label="区域切换"
     >
       {regions.map((r) => {

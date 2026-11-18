@@ -16,7 +16,6 @@ import type {
   DocNode,
 } from '../shared/types.ts';
 import { ACCESS_CAPABILITY_LABELS } from '../shared/types.ts';
-import { MAX_POLISH_CHARS, MAX_RUNNING_POLISH_TASKS } from '../shared/polish.ts';
 import { extOf } from '../shared/attachments.ts';
 import { DEFAULT_FILE_MIME, guessMime } from '../shared/files.ts';
 import { DEFAULT_API_PORT } from '../shared/constants.ts';
@@ -25,15 +24,6 @@ import { clearLoginFailures, loginGate, noteLoginFailure } from './loginThrottle
 import { IS_PRODUCTION, SECRET_ORIGIN } from './config.ts';
 import { envValue } from './env.ts';
 import { displayPath, logger } from './logger.ts';
-import {
-  countRunningPolishTasks,
-  createPolishTask,
-  clearFinishedPolishTasks,
-  listPolishTasks,
-  removePolishTasks,
-  subscribePolishTask,
-  toView,
-} from './polishTasks.ts';
 import { readUpstreamStream, type UpstreamMessage } from './upstream.ts';
 import { buildAskMessages, retrieveForAsk } from './agentContext.ts';
 import { runAgent } from './agent/runtime.ts';
@@ -49,7 +39,6 @@ import {
   decideAccessRequest,
   decryptDocRow,
   decryptBinaryDocRow,
-  defaultRepoId,
   detachSubtree,
   DekUnavailableError,
   encryptBinaryDocRow,
@@ -93,6 +82,8 @@ import {
   updateUserPassword,
 } from './db.ts';
 import { notifyAccessRevoked, subscribeAccessWatch } from './accessWatch.ts';
+import { builtinDocState, ensureBuiltinDocs, protocolIdOfBuiltinNode } from './builtinDocs.ts';
+import { ensureBuiltinSpecDocs } from './channels/specDocs.ts';
 import { db, DB_PATH, MASTER_KEY } from './db.ts';
 import {
   decryptBytes,
@@ -113,19 +104,10 @@ import {
   removeAttachment,
   renameAttachment,
 } from './attachments.ts';
-import {
-  createRepo,
-  deleteRepo,
-  findRepoByName,
-  getRepo,
-  listRepoEvents,
-  listRepos,
-  moveDocsToRepo,
-  repoStats,
-  updateRepo,
-} from './repos.ts';
 import { ensureGuestSession } from './guests.ts';
 import { createManageRouter } from './manage.ts';
+import { createToolsRouter } from './channels/router.ts';
+import { createSkillsRouter } from './skills/router.ts';
 import { checkForUpdate, startUpgrade } from './updater.ts';
 import {
   passwordFingerprint,
@@ -149,7 +131,7 @@ function capLabel(caps: AccessCapability[]): string {
 /**
  * 调用上游模型并把增量正文以 SSE 转发给客户端（问答链路，边读边转发）。
  *
- * 上游读取本身已抽出到 server/upstream.ts，与润色后台任务共用同一份实现，
+ * 上游读取本身已抽出到 server/upstream.ts，与其它上游调用共用同一份实现，
  * 错误映射与空响应判定因此不会在两条链路之间出现分歧；本函数只负责
  * Express 响应的生命周期，包括客户端断开时取消上游请求。
  *
@@ -229,7 +211,7 @@ function openSse(res: express.Response): {
  */
 app.use(express.json({ limit: '8mb' }));
 // 原件上传走原始字节，不能被 JSON 解析器接管。
-// 上限放得比较宽（仓库自己还有一道 maxFileSize 的闸），
+// 上限放得比较宽（真正拦住超限文件的是下面那道体积闸），
 // 这里只是防止无界的请求把内存吃满。
 app.use(express.raw({ type: 'application/octet-stream', limit: '512mb' }));
 app.use((req, res, next) => {
@@ -329,6 +311,25 @@ app.get('/api/healthz', (_req, res) => {
  * 详细说明见 server/manage.ts。
  */
 app.use('/api/manage', createManageRouter(db, DB_PATH, { shutdown: gracefulShutdown }));
+
+/**
+ * 工具区（接入与仿真）。
+ *
+ * 串口监听：字节流进来，按协议模板切帧，再变成一条条记录。
+ *
+ * 挂在 /api/tools 而不是管理后台里：它对所有登录用户开放，
+ * 谁要接设备、谁要联调，不用先找管理员开权限。
+ */
+app.use('/api/tools', createToolsRouter());
+
+/**
+ * 能力清单。
+ *
+ * 挂在这儿是因为它跟工具区是同一件事的两头：
+ * 工具区摆的是「怎么把数据接进来」，能力清单摆的是「接进来之后能干哪些活」。
+ * 界面上分作两页（工具页只给入口），但接口分开——能力的执行体归能力自己管。
+ */
+app.use('/api/skills', createSkillsRouter());
 
 // 管理员会话版的升级接口。
 //
@@ -458,8 +459,8 @@ app.get('/api/docs/search', (req, res) => {
 /**
  * 取单篇文档（含正文）。
  *
- * 清单接口只回元数据：正文已经落到仓库目录的文件里，
- * 一次列全站就等于把整个仓库读一遍——打开一篇要一篇，
+ * 清单接口只回元数据：正文已经落到 vault 的文件里，
+ * 一次列全站就等于把整个 vault 读一遍——打开一篇要一篇，
  * 这条接口就是打开那一篇的入口。
  *
  * 加密文档这里不给正文：服务端只有密文，明文要走 reveal / access-open，
@@ -471,7 +472,11 @@ app.get('/api/docs/:id', (req, res) => {
     res.status(404).json({ error: '文档不存在' });
     return;
   }
-  res.json({ doc });
+  // 内置文档额外带上同步状态：现场改过没有？代码里有新版没有？
+  // 界面据此提示「本地版 vs 新版」，该合还是该换由人决定。
+  const protocolId = protocolIdOfBuiltinNode(doc.id);
+  const builtin = protocolId ? { protocolId, ...builtinDocState(protocolId) } : undefined;
+  res.json({ doc, builtin });
 });
 
 app.post('/api/docs', requireAdmin, (req, res) => {
@@ -482,6 +487,12 @@ app.post('/api/docs', requireAdmin, (req, res) => {
   }
   if (type !== 'file' && type !== 'folder') {
     res.status(400).json({ error: '类型必须是 file 或 folder' });
+    return;
+  }
+  // 名字以 ~ 开头会撞上保留路径段（内置文档住在那儿），
+  // 所以这里直接挡住：内置段必须是系统独占的，不能让人手写出来。
+  if (name.trim().startsWith('~')) {
+    res.status(400).json({ error: '名称不能以 ~ 开头' });
     return;
   }
   const all = listAllDocs();
@@ -500,19 +511,16 @@ app.post('/api/docs', requireAdmin, (req, res) => {
       res.status(400).json({ error: '父节点不存在或不是文件夹' });
       return;
     }
+    // 内置目录是系统独占的：往里塞用户自己的文档，
+    // 那篇文档会跟着落进保留路径段，被当成内置文档（不许改名、不许删）。
+    // 与其事后让人删不掉，不如这里直接挡住。
+    if (parent.builtin) {
+      res.status(403).json({ error: '内置目录里不能新建文档' });
+      return;
+    }
   }
   const ts = Date.now();
   const text = type === 'file' ? String(content ?? '') : '';
-  // 仓库归属是必填的：文档没有「未归档」这种状态。
-  // 取值顺序是「显式指定 → 跟随父节点 → 默认仓库」，
-  // 这样「新建在某个仓库的目录下」自然就属于那个仓库。
-  const requestedRepoId = typeof req.body?.repoId === 'string' ? req.body.repoId.trim() : '';
-  const parentRepoId = parentId ? all.find((d) => d.id === parentId)?.repoId ?? '' : '';
-  const repoId = requestedRepoId || parentRepoId || defaultRepoId();
-  if (!getRepo(repoId)) {
-    res.status(400).json({ error: '仓库不存在' });
-    return;
-  }
   const doc: DocNode = {
     id: `d-${ts.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     name: finalName,
@@ -524,7 +532,6 @@ app.post('/api/docs', requireAdmin, (req, res) => {
     updatedAt: ts,
     createdBy: nowUserId(req),
     updatedBy: nowUserId(req),
-    repoId,
   };
   const inserted = insertDoc(doc);
   res.status(201).json({ doc: inserted });
@@ -552,25 +559,21 @@ app.post('/api/docs/upload', requireAdmin, (req, res) => {
 
   const all = listAllDocs();
   const parentId = typeof req.query.parentId === 'string' && req.query.parentId ? req.query.parentId : null;
-  let parentRepoId = '';
   if (parentId) {
     const parent = all.find((d) => d.id === parentId);
     if (!parent || parent.type !== 'folder') {
       res.status(400).json({ error: '父节点不存在或不是文件夹' });
       return;
     }
-    parentRepoId = parent.repoId ?? '';
-  }
-  const requestedRepoId = typeof req.query.repoId === 'string' ? req.query.repoId.trim() : '';
-  const repoId = requestedRepoId || parentRepoId || defaultRepoId();
-  const repo = getRepo(repoId);
-  if (!repo) {
-    res.status(400).json({ error: '仓库不存在' });
-    return;
+    // 内置目录是系统独占的：理由同 POST /api/docs。
+    if (parent.builtin) {
+      res.status(403).json({ error: '内置目录里不能上传文件' });
+      return;
+    }
   }
 
-  // 仓库的格式白名单与体积上限在这里生效，与附件走同一道闸
-  const check = checkAttachmentAllowed(repo, name, data.length);
+  // 体积上限在这里生效，与附件走同一道闸（格式白名单已下线，只剩非空与硬上限）
+  const check = checkAttachmentAllowed(name, data.length);
   if (!check.ok) {
     res.status(400).json({ error: check.reason });
     return;
@@ -581,7 +584,6 @@ app.post('/api/docs/upload', requireAdmin, (req, res) => {
   const ts = Date.now();
   const doc = insertBinaryDoc({
     id: `d-${ts.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    repoId,
     name,
     parentId,
     mime,
@@ -759,15 +761,29 @@ app.get('/api/docs/:id/raw', (req, res) => {
 
 app.patch('/api/docs/:id', requireAdmin, (req, res) => {
   const id = String(req.params.id);
-  if (!getDoc(id)) {
+  const current = getDoc(id);
+  if (!current) {
     res.status(404).json({ error: '文档不存在' });
     return;
+  }
+  // 内置文档能改内容（现场拿到厂家文档要能就地修订），
+  // 但不许改名、不许搬家：它的位置是代码定的，
+  // 挪走了「说明书在哪儿」这件事就说不清了。
+  if (current.builtin) {
+    const body = req.body ?? {};
+    if (typeof body.name === 'string' && body.name.trim() && body.name.trim() !== current.name) {
+      res.status(403).json({ error: '内置文档不能改名' });
+      return;
+    }
+    if (body.parentId !== undefined && (body.parentId as string | null) !== current.parentId) {
+      res.status(403).json({ error: '内置文档不能移动到别的目录' });
+      return;
+    }
   }
   const body = req.body ?? {};
   const patch: Partial<DocNode> = {};
   if (typeof body.name === 'string' && body.name.trim()) patch.name = body.name.trim();
   if (typeof body.content === 'string') patch.content = body.content;
-  if (body.tags !== undefined) patch.tags = Array.isArray(body.tags) ? body.tags.map(String) : undefined;
   if (body.parentId !== undefined) {
     const target = body.parentId as string | null;
     if (target) {
@@ -812,8 +828,16 @@ app.patch('/api/docs/:id', requireAdmin, (req, res) => {
  */
 app.delete('/api/docs/:id', requireAdmin, (req, res) => {
   const id = String(req.params.id);
-  if (!getDoc(id)) {
+  const current = getDoc(id);
+  if (!current) {
     res.status(404).json({ error: '文档不存在' });
+    return;
+  }
+  // 内置文档不删：删了代码里那份还在，下次启动又会长回来，
+  // 删的人只会觉得「删了又冒出来」。
+  // 想换掉它的内容，改内容就行——那才是「换一份说明书」的意思。
+  if (current.builtin) {
+    res.status(403).json({ error: '内置文档不能删除' });
     return;
   }
   // 库里的痕迹先摘干净，正文和附件挪进暂存区（改名几乎不花钱），
@@ -831,119 +855,6 @@ app.delete('/api/docs/:id', requireAdmin, (req, res) => {
   const stashed = files.map(stashFile).filter((p): p is string => !!p);
   res.json({ removed });
   purgeStashed(stashed, dirs);
-});
-
-/* ------------------------------ 仓库 ------------------------------ */
-
-/**
- * 仓库清单。
- *
- * 访客也能读：仓库只是资料的组织方式，不是保密边界。
- * 保密仍然只由加密承担——这里放开不会让不该看的人看到密文。
- */
-app.get('/api/repos', (_req, res) => {
-  res.json({ repos: listRepos(), stats: repoStats() });
-});
-
-/**
- * 仓库历史（项目仓库的流水）。
- *
- * 只给管理员：仓库名与规则不算秘密，但「这个项目什么时候没的、
- * 当时带走了多少东西」这种账没必要让访客也看见。
- */
-app.get('/api/repos/events', requireAdmin, (_req, res) => {
-  res.json({ events: listRepoEvents() });
-});
-
-app.post('/api/repos', requireAdmin, (req, res) => {
-  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-  if (!name) {
-    res.status(400).json({ error: '仓库名称不能为空' });
-    return;
-  }
-  if (findRepoByName(name)) {
-    res.status(409).json({ error: '已存在同名仓库' });
-    return;
-  }
-  const repo = createRepo({
-    name,
-    description: typeof req.body?.description === 'string' ? req.body.description : '',
-    color: typeof req.body?.color === 'string' ? req.body.color : undefined,
-    allowedExts: Array.isArray(req.body?.allowedExts)
-      ? req.body.allowedExts.map((e: unknown) => String(e).toLowerCase().trim()).filter(Boolean)
-      : [],
-    maxFileSize: typeof req.body?.maxFileSize === 'number' ? req.body.maxFileSize : undefined,
-    ragEnabled: req.body?.ragEnabled !== false,
-    createdBy: nowUserId(req),
-  });
-  res.status(201).json({ repo });
-});
-
-app.patch('/api/repos/:id', requireAdmin, (req, res) => {
-  const id = String(req.params.id);
-  if (!getRepo(id)) {
-    res.status(404).json({ error: '仓库不存在' });
-    return;
-  }
-  const body = req.body ?? {};
-  const patch: Parameters<typeof updateRepo>[1] = {};
-  if (typeof body.name === 'string' && body.name.trim()) {
-    const name = body.name.trim();
-    const clash = findRepoByName(name);
-    if (clash && clash.id !== id) {
-      res.status(409).json({ error: '已存在同名仓库' });
-      return;
-    }
-    patch.name = name;
-  }
-  if (typeof body.description === 'string') patch.description = body.description;
-  if (typeof body.color === 'string') patch.color = body.color;
-  if (Array.isArray(body.allowedExts)) {
-    patch.allowedExts = body.allowedExts.map((e: unknown) => String(e).toLowerCase().trim()).filter(Boolean);
-  }
-  if (typeof body.maxFileSize === 'number') patch.maxFileSize = body.maxFileSize;
-  if (typeof body.ragEnabled === 'boolean') patch.ragEnabled = body.ragEnabled;
-  res.json({ repo: updateRepo(id, patch, nowUserId(req)) });
-});
-
-/**
- * 删仓库。
- *
- * 没有回收站：目录整个删掉，里面的文档与附件一并消失，不可恢复。
- */
-app.delete('/api/repos/:id', requireAdmin, (req, res) => {
-  const id = String(req.params.id);
-  if (!getRepo(id)) {
-    res.status(404).json({ error: '仓库不存在' });
-    return;
-  }
-  try {
-    res.json(deleteRepo(id, nowUserId(req)));
-  } catch (e) {
-    // 目录没删掉就等于没删成功：仓库行留着，用户能看见、还能再试一次。
-    // 把原因说清楚，比报个 500 然后留下满地孤儿文件强。
-    res.status(500).json({ error: `仓库删不掉：${(e as Error).message}` });
-  }
-});
-
-/**
- * 把文档归入仓库（跨仓库迁移）。
- *
- * 搬的是整棵子树：孩子跟着爹走，否则父子会分属两个仓库，
- * 按仓库过滤文件树时就会出现「爹在、孩子不在」的错位。
- */
-app.post('/api/repos/:id/docs', requireAdmin, (req, res) => {
-  const id = String(req.params.id);
-  if (!getRepo(id)) {
-    res.status(404).json({ error: '仓库不存在' });
-    return;
-  }
-  const docIds = Array.isArray(req.body?.docIds) ? req.body.docIds.map(String) : [];
-  if (!docIds.length) {
-    res.status(400).json({ error: '请至少选择一篇文档' });
-    return;
-  }
-  res.json({ moved: moveDocsToRepo(docIds, id, nowUserId(req)) });
 });
 
 /* ------------------------------ 附件 ------------------------------ */
@@ -985,8 +896,7 @@ app.post(
     }
 
     const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const repo = doc.repoId ? getRepo(doc.repoId) : undefined;
-    const check = checkAttachmentAllowed(repo, filename, data.length);
+    const check = checkAttachmentAllowed(filename, data.length);
     if (!check.ok) {
       res.status(400).json({ error: check.reason });
       return;
@@ -1785,7 +1695,7 @@ app.get('/api/agent/status', (req, res) => {
 /**
  * token 用量统计。
  *
- * 限管理员：累计消耗属于运营成本数据，与润色任务同属不应向访客暴露的信息。
+ * 限管理员：累计消耗属于运营成本数据，不应向访客暴露。
  * 前端仅在管理员视角渲染面板底部那一行。
  */
 app.get('/api/agent/usage', requireAdmin, (_req, res) => {
@@ -1810,11 +1720,7 @@ app.post('/api/agent/ask', async (req, res) => {
   // 任务里的「智能问答」步骤要跑出同样的结果，复制一份必然走样。
   const retrieval = retrieveForAsk({ question, cfg, rawScope: req.body?.scope });
 
-  send('sources', {
-    sources: retrieval.sources,
-    // 本次实际落在哪几个仓库：让界面上显示的检索范围与实际检索一致
-    scopeRepos: retrieval.scopeRepos,
-  });
+  send('sources', { sources: retrieval.sources });
 
   const history = Array.isArray(req.body?.history)
     ? (req.body.history as { role: string; content: string }[])
@@ -1890,102 +1796,6 @@ app.post('/api/agent/chat', async (req, res) => {
   if (!res.writableEnded) res.end();
 });
 
-/* ------------------------------ 文章润色（SSE，仅管理员） ------------------------------ */
-
-/**
- * 润色指定文章的正文。
- *
- * 三点与问答不同，需刻意区分：
- * 1. 权限只看管理员身份，不看 allowGuest——该开关只放宽「只读问答」，
- *    润色会产出可回填的正文，绝不能因它对访客开放。
- * 2. 正文由客户端传入（取编辑器中的最新内容，而非库里的版本），因为编辑器存在
- *    600ms 防抖未落库的改动；服务端不读库，也就不会与前端视图不一致。
- * 3. 服务端只返回结果、不落库。是否应用由前端决定并走既有 PATCH 链路，
- *    这样润色结果与手工编辑共用同一套权限校验与失败回滚。
- */
-app.post('/api/agent/polish', requireAdmin, async (req, res) => {
-  const cfg = getAgentConfig();
-  if (!cfg.apiKey.trim()) {
-    return res.status(400).json({ error: '尚未配置 API Key，请先在 Agent 设置中配置' });
-  }
-
-  const content = typeof req.body?.content === 'string' ? req.body.content : '';
-  const instruction = typeof req.body?.instruction === 'string' ? req.body.instruction : '';
-  const docId = typeof req.body?.docId === 'string' ? req.body.docId : '';
-  const docName = typeof req.body?.docName === 'string' ? req.body.docName : '未命名文档';
-
-  const trimmed = content.trim();
-  if (!trimmed) return res.status(400).json({ error: '文章内容为空，无需润色' });
-  if (content.length > MAX_POLISH_CHARS) {
-    return res.status(400).json({
-      error: `文章长度为 ${content.length} 字符，超过润色上限 ${MAX_POLISH_CHARS} 字符，请拆分后再试`,
-    });
-  }
-  // 文件夹没有正文，润色无意义；提前拒绝可省下一次模型调用
-  if (req.body?.type === 'folder') return res.status(400).json({ error: '文件夹没有正文，无法润色' });
-  // 加密文档不参与 Agent 处理：即使内容由客户端传入，也不让模型接触它的正文
-  if (docId) {
-    const target = getDoc(docId);
-    if (target?.encrypted) {
-      return res.status(403).json({ error: '加密文档不参与 Agent 处理：其正文不应进入模型' });
-    }
-  }
-
-  // 并发上限。此处是唯一的权威判定点：客户端预检可以被绕过（多标签页、
-  // 直接调接口），而超限提交的后果是几十条上游连接同时占用，最终所有任务都被拖慢。
-  // 与上面的参数校验之间没有 await，检查与 createPolishTask 构成原子步骤。
-  const running = countRunningPolishTasks();
-  if (running >= MAX_RUNNING_POLISH_TASKS) {
-    return res.status(429).json({
-      error:
-        `已有 ${running} 个润色任务正在生成，最多同时支持 ${MAX_RUNNING_POLISH_TASKS} 个。` +
-        '请等现有任务完成，或在 Agent 面板取消部分任务后再提交。',
-    });
-  }
-
-  // 立即返回任务 id，生成在后台推进。用户关闭弹窗或刷新页面都不影响任务。
-  const task = createPolishTask({ docId, docName, content, instruction });
-  res.json({ taskId: task.id });
-});
-
-/** 润色任务列表：供 Agent 面板展示进行中/已完成/失败的任务 */
-app.get('/api/agent/polish-tasks', requireAdmin, (_req, res) => {
-  res.json({ tasks: listPolishTasks().map(toView) });
-});
-
-/** 订阅任务进度。任务已完成时立即补发终态，无需前端记住增量 */
-app.get('/api/agent/polish-tasks/:id/stream', requireAdmin, (req, res) => {
-  if (!subscribePolishTask(req, res, String(req.params.id))) {
-    res.status(404).json({ error: '任务不存在或已过期' });
-  }
-});
-
-/**
- * 删除单个润色任务，进行中的任务先中止生成再删记录。
- *
- * 这里**不能**只中止而保留记录：界面上「取消生成」与「删除记录」是同一个按钮
- * （running 时显示停止图标，其余显示垃圾桶，但走的是同一个 DELETE），前端也一律
- * 乐观移除。服务端若只 abort 就返回成功，任务就变成「界面上已消失、重新进入面板
- * 又冒出来还得再删一次」——实测正是这样。所以单条删除必须与批量删除共用
- * `removePolishTasks(cancelRunning: true)`：既断上游，也从任务表移除，两端口径一致。
- */
-app.delete('/api/agent/polish-tasks/:id', requireAdmin, (req, res) => {
-  const result = removePolishTasks([String(req.params.id)], { cancelRunning: true });
-  if (result.cancelled.length) return res.json({ ok: true, removed: 1, cancelled: true });
-  if (result.removed.length) return res.json({ ok: true, removed: 1 });
-  res.status(404).json({ error: '任务不存在或已过期' });
-});
-
-/**
- * 清空所有已结束的润色任务（已完成与失败），进行中的原样保留。
- *
- * 与单条删除共用 removePolishTasks(cancelRunning: true) 的实现：
- * 勾选删除传 true（显式勾选即预期中断），清空历史恒为 false（不该顺手打断正在生成的润色）。
- */
-app.post('/api/agent/polish-tasks/clear-finished', requireAdmin, (_req, res) => {
-  res.json(clearFinishedPolishTasks());
-});
-
 /* ------------------------------ 前端静态资源 ------------------------------ */
 
 /**
@@ -2009,6 +1819,16 @@ app.post('/api/agent/polish-tasks/clear-finished', requireAdmin, (_req, res) => 
  */
 const DIST_DIR = fileURLToPath(new URL('../dist', import.meta.url));
 if (existsSync(DIST_DIR)) {
+  // 前端构建用的是相对路径（vite base: './'），好处是 dist/ 可以整个拷到任意子目录
+  // 甚至用 file:// 打开；代价是深链接下浏览器会按当前路径去要资源：
+  // 在 /tools/serial 这类页面上，它要的是 /tools/assets/xxx.js，而不是 /assets/xxx.js。
+  // 深链接正是接入页的常态（点大类进全屏、通道地址可直接分享），
+  // 所以这里把路径前缀摘掉，还原成 dist 根下的位置。
+  app.use((req, _res, next) => {
+    const at = req.url.indexOf('/assets/');
+    if (at > 0) req.url = req.url.slice(at);
+    next();
+  });
   app.use(express.static(DIST_DIR));
   app.use((req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
@@ -2103,6 +1923,12 @@ process.on('uncaughtException', (err) => {
 // 进程被杀或机器断电都会留下 .trash 文件，它们已经不在索引里了。
 // 扫在清道夫线程里做，不占着启动不放。
 sweepStashed();
+
+// 内置文档安顿好：记录区里那个「工具」目录，装着随代码走的协议说明书。
+// 现场改过的那份不会被覆盖，只记着「代码里有新版」。
+ensureBuiltinDocs();
+// 协议详情（帧结构、命令码）也是文档：没有说明书的那几套，用详情生成一份速查。
+ensureBuiltinSpecDocs();
 
 // 会话采集器（可选，WORKHUB_COLLECTOR_ENABLED=1 开启）：
 // 定时把本机 CodeBuddy 的会话痕迹汇总进日常日志文档。旁路任务，坏了不影响主服务。

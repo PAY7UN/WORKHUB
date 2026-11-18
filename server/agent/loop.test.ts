@@ -1,4 +1,4 @@
-/**
+﻿/**
  * agent 循环的端到端测试。
  *
  * 这里不测解析（解析有单测），测的是**整条链路接不接得上**：
@@ -108,7 +108,7 @@ test('agent 会自己调能力、接着算、最后给结论', async () => {
         allowGuest: false,
         topK: 5,
         contextBudget: 4000,
-        ragScope: { mode: 'all', repoIds: [], docIds: [], includeAttachments: true },
+        ragScope: { mode: 'all', docIds: [], includeAttachments: true },
       },
       userId: 'tester',
       isAdmin: true,
@@ -177,7 +177,7 @@ test('模型要调自己没有的能力时会被拦下，并被告知能用什�
         allowGuest: false,
         topK: 5,
         contextBudget: 4000,
-        ragScope: { mode: 'all', repoIds: [], docIds: [], includeAttachments: true },
+        ragScope: { mode: 'all', docIds: [], includeAttachments: true },
       },
       userId: 'tester',
       isAdmin: true,
@@ -245,7 +245,7 @@ test('总控可以把活儿派给专业 agent，拿到回报后再汇总', async
         allowGuest: false,
         topK: 5,
         contextBudget: 4000,
-        ragScope: { mode: 'all', repoIds: [], docIds: [], includeAttachments: true },
+        ragScope: { mode: 'all', docIds: [], includeAttachments: true },
       },
       userId: 'tester',
       isAdmin: true,

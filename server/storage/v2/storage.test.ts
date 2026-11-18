@@ -1,7 +1,7 @@
-/**
+﻿/**
  * v2 存储层的回归测试。
  *
- * 这里只测「现役结构」的行为：路径规范化、仓库 slug、检索索引。
+ * 这里只测「现役结构」的行为：路径规范化、检索索引。
  * 旧库迁移、补列这类兼容逻辑已经整体下线，不再有测试。
  */
 import { test } from 'node:test';
@@ -16,7 +16,7 @@ import Database from 'better-sqlite3';
 const workDir = mkdtempSync(join(tmpdir(), 'workhub-v2-test-'));
 process.env.WORKHUB_VAULT_DIR = join(workDir, 'vault');
 
-const { bodyFileName, safeRelPath, slugify } = await import('./vault.ts');
+const { bodyFileName, safeRelPath } = await import('./vault.ts');
 const { openV2Db } = await import('./schema.ts');
 const { toMatchQuery, toSearchText } = await import('./search.ts');
 
@@ -37,14 +37,6 @@ test('safeRelPath 拒绝越界与非法路径', () => {
   assert.equal(safeRelPath(''), null);
 });
 
-test('slugify 保留中文且同名不同 id 不冲突', () => {
-  const a = slugify('样例项目', 'r-abd674b1');
-  const b = slugify('样例项目', 'r-abd674b2');
-  assert.notEqual(a, b);
-  assert.match(a, /样例项目/);
-  assert.doesNotMatch(slugify('a/b:c', 'r-1'), /[/:]/);
-});
-
 test('bodyFileName 不产生双扩展名', () => {
   assert.equal(bodyFileName('常用设备命令.md', false), '常用设备命令.md');
   assert.equal(bodyFileName('说明', false), '说明.md');
@@ -60,8 +52,9 @@ test('新库的结构就是 SCHEMA：表与列一次到位', () => {
     db.prepare("select name from pragma_table_info('nodes')").all() as Array<{ name: string }>
   ).map((c) => c.name);
   assert.ok(cols.includes('enc_locked_at'));
+  // tags 是遗留列：标签功能已下线，但列留着不动，免得历史库里的数据被改写
   assert.ok(cols.includes('tags'));
-  assert.ok(cols.includes('repo_id'));
+  assert.ok(!cols.includes('repo_id'), '仓库模型已移除，nodes 不该再有归属列');
 
   // users 表只有密码哈希，没有明文列
   const userCols = (
@@ -134,22 +127,17 @@ test('全文索引：中文能命中，且密文不进索引', () => {
   const path = join(workDir, 'fts.db');
   const db = openV2Db(path);
   const now = Date.now();
-  db.prepare(
-    `INSERT INTO repos (id, slug, name, description, color, allowed_exts, max_file_size, rag_enabled, acl, created_at, updated_at, created_by)
-     VALUES ('r-1', 'sample', '样例', '', '#6366f1', '[]', 104857600, 1, '{}', ?, ?, 'u-admin')`,
-  ).run(now, now);
 
   const insertNode = db.prepare(
-    `INSERT INTO nodes (id, repo_id, name, type, parent_id, path, size, content_hash, encrypted, enc_master_dek, acl, created_at, updated_at, created_by, updated_by)
-     VALUES (?, 'r-1', ?, ?, NULL, ?, 0, '', ?, NULL, '{}', ?, ?, 'u-admin', 'u-admin')`,
+    `INSERT INTO nodes (id, name, type, parent_id, path, size, content_hash, encrypted, enc_master_dek, acl, created_at, updated_at, created_by, updated_by)
+     VALUES (?, ?, ?, NULL, ?, 0, '', ?, NULL, '{}', ?, ?, 'u-admin', 'u-admin')`,
   );
   insertNode.run('d-1', '样例笔记.md', 'file', '样例笔记.md', 0, now, now);
   insertNode.run('d-2', '密文样例.md', 'file', '密文样例.md', 1, now, now);
 
   // 加密文档整条不进索引（连名字也不进）——db.ts 里加密成功后会 unindexNode。
   // 名字若还留在索引里，搜一下它的标题就能把它拽出来，等于绕过加密。
-  db.prepare('insert into node_fts (repo_id, node_id, name, body) values (?, ?, ?, ?)').run(
-    'r-1',
+  db.prepare('insert into node_fts (node_id, name, body) values (?, ?, ?)').run(
     'd-1',
     toSearchText('样例笔记.md'),
     toSearchText('真机调试 adb install'),
@@ -172,11 +160,5 @@ test('全文索引：中文能命中，且密文不进索引', () => {
     !encHits.map((h) => h.node_id).includes('d-2'),
     '加密文档不能被搜出来',
   );
-
-  // 索引按仓库过滤
-  const scoped = db
-    .prepare('select node_id from node_fts where node_fts match ? and repo_id = ?')
-    .all(toMatchQuery('调试'), 'r-1') as Array<{ node_id: string }>;
-  assert.ok(scoped.length > 0);
   db.close();
 });

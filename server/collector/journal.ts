@@ -1,10 +1,10 @@
 /**
  * 日常日志落点：把小结追加进「<文件夹>/<YYYY-MM-DD>.md」。
  *
- * 结构是「仓库 → 一个固定文件夹 → 按天一篇」：
+ * 结构是「一个固定文件夹 → 按天一篇」：
  * 同一天多篇会话往同一篇文档追加小节，打开一天就能看到全天的工作流。
  * 文件夹不存在就建，文档不存在就建——采集器不挑环境，
- * 空仓库装上也能直接用。
+ * 空库装上也能直接用。
  */
 import {
   getDoc,
@@ -25,10 +25,10 @@ function newDocId(): string {
 /**
  * 找（或建）日志文件夹与当天的日志文档，返回文档 id。
  */
-export function ensureDailyDoc(repoId: string, folderName: string, dateKey: string): string {
+export function ensureDailyDoc(folderName: string, dateKey: string): string {
   const all = listAllDocs();
   const folder =
-    all.find((d) => d.type === 'folder' && d.repoId === repoId && d.name === folderName && !d.parentId) ??
+    all.find((d) => d.type === 'folder' && d.name === folderName && !d.parentId) ??
     insertDoc({
       id: newDocId(),
       name: folderName,
@@ -38,12 +38,11 @@ export function ensureDailyDoc(repoId: string, folderName: string, dateKey: stri
       updatedAt: Date.now(),
       createdBy: ACTOR,
       updatedBy: ACTOR,
-      repoId,
     });
 
   const docName = `${dateKey}.md`;
   const existing = all.find(
-    (d) => d.type === 'file' && d.repoId === repoId && d.parentId === folder.id && d.name === docName,
+    (d) => d.type === 'file' && d.parentId === folder.id && d.name === docName,
   );
   if (existing) return existing.id;
 
@@ -58,7 +57,6 @@ export function ensureDailyDoc(repoId: string, folderName: string, dateKey: stri
     updatedAt: ts,
     createdBy: ACTOR,
     updatedBy: ACTOR,
-    repoId,
   });
   logger.info(`采集器：已创建日志文档 ${folderName}/${docName}`);
   return doc.id;

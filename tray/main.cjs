@@ -858,7 +858,7 @@ async function showRemoteStatus() {
         `进程：pid ${info.pid} · ${info.runtime?.node ?? '?'} · ${info.runtime?.platform ?? '?'}`,
         `内存：${formatBytes(info.memory?.rss)}（堆 ${formatBytes(info.memory?.heapUsed)}）`,
         `数据库：${info.database?.path ?? '?'}（${formatBytes(info.database?.sizeBytes)}）`,
-        `内容：仓库 ${counts.repos ?? '?'} 个 · 节点 ${counts.nodes ?? '?'} 条 · 用户 ${counts.users ?? '?'} 个`,
+        `内容：节点 ${counts.nodes ?? '?'} 条 · 用户 ${counts.users ?? '?'} 个`,
         `托管方式：${supervisor}`,
       ].join('\n'),
       buttons: ['好'],

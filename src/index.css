@@ -72,6 +72,10 @@
   --chart-5: #ec4899;
   --sidebar: rgba(255, 255, 255, 0.5);
   --sidebar-foreground: #1e1b4b;
+  /* 弹窗面板：实心，不再用半透明毛玻璃 */
+  --dialog-surface: #ffffff;
+  --dialog-surface-ring: rgba(255, 255, 255, 0.85);
+  --dialog-surface-shadow: rgba(30, 27, 75, 0.28);
   --sidebar-primary: #6366f1;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: rgba(99, 102, 241, 0.1);
@@ -107,6 +111,9 @@
   --chart-5: #ec4899;
   --sidebar: rgba(30, 27, 75, 0.5);
   --sidebar-foreground: #ede9fe;
+  --dialog-surface: #171142;
+  --dialog-surface-ring: rgba(255, 255, 255, 0.06);
+  --dialog-surface-shadow: rgba(0, 0, 0, 0.6);
   --sidebar-primary: #818cf8;
   --sidebar-primary-foreground: #0f0a24;
   --sidebar-accent: rgba(129, 140, 248, 0.15);
@@ -167,6 +174,23 @@
     background: rgba(30, 27, 75, 0.6);
     border: 1px solid rgba(129, 140, 248, 0.25);
   }
+  /*
+   * 弹窗面板：实心。
+   *
+   * 半透明毛玻璃放在弹窗上是反效果——底下的表格、树、列表会透上来，
+   * 和标题、输入框叠在一起既干扰阅读，也让人以为弹窗没加载完。
+   * 弹窗是「专注当前任务」的地方，背景必须让位。
+   *
+   * 选择器带 [data-slot] 是为了压过 DialogContent 自带的 bg-background：
+   * 两者都在 utilities 层，单靠类名谁写在后面谁赢，不可靠。
+   */
+  [data-slot='dialog-content'].dialog-panel {
+    background-color: var(--dialog-surface);
+    border: 1px solid var(--border);
+    box-shadow:
+      0 24px 60px -20px var(--dialog-surface-shadow),
+      inset 0 1px 0 var(--dialog-surface-ring);
+  }
   /* Radix 菜单项高亮兜底：不依赖 Tailwind 编译，必然生效 */
   [data-slot='dropdown-menu-item'],
   [data-slot='dropdown-menu-checkbox-item'],
@@ -226,32 +250,48 @@
     background-size: 200% 100%;
     animation: shimmer 2s infinite;
   }
-  /* 编辑器与预览共用一套滚动条外观。
-     CodeMirror 的滚动发生在 .cm-scroller 上，它用的是浏览器默认滚动条——
-     更宽、更灰，和预览侧那条细靛蓝的并排时像是两个不同的界面。
-     把它并进 .scrollbar-thin 的规则组，两侧就成了同一样东西。 */
-  .scrollbar-thin,
-  .cm-scroller {
-    scrollbar-width: thin;
-    scrollbar-color: rgba(99, 102, 241, 0.3) transparent;
+  /* 滚动条：全站一套外观。
+   *
+   * 之前只在个别容器上压细滚动条，窗口那条仍是浏览器默认样，
+   * 两种摆在一起像两个界面拼起来的。
+   *
+   * 更要紧的是那条 `scrollbar-width`：它一写上，浏览器就改用标准样式，
+   * 底下的 ::-webkit-scrollbar 全部作废——
+   * 于是「6px 的细条」根本没生效，出来的还是浏览器自己那条宽的，
+   * 只是被涂成了靛蓝。所以这里不再写标准属性，
+   * 只给不认 ::-webkit-scrollbar 的浏览器（Firefox）留一条后路。
+   *
+   * 样子：10px 的槽，中间一条 4px 的浮条（靠透明边框留白做出来的），
+   * 颜色取中性灰，鼠标压上去才变深。平时几乎看不见，用时找得到。
+   */
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
   }
-  .scrollbar-thin::-webkit-scrollbar,
-  .cm-scroller::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-track,
-  .cm-scroller::-webkit-scrollbar-track {
+  *::-webkit-scrollbar-track {
     background: transparent;
   }
-  .scrollbar-thin::-webkit-scrollbar-thumb,
-  .cm-scroller::-webkit-scrollbar-thumb {
-    background: rgba(99, 102, 241, 0.3);
-    border-radius: 3px;
+  *::-webkit-scrollbar-thumb {
+    background-color: rgba(100, 116, 139, 0.32);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
   }
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover,
-  .cm-scroller::-webkit-scrollbar-thumb:hover {
-    background: rgba(99, 102, 241, 0.5);
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(100, 116, 139, 0.55);
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  /* Firefox 不认 ::-webkit-scrollbar，单独走标准属性那条路。
+     用 -webkit-appearance 探浏览器：认它的（Chrome/Safari）走上面的自定义样式，
+     不认的（Firefox）才用标准属性——反过来写会让 Chrome 忽略掉自定义样式，
+     又变回那条又宽又灰的默认滚动条。 */
+  @supports not (-webkit-appearance: none) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
+    }
   }
 }
 
@@ -447,63 +487,6 @@
   font-size: 0.85em;
   line-height: 1.6;
 }
-
-/*
- * 窄容器排版（Agent 面板内的润色结果）。
- *
- * 面板宽度上限 448px，默认排版里 16px 的代码块内边距、1.5em 的标题上边距
- * 在单栏下也要占掉三四十像素，直接挤压本来就紧张的正文宽度，导致行内代码
- * 更频繁地被 word-wrap: break-word 拦腰截断。
- */
-.markdown-body-compact pre {
-  padding: 10px 12px;
-  border-radius: 8px;
-  margin: 0.6em 0;
-}
-.markdown-body-compact :is(h1, h2, h3, h4, h5, h6) {
-  margin-top: 1em;
-  margin-bottom: 0.35em;
-  scroll-margin-top: 0.75rem;
-}
-/* 窄面板里装饰一律收窄：2px 底边显得笨重，竖条缩进也会挤占本就不宽的行宽 */
-.markdown-body-compact h1 {
-  font-size: 1.6em;
-  line-height: 1.35;
-  padding-bottom: 0.25em;
-  border-bottom-width: 1px;
-}
-.markdown-body-compact h2 { font-size: 1.3em; line-height: 1.4; }
-.markdown-body-compact h3 {
-  font-size: 1.12em;
-  line-height: 1.45;
-  padding-left: 0.5em;
-  border-left-width: 2px;
-}
-/* h4-h6 同样必须显式给出：漏掉会回落到非 compact 的字号，
-   而非 compact 的值对窄面板偏大，层级又会显得扁平 */
-.markdown-body-compact h4 { font-size: 1em; line-height: 1.5; }
-.markdown-body-compact h5 { font-size: 0.95em; }
-.markdown-body-compact h6 { font-size: 0.88em; }
-.markdown-body-compact p { margin: 0.5em 0; }
-/*
- * 双类名提高特异性。这三条原本写成 .markdown-body-compact ul，与后面第 461 行的
- * .markdown-body ul 特异性完全相同（都是 0,1,1），而后者写在后面，会把这里的
- * margin 和 padding-left 整体覆盖掉——紧凑模式在窄面板里等于没生效。
- */
-.markdown-body.markdown-body-compact ul,
-.markdown-body.markdown-body-compact ol {
-  margin: 0.5em 0;
-  padding-left: 1.35em;
-}
-.markdown-body.markdown-body-compact li { margin: 0.15em 0; }
-.markdown-body-compact code { padding: 1px 4px; font-size: 0.85em; }
-.markdown-body-compact blockquote { margin: 0.6em 0; }
-/* 间距落在滚动容器上：table 自身的 margin 已被后面的规则归零，
-   紧凑模式若仍写 .markdown-body-compact table 会因同特异性 + 位置更靠前而失效。
-   选择器补上 .markdown-body 前缀，抬到 (0,2,1) 才压得住后面的非 compact 规则。 */
-.markdown-body.markdown-body-compact .md-table-scroll { margin: 0.6em 0; }
-.markdown-body.markdown-body-compact table th,
-.markdown-body.markdown-body-compact table td { padding: 5px 8px; font-size: 1em; }
 
 .markdown-body blockquote {
   border-left: 4px solid #6366f1;

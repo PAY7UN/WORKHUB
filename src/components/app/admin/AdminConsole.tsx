@@ -8,7 +8,6 @@ import { AdminTopBar } from './AdminTopBar';
 import { AgentSection } from './AgentSection';
 import { EncryptedDocsSection } from './EncryptedDocsSection';
 import { OverviewSection } from './OverviewSection';
-import { ProjectsSection } from './ProjectsSection';
 import { SecuritySection } from './SecuritySection';
 
 /**
@@ -19,7 +18,7 @@ import { SecuritySection } from './SecuritySection';
  * 独立页面顺带解决了深链——把 /admin/access 直接发给别人，对方点开就落在同一处。
  *
  * 导航只有一条（见 AdminTopBar）：六个分区平铺在内容区顶部。
- * 以前左侧那一列导航把内容挤成窄条，仓库列表一屏放不下几行——
+ * 以前左侧那一列导航把内容挤成窄条，表格一屏放不下几行——
  * 导航一挪走，内容整块铺开，宽表格终于能横着看。
  *
  * 各分区内容各自独立成文件：这个文件只负责「现在该显示哪一块」，
@@ -31,9 +30,9 @@ export function AdminConsole() {
   const params = useParams<{ section?: string }>();
   const [searchParams] = useSearchParams();
 
-  // 旧链接：仓库管理已经并进文档区的「项目仓库」，留着旧路径的人别撞空
-  if (params.section === 'repos') {
-    return <Navigate to="/admin/projects" replace />;
+  // 旧链接：旧版的项目管理已经下线，旧路径一律回概览，别让旧书签撞空
+  if (params.section === 'repos' || params.section === 'projects') {
+    return <Navigate to="/admin/overview" replace />;
   }
 
   // URL 里没带分区或带了不认识的分区，一律回落到概览
@@ -59,7 +58,7 @@ export function AdminConsole() {
       />
 
       {/* 分区内容：整块铺开，不再被左侧导航挤着 */}
-      <main className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
+      <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6">
           {!isAdmin ? (
             /*
@@ -83,7 +82,6 @@ export function AdminConsole() {
               {section === 'overview' && (
                 <OverviewSection onNavigate={(s) => navigate(`/admin/${s}`)} />
               )}
-              {section === 'projects' && <ProjectsSection />}
               {section === 'encrypted' && <EncryptedDocsSection />}
               {section === 'access' && (
                 <AccessSection

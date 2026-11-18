@@ -43,7 +43,7 @@ export function DocOutline({ headings, activeIndex, onSelect }: DocOutlineProps)
       <nav
         ref={listRef}
         aria-label="文档目录"
-        className="flex-1 min-h-0 overflow-y-auto scrollbar-thin py-3 pl-3 pr-2 space-y-0.5"
+        className="flex-1 min-h-0 overflow-y-auto py-3 pl-3 pr-2 space-y-0.5"
       >
         {headings.map((h, i) => (
           <button

@@ -30,7 +30,7 @@ interface HomePageProps {
 }
 
 export function HomePage({ onEnter }: HomePageProps) {
-  const { loginAdmin, logoutAdmin, isAdmin, docs, repos, bootstrapping } = useApp();
+  const { loginAdmin, logoutAdmin, isAdmin, docs, bootstrapping } = useApp();
   const [mounted, setMounted] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [password, setPassword] = useState('');
@@ -47,7 +47,7 @@ export function HomePage({ onEnter }: HomePageProps) {
    * 概览把「有多少东西、都是些什么」摆到门口——
    * 一眼看出是个空站点的人，就不用白走一趟。
    *
-   * 只报数，不列清单：具体文档与仓库清单在工作区里，
+   * 只报数，不列清单：具体文档清单在工作区里，
    * 首页重复一份只会让人两边看着像两套数据。
    */
   const overview = useMemo(() => {
@@ -74,7 +74,7 @@ export function HomePage({ onEnter }: HomePageProps) {
   };
 
   return (
-    <div className="relative h-full overflow-y-auto scrollbar-thin">
+    <div className="relative h-full overflow-y-auto">
       {/* 背景光斑 */}
       <div className="pointer-events-none fixed -top-32 -left-32 h-96 w-96 rounded-full bg-indigo-400/30 blur-3xl float-animation" />
       <div className="pointer-events-none fixed -bottom-32 -right-32 h-96 w-96 rounded-full bg-emerald-400/25 blur-3xl float-animation-delay" />
@@ -279,10 +279,9 @@ export function HomePage({ onEnter }: HomePageProps) {
                 </div>
               ) : (
                 <>
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     <Stat label="笔记" value={overview.notes} icon={<ScrollText className="h-3.5 w-3.5" />} />
                     <Stat label="原件" value={overview.originals} icon={<Package className="h-3.5 w-3.5" />} />
-                    <Stat label="仓库" value={repos.length} icon={<FolderTree className="h-3.5 w-3.5" />} />
                     <Stat label="加密" value={overview.encrypted} icon={<Lock className="h-3.5 w-3.5" />} />
                   </div>
 
@@ -306,7 +305,7 @@ export function HomePage({ onEnter }: HomePageProps) {
 
       {/* 底部 */}
       <footer className="relative z-10 text-center text-xs text-muted-foreground pb-8">
-        WorkHub 个人记录网站 · 文档与原件存储于服务端仓库目录
+        WorkHub 个人记录网站 · 文档与原件存储于服务端 vault
       </footer>
     </div>
   );

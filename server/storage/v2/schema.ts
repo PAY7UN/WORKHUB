@@ -10,11 +10,13 @@
  *    两者本是同一棵树，没必要拆成两张表再靠外键拼回去。
  *
  * 2. **正文不在库里**。库里只有索引（路径、哈希、大小），
- *    正文躺在 vault 的仓库目录里。库被拷走不等于内容被拷走，
+ *    正文躺在 vault 目录里。库被拷走不等于内容被拷走，
  *    反过来内容也不会把库撑大。
  *
- * 3. **仓库是必填的**。nodes.repo_id NOT NULL：
- *    没有「未归档」这种状态，每篇文档都有明确的归属。
+ * 3. **只有一棵文档树**。曾经在这棵树上面还架过一层更粗的归属层，
+ *    用来分目录存放、圈定检索范围。实际用下来它只带来切换与归属的心智负担，
+ *    已整体移除——vault 直接按 docs/files/assets 分层，
+ *    旧库结构对不上时会拒绝启动，按提示重建即可。
  */
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
@@ -34,56 +36,17 @@ export const DB_V2_PATH = resolveDbPath();
 export type V2Database = Database.Database;
 
 export const SCHEMA = `
--- ---------------------------------------------------------------- 仓库
--- 仓库是「一个项目」的容器：文件住它的目录、规则存它的行、检索按它切分。
--- slug 是目录名，改仓库名不会打断已有路径——所以 slug 一旦定下就不再变。
-CREATE TABLE IF NOT EXISTS repos (
-  id            TEXT PRIMARY KEY,
-  slug          TEXT NOT NULL UNIQUE,
-  name          TEXT NOT NULL UNIQUE,
-  description   TEXT NOT NULL DEFAULT '',
-  color         TEXT NOT NULL DEFAULT '#6366f1',
-  -- 允许上传的扩展名白名单（JSON 数组，空数组表示不限）
-  allowed_exts  TEXT NOT NULL DEFAULT '[]',
-  -- 单附件体积上限（字节）
-  max_file_size INTEGER NOT NULL DEFAULT 26214400,
-  -- 该仓库是否参与 Agent 检索
-  rag_enabled   INTEGER NOT NULL DEFAULT 1,
-  -- 仓库级权限（JSON），形如 {"u-admin":"admin"}
-  acl           TEXT NOT NULL DEFAULT '{}',
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL,
-  created_by    TEXT NOT NULL DEFAULT 'u-admin'
-);
-
--- ---------------------------------------------------------------- 仓库事件
--- 项目仓库自己的历史：建了、改了哪条规则、搬进搬出多少篇、什么时候没的。
---
--- 这张表不引用 repos(id)：仓库删掉以后，那条「项目没了、连带清掉多少东西」
--- 仍要能被追问到，所以事件只留仓库 id 与名字快照，不跟着级联一起消失。
-CREATE TABLE IF NOT EXISTS repo_events (
-  id         TEXT PRIMARY KEY,
-  repo_id    TEXT NOT NULL,
-  repo_name  TEXT NOT NULL DEFAULT '',
-  action     TEXT NOT NULL CHECK (action IN ('created','updated','migrated','deleted')),
-  detail     TEXT NOT NULL DEFAULT '',
-  actor      TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL
-);
-
 -- ---------------------------------------------------------------- 节点
 -- 文档与文件夹合在一张表：它们构成同一棵树，拆开只是把关系挪个地方存。
 --
--- 正文不在这里。path 是节点在仓库目录里的相对路径（仓库内唯一），
+-- 正文不在这里。path 是节点在 vault 里的相对路径（全站唯一），
 -- content_hash 是正文摘要，用来判断「文件被人手改过没有」。
 CREATE TABLE IF NOT EXISTS nodes (
   id            TEXT PRIMARY KEY,
-  -- 仓库是必填的：没有归属的节点在模型里不成立
-  repo_id       TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
   name          TEXT NOT NULL,
   type          TEXT NOT NULL CHECK (type IN ('file','folder')),
   parent_id     TEXT REFERENCES nodes(id) ON DELETE CASCADE,
-  -- 仓库内相对路径，唯一
+  -- vault 内相对路径，唯一
   path          TEXT NOT NULL,
   size          INTEGER,
   content_hash  TEXT,
@@ -97,18 +60,19 @@ CREATE TABLE IF NOT EXISTS nodes (
   encrypted      INTEGER NOT NULL DEFAULT 0,
   enc_master_dek TEXT,
   enc_locked_at  INTEGER,
-  -- 节点级权限（JSON），空表示沿用仓库设置
+  -- 节点级权限（JSON），空表示沿用全站设置
   acl           TEXT NOT NULL DEFAULT '{}',
+  -- 遗留列：标签功能已下线，列保留是为了不动历史库里的既有数据，不再读写
   tags          TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   created_by    TEXT NOT NULL,
   updated_by    TEXT NOT NULL,
-  UNIQUE (repo_id, path)
+  UNIQUE (path)
 );
 
 -- ---------------------------------------------------------------- 附件
--- 附件二进制住在仓库目录的 assets 下，库里只记元数据与抽出的纯文本。
+-- 附件二进制住在 vault 的 assets 下，库里只记元数据与抽出的纯文本。
 CREATE TABLE IF NOT EXISTS attachments (
   id           TEXT PRIMARY KEY,
   doc_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -130,10 +94,7 @@ CREATE TABLE IF NOT EXISTS attachments (
 
 -- ---------------------------------------------------------------- 全文索引
 -- 中文按二元组切分后写入（写入与查询同一套切法，见 shared/retrieval.ts）。
--- repo_id 存成 UNINDEXED 列：查询时先按仓库过滤，再做匹配，
--- 不必把全站文档捞出来筛一遍。
 CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(
-  repo_id UNINDEXED,
   node_id UNINDEXED,
   name,
   body,
@@ -145,7 +106,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(
 -- 单开一张虚表而不是塞进 node_fts，是为了让「查文档」与「查附件」
 -- 各自有干净的键空间，不必在结果里靠前缀去分辨谁是谁。
 CREATE VIRTUAL TABLE IF NOT EXISTS attachment_fts USING fts5(
-  repo_id UNINDEXED,
   att_id UNINDEXED,
   name,
   body,
@@ -165,7 +125,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL DEFAULT ''
 );
 
--- Agent 每调用上游模型记一行：问答与润色分场景存放，便于看清消耗在哪
+-- Agent 每调用上游模型记一行：按场景存放，便于看清消耗在哪
 CREATE TABLE IF NOT EXISTS agent_config (
   id              INTEGER PRIMARY KEY CHECK (id = 1),
   base_url        TEXT NOT NULL,
@@ -182,6 +142,8 @@ CREATE TABLE IF NOT EXISTS agent_config (
 
 CREATE TABLE IF NOT EXISTS agent_usage (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- scene 目前只有 'chat'。约束里保留 'polish'：AI 润色功能已下线，但历史库中
+  -- 可能仍有它写入的行，重建表时把 CHECK 收窄会因这些行而失败。
   scene              TEXT NOT NULL CHECK (scene IN ('chat','polish')),
   model              TEXT NOT NULL,
   prompt_tokens      INTEGER NOT NULL DEFAULT 0,
@@ -272,10 +234,29 @@ CREATE TABLE IF NOT EXISTS collector_state (
   PRIMARY KEY (source, session_id)
 );
 
+-- ---------------------------------------------------------------- 内置文档基线
+-- 内置文档（协议说明书）跟着代码走：仓库或插件包里那份是「内置版」，
+-- 记录区里放的是「现场版」。两者可能不一样——现场版被管理员改过，
+-- 或者代码更新后内置版变了。
+--
+-- 这一表记住两个哈希，用来分辨三种情况：
+--   baseline_hash  上次同步时的内置版哈希——现场版跟它一样就是没人动过
+--   source_hash    当前内置版的哈希——它跟 baseline 不一样就是「有新版」
+--
+-- 新表对老库零风险（CREATE IF NOT EXISTS）——这正是能加表不能加列的原因：
+-- 给 nodes 表加列会让结构对不上的旧库直接拒绝启动。
+CREATE TABLE IF NOT EXISTS builtin_docs (
+  node_id       TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+  protocol_id   TEXT NOT NULL,
+  source        TEXT NOT NULL DEFAULT 'repo',
+  source_path   TEXT NOT NULL DEFAULT '',
+  baseline_hash TEXT NOT NULL,
+  source_hash   TEXT NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+
 -- ---------------------------------------------------------------- 索引
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
-CREATE INDEX IF NOT EXISTS idx_nodes_repo ON nodes(repo_id);
-CREATE INDEX IF NOT EXISTS idx_repo_events_created ON repo_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_usage_created ON agent_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_access_requests_status ON access_requests(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_access_grants_doc ON access_grants(doc_id);
@@ -388,6 +369,6 @@ export function assertWritableSchema(db: V2Database): void {
       problems.map((p) => `  - ${p}`).join('\n') +
       `\n\n这个库是旧版本留下的。当前版本不再兼容旧结构` +
       `（不补列、不重建表），所以请先把 data 目录整个备份走，再删掉那个库文件重新启动——` +
-      `正文在 data/vault/ 里，删库不会删掉正文，但库里的索引、标签与授权需要重新建立。`,
+      `正文在 data/vault/ 里，删库不会删掉正文，但库里的索引与授权需要重新建立。`,
   );
 }

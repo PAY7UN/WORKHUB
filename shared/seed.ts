@@ -12,11 +12,8 @@ const now = Date.now();
 
 /**
  * 示例文档。
- *
- * 没有 repoId：示例文档属于哪个仓库，取决于运行时往哪个仓库里灌它们。
- * 硬写死一个 id 的话，换个部署环境这个 id 就不存在了。
  */
-export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
+export const SEED_DOCS: DocNode[] = [
   {
     id: 'd-welcome',
     name: '欢迎使用 WorkHub.md',
@@ -46,7 +43,6 @@ export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
     updatedAt: now - 1000 * 60 * 60 * 2,
     createdBy: 'u-admin',
     updatedBy: 'u-admin',
-    tags: ['指南', '入门'],
   },
   {
     id: 'd-guide',
@@ -86,7 +82,6 @@ export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
     updatedAt: now - 1000 * 60 * 30,
     createdBy: 'u-admin',
     updatedBy: 'u-admin',
-    tags: ['帮助'],
   },
   {
     id: 'd-folder-projects',
@@ -130,7 +125,6 @@ export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
     updatedAt: now - 1000 * 60 * 60 * 5,
     createdBy: 'u-admin',
     updatedBy: 'u-admin',
-    tags: ['项目', '技术'],
   },
   {
     id: 'd-proj-api',
@@ -173,7 +167,6 @@ export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
     updatedAt: now - 1000 * 60 * 60 * 1,
     createdBy: 'u-admin',
     updatedBy: 'u-admin',
-    tags: ['API'],
   },
   {
     id: 'd-folder-team',
@@ -214,7 +207,6 @@ export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
     updatedAt: now - 1000 * 60 * 60 * 24 * 6,
     createdBy: 'u-admin',
     updatedBy: 'u-admin',
-    tags: ['周报'],
   },
   {
     id: 'd-weekly-w37',
@@ -245,6 +237,5 @@ export const SEED_DOCS: Omit<DocNode, 'repoId'>[] = [
     updatedAt: now - 1000 * 60 * 60 * 4,
     createdBy: 'u-admin',
     updatedBy: 'u-admin',
-    tags: ['周报'],
   },
 ];

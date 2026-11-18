@@ -32,11 +32,11 @@ if (!existsSync(SOURCE_DB)) {
   process.exit(1);
 }
 
-/** 仓库目录（正文所在）也要复制一份：v2 的正文不在库里，在仓库目录里 */
+/** vault 目录（正文所在）也要复制一份：v2 的正文不在库里，在 vault 目录里 */
 const SOURCE_VAULT = envValue('VAULT_DIR') || join(ROOT, 'data/vault');
 if (!existsSync(SOURCE_VAULT)) {
   console.error(`找不到 ${SOURCE_VAULT}`);
-  console.error('先运行一次 npm run server 生成仓库目录，再运行本脚本。');
+  console.error('先运行一次 npm run server 生成 vault 目录，再运行本脚本。');
   process.exit(1);
 }
 
@@ -51,10 +51,10 @@ const dbPath = join(tmp, 'rt.db');
 copyFileSync(SOURCE_DB, dbPath);
 
 /**
- * 仓库目录也要复制一份。
+ * vault 目录也要复制一份。
  *
- * v2 的正文存在仓库目录的文件里，不在库里。只复制数据库的话，
- * 这个脚本建的验证文档会直接落进生产仓库目录——
+ * v2 的正文存在 vault 的文件里，不在库里。只复制数据库的话，
+ * 这个脚本建的验证文档会直接落进生产 vault——
  * 脚本开头那句「绝不触碰生产库」就成了空话。
  */
 const vaultPath = join(tmp, 'vault');
@@ -335,15 +335,14 @@ if (ready) {
 
         await fetch(base + `/api/docs/${docId}`, { method: 'DELETE', headers: H2 });
 
-        /* ---------------- 压缩包不解包 / 仓库统计随增删更新 ---------------- */
+        /* ---------------- 压缩包不解包 / 清单随增删更新 ---------------- */
         // 压缩包上传的处理与前端一致：建同名条目 + 挂原件附件，不解包
         const zipName = '__verify_pack__.zip';
         const zipBytes = Buffer.from('PK not-a-real-zip');
-        const repoStatsBefore = await (await fetch(base + '/api/repos', { headers: H2 })).json();
-        const defaultRepoId = repoStatsBefore.repos?.[0]?.id;
-        const statOf = (stats, repoId) =>
-          stats.find((s) => s.repoId === repoId) ?? { docCount: 0, attachmentCount: 0 };
-        const statBefore = statOf(repoStatsBefore.stats ?? [], defaultRepoId);
+        /** 清单里的文档数：界面显示的就是这份清单 */
+        const countDocs = async () =>
+          listOf(await (await fetch(base + '/api/docs', { headers: H2 })).json()).length;
+        const docCountBefore = await countDocs();
 
         const zipDocRes = await fetch(base + '/api/docs', {
           method: 'POST', headers: { ...H2, 'content-type': 'application/json' },
@@ -365,11 +364,10 @@ if (ready) {
             atts.attachments?.length === 1 && atts.attachments[0]?.name === zipName,
             `附件 ${atts.attachments?.length} 个`);
 
-          const repoStatsAfter = await (await fetch(base + '/api/repos', { headers: H2 })).json();
-          const statAfter = statOf(repoStatsAfter.stats ?? [], zipDoc.repoId ?? defaultRepoId);
-          check('仓库文件数随上传增加',
-            statAfter.docCount === statBefore.docCount + 1 && statAfter.attachmentCount === statBefore.attachmentCount + 1,
-            `文档 ${statBefore.docCount} → ${statAfter.docCount}，附件 ${statBefore.attachmentCount} → ${statAfter.attachmentCount}`);
+          const docCountAfter = await countDocs();
+          check('文档清单随上传增加',
+            docCountAfter === docCountBefore + 1,
+            `文档 ${docCountBefore} → ${docCountAfter}`);
 
           const zipImport = await fetch(base + '/api/import/zip', {
             method: 'POST', headers: { ...H2, 'content-type': 'application/octet-stream' }, body: zipBytes,
@@ -377,11 +375,10 @@ if (ready) {
           check('压缩包解包接口已下线（import/zip → 404）', zipImport.status === 404, `状态 ${zipImport.status}`);
 
           await fetch(base + `/api/docs/${zipDoc.id}`, { method: 'DELETE', headers: H2 });
-          const repoStatsEnd = await (await fetch(base + '/api/repos', { headers: H2 })).json();
-          const statEnd = statOf(repoStatsEnd.stats ?? [], zipDoc.repoId ?? defaultRepoId);
-          check('仓库文件数随删除回落',
-            statEnd.docCount === statBefore.docCount && statEnd.attachmentCount === statBefore.attachmentCount,
-            `文档 ${statAfter.docCount} → ${statEnd.docCount}，附件 ${statAfter.attachmentCount} → ${statEnd.attachmentCount}`);
+          const docCountEnd = await countDocs();
+          check('文档清单随删除回落',
+            docCountEnd === docCountBefore,
+            `文档 ${docCountAfter} → ${docCountEnd}`);
         }
 
         /* ---------------- 原件：文件即节点（不配同名备注）+ 不同格式的下载 ---------------- */

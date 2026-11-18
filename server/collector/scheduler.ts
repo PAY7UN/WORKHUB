@@ -12,7 +12,7 @@
  * 全程不抛异常：采集是旁路任务，它坏了不能拖垮主服务。
  */
 import { envFlag, envValue } from '../env.ts';
-import { getAgentConfig, getCollectorCursor, setCollectorCursor, defaultRepoId } from '../db.ts';
+import { getAgentConfig, getCollectorCursor, setCollectorCursor } from '../db.ts';
 import { logger } from '../logger.ts';
 import {
   buildSessionTrace,
@@ -37,8 +37,6 @@ export interface CollectorSettings {
   /** 空闲判定：会话静默多久才算「结束了」 */
   idleMs: number;
   folderName: string;
-  /** 指定仓库 id；空则用默认仓库 */
-  repoId: string;
 }
 
 export function readCollectorSettings(): CollectorSettings {
@@ -47,7 +45,6 @@ export function readCollectorSettings(): CollectorSettings {
     dirs: resolveDirs(),
     idleMs: (Number(envValue('COLLECTOR_IDLE_MINUTES')) || 10) * 60_000,
     folderName: envValue('COLLECTOR_FOLDER') || '日常工作日志',
-    repoId: envValue('COLLECTOR_REPO'),
   };
 }
 
@@ -118,8 +115,7 @@ async function processSession(
 
   const summary = await summarizeSession(cfg, trace);
   const dateKey = formatDateKey(updatedAt);
-  const repoId = settings.repoId || defaultRepoId();
-  const docId = ensureDailyDoc(repoId, settings.folderName, dateKey);
+  const docId = ensureDailyDoc(settings.folderName, dateKey);
   const ok = appendSessionEntry(docId, { time: updatedAt, conversationId, summary });
   if (!ok) throw new Error('写入日志文档失败');
   setCollectorCursor(SOURCE, conversationId, updatedAt);

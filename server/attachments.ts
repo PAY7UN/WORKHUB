@@ -9,9 +9,9 @@
  * 1. **没有回收站**。附件删了就是删了——文档都没法进回收站，
  *    给附件留一条后路只会造成「文档在、附件不在」这种半吊子状态。
  *
- * 2. **二进制住在仓库目录里**，不再用全局内容寻址池。
- *    仓库是边界：导出一个仓库就带着它的附件一起走，
- *    删一个仓库也不会误伤别的仓库的同内容文件。
+ * 2. **二进制住在 vault 里**，不再用全局内容寻址池。
+ *    路径跟着宿主文档走：导出一个目录就带着它的附件一起走，
+ *    删一篇文档也不会误伤别处的同内容文件。
  *    代价是同一份内容存两份——对「留存型附件」来说，这个代价比边界清晰更划算。
  */
 import { randomUUID } from 'node:crypto';
@@ -27,11 +27,11 @@ import {
   writeFileAtomic,
 } from './storage/v2/vault.ts';
 import { indexAttachment, unindexAttachment } from './storage/v2/search.ts';
-import { extOf } from '../shared/attachments.ts';
-import type { Attachment, Repo } from '../shared/types.ts';
+import { extOf, MAX_ATTACHMENT_SIZE } from '../shared/attachments.ts';
+import type { Attachment } from '../shared/types.ts';
 
 /** 单个附件的体积上限（字节）。服务端硬限，与前端提示无关 */
-export const HARD_MAX_FILE_SIZE = 64 * 1024 * 1024;
+export const HARD_MAX_FILE_SIZE = MAX_ATTACHMENT_SIZE;
 
 /* ------------------------------ 行映射 ------------------------------ */
 
@@ -73,48 +73,35 @@ function rowToAttachment(r: AttachmentRow): Attachment {
 /* ------------------------------ 存储位置 ------------------------------ */
 
 /**
- * 附件在 vault 里的位置：<仓库目录>/assets/<宿主文档路径>/<文件名>。
+ * 附件在 vault 里的位置：assets/<宿主文档路径>/<文件名>。
  *
  * 跟着宿主文档走，删文档时附件的位置是确定的——
  * 不用维护一张「附件属于哪篇文档」的额外映射（数据库里已经有 doc_id 了）。
  */
 function assetLocation(docId: string, filename: string): { abs: string; rel: string } | undefined {
   const node = db
-    .prepare(
-      `SELECT n.path AS path, r.slug AS slug
-         FROM nodes n JOIN repos r ON r.id = n.repo_id
-        WHERE n.id = ?`,
-    )
-    .get(docId) as { path: string; slug: string } | undefined;
+    .prepare('SELECT path FROM nodes WHERE id = ?')
+    .get(docId) as { path: string } | undefined;
   if (!node) return undefined;
-  const rel = join(node.slug, 'assets', node.path, filename);
+  const rel = join('assets', node.path, filename);
   return { abs: assertInsideVault(join(VAULT_ROOT, rel)), rel };
 }
 
 /* ------------------------------ 查询 ------------------------------ */
 
-/** 宿主文档所在仓库。附件的检索范围跟着宿主走，所以要问到它的仓库 */
-function hostRepoId(docId: string): string | undefined {
-  const row = db.prepare('SELECT repo_id FROM nodes WHERE id = ?').get(docId) as
-    | { repo_id: string }
-    | undefined;
-  return row?.repo_id;
-}
-
 /**
  * 重建某个附件的索引。
  *
- * 改名、换宿主、宿主换仓库之后都要重建：索引里存着名字与仓库归属，
- * 两者都变了还留着旧索引，就成了「搜得到但点不开」的幽灵条目。
+ * 改名、换宿主之后都要重建：索引里存着名字，名字变了还留着旧索引，
+ * 就成了「搜得到但点不开」的幽灵条目。
  */
 function reindexAttachment(row: AttachmentRow): void {
-  const repoId = hostRepoId(row.doc_id);
   const text = row.text_status === 'ok' ? row.text_content ?? '' : '';
-  if (!repoId || !text) {
+  if (!text) {
     unindexAttachment(db, row.id);
     return;
   }
-  indexAttachment(db, row.id, repoId, row.name, text);
+  indexAttachment(db, row.id, row.name, text);
 }
 
 /** 某篇文档下的附件 */
@@ -185,7 +172,7 @@ export interface AddAttachmentInput {
 /**
  * 存一个附件。
  *
- * 三件事：落二进制（进宿主文档所在的仓库目录）、抽文本（供检索）、登记元数据。
+ * 三件事：落二进制（进宿主文档所在的目录）、抽文本（供检索）、登记元数据。
  * 抽文本失败不影响这次上传——附件的价值首先在「留存」，
  * 检索是加分项，不能因为抽不出文本就把用户的文件退回去。
  */
@@ -328,30 +315,13 @@ export interface AttachmentCheck {
 }
 
 /**
- * 校验一个文件能不能挂到该仓库的文档上。
+ * 校验一个文件能不能上传。
  *
- * 仓库自带「允许格式」与「体积上限」，不同项目的要求本就不同，
- * 所以规则按仓库走而不是全局统一。仓库没有则放行——
- * 找不到规则时一律放行，比把上传功能卡死要好。
+ * 规则只有两条全局硬线——非空、不超硬上限（HARD_MAX_FILE_SIZE，
+ * 由挂载路由的 express.raw limit 先行拦截）。
  */
-export function checkAttachmentAllowed(repo: Repo | undefined, filename: string, size: number): AttachmentCheck {
+export function checkAttachmentAllowed(filename: string, size: number): AttachmentCheck {
+  void filename;
   if (size <= 0) return { ok: false, reason: '文件内容为空' };
-
-  const ext = extOf(filename);
-  if (repo) {
-    if (repo.allowedExts.length > 0 && !repo.allowedExts.includes(ext)) {
-      const allowed = repo.allowedExts.join('、');
-      return {
-        ok: false,
-        reason: `仓库「${repo.name}」只允许上传 ${allowed} 格式的文件，这个文件（${ext || '无扩展名'}）不在其中`,
-      };
-    }
-    if (size > repo.maxFileSize) {
-      return {
-        ok: false,
-        reason: `文件超过仓库「${repo.name}」的体积上限（${Math.round(repo.maxFileSize / 1024 / 1024)}MB）`,
-      };
-    }
-  }
   return { ok: true };
 }
