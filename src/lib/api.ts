@@ -751,6 +751,27 @@ export const api = {
       return sent;
     },
 
+    /**
+     * 组一条命令并发出去。
+     *
+     * 「解析」是把收到的字节读成人话，「组包」反过来：
+     * 按这套协议把参数组装成字节帧发出去。
+     *
+     * 能组什么、每条要填哪些参数，由这条通道的解析插件说了算
+     * （见 session.builds），界面照着渲染表单，不自己猜协议。
+     */
+    build: async (
+      id: string,
+      kind: string,
+      args: Record<string, string>,
+      peer?: string,
+    ): Promise<{ sent: number; frame: string; bytes: number }> => {
+      return request<{ sent: number; frame: string; bytes: number }>(`/tools/sessions/${id}/build`, {
+        method: 'POST',
+        body: JSON.stringify({ kind, args, peer }),
+      });
+    },
+
     /** 改记录开关：收到 / 发出的数据要不要记成记录 */
     setRecording: async (
       id: string,

@@ -21,8 +21,8 @@ import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 import type { PluginManifest } from '../../../shared/plugins.ts';
-import type { ProtocolTemplate } from '../../../shared/tools.ts';
-import type { DecodedFrame, FrameSource } from '../parser.ts';
+import type { ProtocolBuild, ProtocolTemplate } from '../../../shared/tools.ts';
+import type { DecodedFrame, EncodeRequest, FrameSource } from '../parser.ts';
 
 /** 一个已载入的插件 */
 export interface LoadedPlugin {
@@ -36,6 +36,10 @@ export interface LoadedPlugin {
   createParser(): FrameSource;
   /** 解一帧：读成文本与字段 */
   decode(frame: Buffer): DecodedFrame;
+  /** 组包（可选）：把一条命令组装成字节帧 */
+  encode?(request: EncodeRequest): Buffer | null;
+  /** 能组哪些命令（可选）：界面照着渲染表单 */
+  builds?: ProtocolBuild[];
 }
 
 /** 载入结果 */
@@ -188,6 +192,13 @@ async function loadOne(dir: string): Promise<LoadedPlugin> {
     doc: loadPluginDoc(dir, manifest),
     createParser: () => (createParser as () => FrameSource)(),
     decode: (frame: Buffer) => (decode as (f: Buffer) => DecodedFrame)(frame),
+    // 组包是可选能力：插件导出了 encode 才算数，
+    // 没导出就只是「只能读不能写」，不影响它照常工作。
+    encode:
+      typeof mod.encode === 'function'
+        ? (request: EncodeRequest) => (mod.encode as (r: EncodeRequest) => Buffer | null)(request)
+        : undefined,
+    builds: Array.isArray(mod.builds) ? (mod.builds as ProtocolBuild[]) : undefined,
   };
 }
 

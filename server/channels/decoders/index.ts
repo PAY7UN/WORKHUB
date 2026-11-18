@@ -10,8 +10,18 @@
  * 开发者自己发布的插件走 server/channels/plugins/ 那条路，
  * 两者在界面上一视同仁（都出现在「解析插件类型」里），只是署名不同。
  */
-import type { DecodedField, ProtocolSpec } from '../../../shared/tools.ts';
-import type { DecodedFrame, FrameSource } from '../parser.ts';
+import type { DecodedField, ProtocolBuild, ProtocolSpec } from '../../../shared/tools.ts';
+import type { DecodedFrame, EncodeRequest, FrameSource } from '../parser.ts';
+import {
+  JT808_BUILDS,
+  JT808_COMMAND_FIELDS,
+  JT808_DECODER_ID,
+  JT808_FRAME_PARTS,
+  JT808_MESSAGES,
+  Jt808Parser,
+  buildJt808Command,
+  decodeJt808,
+} from './jt808.ts';
 import {
   LED2_ADDRESSES,
   LED2_COMMAND_FIELDS,
@@ -47,6 +57,16 @@ export interface NamedDecoder {
   createParser(): FrameSource;
   /** 解一帧：读成文本与字段 */
   decode(frame: Buffer): DecodedFrame;
+  /**
+   * 组包：把一条命令组装成字节帧。
+   *
+   * 「解析」是把收到的字节读成人话，「组包」反过来——给人几个参数，
+   * 组装成字节发出去。能组哪些、每条要填什么参数，由解码器说了算
+   * （见 builds），界面照着渲染表单，不自己猜。
+   */
+  encode?(request: EncodeRequest): Buffer | null;
+  /** 能组哪些命令 */
+  builds?: ProtocolBuild[];
 }
 
 /**
@@ -108,5 +128,53 @@ const tongdaLed2: NamedDecoder = {
   },
 };
 
+/** JT/T 808 解码器 */
+const jt808: NamedDecoder = {
+  id: JT808_DECODER_ID,
+  name: 'JT/T 808',
+  summary:
+    '道路运输车辆卫星定位系统（JT/T 808-2019）：帧标志 7E、消息体属性、序列号、消息 ID、数据长度、异或校验。' +
+    '终端注册与心跳平台自动应答，也能按命令组包下发。',
+  publisher: 'WorkHub 内置',
+  version: '1.0.0',
+  protocolId: JT808_DECODER_ID,
+  spec: {
+    frame: [...JT808_FRAME_PARTS],
+    commands: Object.entries(JT808_MESSAGES).map(([code, meta]) => {
+      const num = Number(code);
+      return {
+        code: `0x${num.toString(16).toUpperCase().padStart(4, '0')}`,
+        name: meta.name,
+        note: `${meta.dir === 'up' ? '终端→平台' : '平台→终端'}${meta.note ? `，${meta.note}` : ''}`,
+        fields: JT808_COMMAND_FIELDS[num],
+      };
+    }),
+    notes: [
+      '消息体属性 bit0~9 是消息体长度，bit13 是加密位，bit14 是分包位。',
+      '校验码：消息体属性到消息体末字节逐字节异或。',
+      '包内的 0x7E 转义成 0x7D 0x01，0x7D 转义成 0x7D 0x02，0x7F 转义成 0x7D 0x04（2019 版新增，老设备多半只转前两个）。',
+      '终端注册（0x0001）平台必须回注册应答（0x8001），心跳（0x0002）必须回心跳应答（0x8002）——本解码器自动回。',
+      '终端是客户端、平台是服务端：终端连平台的端口（常用 7612），哪条连接就是哪个终端。',
+      '位置信息（0x0200）里的经纬度单位是 1e-6 度、高度 0.1 米、速度 0.1 千米/小时，时间是 BCD 的 YYMMDDHHmmss。',
+    ],
+  },
+  createParser: () => new Jt808Parser(),
+  decode: (frame: Buffer): DecodedFrame => {
+    const parsed = decodeJt808(frame);
+    const fields: DecodedField[] = parsed.fields;
+    const code = `0x${parsed.messageId.toString(16).toUpperCase().padStart(4, '0')}`;
+    return {
+      text: frame.toString('hex').toUpperCase(),
+      hex: frame.toString('hex').toUpperCase(),
+      fields,
+      summary: summarize(fields, `${parsed.messageName}（${code}）`),
+      // 该回什么由解码器说了算：注册应答、心跳应答
+      reply: parsed.reply,
+    };
+  },
+  builds: JT808_BUILDS,
+  encode: (request: EncodeRequest): Buffer => buildJt808Command(request),
+};
+
 /** 全部内置解码器（它们也是内置插件） */
-export const BUILTIN_DECODERS: NamedDecoder[] = [tongdaLed2];
+export const BUILTIN_DECODERS: NamedDecoder[] = [tongdaLed2, jt808];

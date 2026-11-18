@@ -155,6 +155,29 @@ export interface DecodedFrame {
   fields?: DecodedField[];
   /** 具名解码器给出的摘要 */
   summary?: string;
+  /**
+   * 平台该回给对端的字节。
+   *
+   * 有些协议是「一问一答」：终端发注册，平台得回注册应答；
+   * 终端发心跳，平台得回心跳应答——不回，终端会一直重发。
+   *
+   * 这条回包由解码器给出：整套协议里谁该回什么，只有它知道。
+   * 上层只负责把它发回给来帧的那个对端。
+   */
+  reply?: { data: Buffer; note?: string };
+}
+
+/**
+ * 组包请求。
+ *
+ * 「解析」是把收到的字节读成人话，「组包」是反过来：
+ * 人给几个参数，组装成字节发出去。
+ */
+export interface EncodeRequest {
+  /** 要组哪一条命令（对应解码器给的清单） */
+  kind: string;
+  /** 参数 */
+  args?: Record<string, string>;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Loader2, Play, RotateCcw, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, type ToolsCatalog } from '@/lib/api';
@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import type { ChannelRecord, SerialPortInfo } from '../../../../shared/tools';
 import { AccessConfigPanel } from './AccessConfigPanel';
 import { RecordStream } from './RecordStream';
+import { BuildDialog } from './BuildDialog';
 import { HexDecodeDialog, SendDialog } from './ChannelDialogs';
 import { useChannelStream } from './useChannelStream';
 
@@ -15,22 +16,22 @@ import { useChannelStream } from './useChannelStream';
 const VISIBLE_RECORDS = 300;
 
 /**
- * 串口接入页：**一屏之内把所有事做完**，不再跳来跳去。
+ * 接入页：**一屏之内把所有事做完**，不再跳来跳去。
  *
  * 这一屏只分两半：
  *
- * - **左边「基本信息」**：接哪儿、跑多快、按哪套协议读（端口、波特率、协议类型）。
- * - **右边「实时数据」**：串口读到的字节，切好帧、解好，直接摊在这儿。
+ * - **左边「基本信息」**：接哪儿、按哪套协议读（端口与线参数，或网口的方式与地址）。
+ * - **右边「实时数据」**：读到的字节，切好帧、解好，直接摊在这儿。
+ *
+ * 串口与网口是同一屏、同一套流水线——区别只在「字节从哪儿来」：
+ * 串口是插在本机上的线，网口是等设备连进来的端口（JT/T 808 终端就是这样）。
  *
  * 以前解析结果藏在右边的「接收详单」里，得点中某一条才看得见；
  * 现在收进来就解出来、就摆出来——现场盯着这一列就知道设备此刻在说什么。
- *
- * 以前「配置」和「调试」是俩页面，参数定完要跳过去才看得到数据——
- * 现场谁受得了那个来回。现在配置和数据在同一屏上：
- * 改端口点「启动」就能看见东西，不用走。
  */
 export function AccessPage() {
   const navigate = useNavigate();
+  const { category } = useParams();
   const [searchParams] = useSearchParams();
   const [catalog, setCatalog] = useState<ToolsCatalog | null>(null);
   const [serialPorts, setSerialPorts] = useState<SerialPortInfo[]>([]);
@@ -50,15 +51,18 @@ export function AccessPage() {
   const [sessionId, setSessionId] = useState<string | null>(searchParams.get('session'));
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  /** 组包中 */
+  const [building, setBuilding] = useState(false);
   /** 清屏的时间点：这一时刻之前的记录不显示了（服务端还记着） */
   const [clearedBefore, setClearedBefore] = useState(0);
   /** 从 CSV 导入的记录：只摊在这一屏，不进服务端记录表 */
   const [imported, setImported] = useState<ChannelRecord[]>([]);
-  /** 发送面板 / 解 HEX 面板 */
+  /** 发送面板 / 解 HEX 面板 / 组包面板 */
   const [sendOpen, setSendOpen] = useState(false);
   const [hexOpen, setHexOpen] = useState(false);
+  const [buildOpen, setBuildOpen] = useState(false);
 
-  const { records, session, error, refresh } = useChannelStream(sessionId);
+  const { records, session, peers, error, refresh } = useChannelStream(sessionId);
   const running = session?.status === 'running';
 
   /** 插件 id 的最新值：重置表单时要读它，但不因此重建表单 */
@@ -100,8 +104,21 @@ export function AccessPage() {
     void scanSerialPorts();
   }, [scanSerialPorts]);
 
-  /** 接入方式：只有串口监听这一种 */
-  const tool = useMemo(() => catalog?.tools.find((t) => t.id === 'serial'), [catalog]);
+  /**
+   * 接入方式：路由里的大类（/tools/serial、/tools/tcp）对应哪一种。
+   *
+   * 大类与接入方式是一对一的，但仍然是两件事——
+   * 目录里先摆大类，点进去才见具体参数。
+   */
+  const tool = useMemo(
+    () => catalog?.tools.find((t) => t.id === category) ?? catalog?.tools[0],
+    [catalog, category],
+  );
+  /** 接入大类：标题、说明都用它 */
+  const categoryDef = useMemo(
+    () => catalog?.categories.find((c) => c.id === tool?.id),
+    [catalog, tool],
+  );
 
   /**
    * 接入参数初值。
@@ -205,7 +222,7 @@ export function AccessPage() {
       setSessionId(next.id);
       setClearedBefore(0);
       setImported([]);
-      toast.success('串口已打开');
+      toast.success(`${tool.name}已打开`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -269,6 +286,28 @@ export function AccessPage() {
     [session],
   );
 
+  /**
+   * 组一条命令并发出去。
+   *
+   * 组包与发送是同一件事的两面：「发送」是给字节，
+   * 「组包」是给参数——由协议决定字节长什么样。
+   */
+  const handleBuild = useCallback(
+    async (kind: string, args: Record<string, string>, peer?: string) => {
+      if (!session) return;
+      setBuilding(true);
+      try {
+        const result = await api.tools.build(session.id, kind, args, peer);
+        toast.success(`已发出 ${result.bytes} 字节`);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBuilding(false);
+      }
+    },
+    [session],
+  );
+
   /** 只渲染最近一段记录：再多也看不出区别 */
   const shown = useMemo(() => records.slice(-VISIBLE_RECORDS), [records]);
   /** 清屏之后还在的那些 */
@@ -278,6 +317,9 @@ export function AccessPage() {
   );
   /** 导入的排在前面，方便跟刚收到的对 */
   const streamRecords = useMemo(() => [...imported, ...tableRecords], [imported, tableRecords]);
+
+  /** 这条通道能组哪些命令（由解析插件说了算） */
+  const builds = session?.builds ?? [];
 
   /**
    * 参数改了但通道还开着——跑着的通道不会自己换协议、换波特率，
@@ -309,7 +351,7 @@ export function AccessPage() {
         </Button>
         <span className="h-5 w-px bg-border/70" />
         <span className="rounded bg-indigo-500/10 px-2 py-0.5 text-[12px] font-medium text-indigo-600">
-          串口接入
+          {categoryDef?.name ?? tool?.name ?? '接入'}
         </span>
         <Badge
           variant={running ? 'secondary' : 'outline'}
@@ -318,7 +360,7 @@ export function AccessPage() {
           {running ? '已连接' : '未连接'}
         </Badge>
         <p className="ml-1 hidden text-[11px] text-muted-foreground lg:block">
-          打开一个串口，把它读出来的字节，按协议解析成一条条记录。
+          {categoryDef?.summary ?? '把它读出来的字节，按协议解析成一条条记录。'}
         </p>
 
         <div className="ml-auto flex items-center gap-2">
@@ -326,6 +368,11 @@ export function AccessPage() {
             <span className="flex items-center gap-1 text-[11px] text-rose-600">
               <AlertTriangle className="h-3.5 w-3.5" />
               {error}
+            </span>
+          ) : null}
+          {peers.length ? (
+            <span className="text-[11px] text-muted-foreground">
+              对端 {peers.length} 个
             </span>
           ) : null}
           {session ? (
@@ -371,9 +418,11 @@ export function AccessPage() {
         <aside className="flex w-[17rem] shrink-0 flex-col overflow-auto border-r border-border/70 px-3 py-3">
           <div className="mb-3 flex items-center gap-2">
             <span className="text-[12px] font-medium">基本信息</span>
-            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-              串口监听
-            </Badge>
+            {tool ? (
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                {tool.name}
+              </Badge>
+            ) : null}
           </div>
           {tool ? (
             <AccessConfigPanel
@@ -413,11 +462,13 @@ export function AccessPage() {
           onClear={() => setClearedBefore(Date.now())}
           onSend={() => setSendOpen(true)}
           onDecodeHex={() => setHexOpen(true)}
+          canBuild={builds.length > 0}
+          onBuild={() => setBuildOpen(true)}
           onImport={(next) => setImported(next)}
         />
       </div>
 
-      {/* 发送 / 解 HEX：各自一个弹窗，不占主屏 */}
+      {/* 发送 / 解 HEX / 组包：各自一个弹窗，不占主屏 */}
       <SendDialog
         open={sendOpen}
         onOpenChange={setSendOpen}
@@ -426,6 +477,15 @@ export function AccessPage() {
         onSend={(data, format) => void handleSend(data, format)}
       />
       <HexDecodeDialog open={hexOpen} onOpenChange={setHexOpen} pluginId={pluginId} />
+      <BuildDialog
+        open={buildOpen}
+        onOpenChange={setBuildOpen}
+        builds={builds}
+        peers={peers}
+        running={running}
+        building={building}
+        onBuild={(kind, args, peer) => void handleBuild(kind, args, peer)}
+      />
     </div>
   );
 }

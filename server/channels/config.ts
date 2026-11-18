@@ -65,6 +65,7 @@ export interface NormalizedConfig {
 
 const PARITIES = ['none', 'even', 'odd'] as const;
 const FLOW_CONTROLS = ['none', 'rtscts'] as const;
+const TCP_MODES = ['listen', 'connect'] as const;
 
 /**
  * 按工具种类规范化参数。
@@ -92,6 +93,15 @@ export function normalizeConfig(tool: ToolKind, raw: Record<string, unknown>): N
           flowControl,
         },
         name: `${port} · ${baudRate}`,
+      };
+    }
+    case 'tcp': {
+      const mode = enumOf(raw, 'mode', '方式', TCP_MODES, 'listen');
+      const host = strOf(raw, 'host', '地址', '0.0.0.0');
+      const port = intOf(raw, 'port', '端口', 1, 65535, 7612);
+      return {
+        config: { mode, host, port: String(port) },
+        name: mode === 'listen' ? `监听 ${host}:${port}` : `连接 ${host}:${port}`,
       };
     }
   }

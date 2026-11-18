@@ -16,13 +16,14 @@
  */
 
 /** 工具（通道）的种类 */
-export type ToolKind = 'serial';
+export type ToolKind = 'serial' | 'tcp';
 
 /** 接口类型：工具区按它分组，不按工具个数分组 */
-export type ToolGroup = 'serial';
+export type ToolGroup = 'serial' | 'network';
 
 export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
   serial: '串口类',
+  network: '网口类',
 };
 
 /**
@@ -33,7 +34,7 @@ export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
  * 大类少而好认（四种方式并排摆出来反而让人挑花眼），
  * 细节留到全屏界面里去定——那才是这些参数真正起作用的地方。
  */
-export type ToolCategory = 'serial';
+export type ToolCategory = 'serial' | 'tcp';
 
 /** 一个接入大类 */
 export interface ToolCategoryDef {
@@ -56,6 +57,13 @@ export const CATEGORY_DEFS: ToolCategoryDef[] = [
     summary: '接一根线到本机设备：打开一个 COM 口，收它吐出来的字节。',
     hint: '端口 · 波特率 · 数据位 · 校验',
     kinds: ['serial'],
+  },
+  {
+    id: 'tcp',
+    name: '网口接入',
+    summary: '走网络：要么开个端口等设备连进来（JT/T 808 终端就是这样连平台的），要么主动连到设备那边。',
+    hint: '监听 · 连接 · 协议类型',
+    kinds: ['tcp'],
   },
 ];
 
@@ -91,6 +99,8 @@ export interface ToolField {
   defaultValue?: string;
   /** 选项由运行时给出（如本机串口列表） */
   dynamic?: 'serial-ports';
+  /** 占满一整行（地址、路径这类长的字段用它） */
+  wide?: boolean;
 }
 
 /** 一个工具 */
@@ -127,8 +137,24 @@ export interface SerialConfig {
   flowControl: 'none' | 'rtscts';
 }
 
+/**
+ * 网口参数。
+ *
+ * 两种模式，区别只在于「谁先动」：
+ *
+ * - listen（本机开端口，等对端连进来）：JT/T 808 就是这个路子——
+ *   终端是客户端，平台是服务端，终端连上平台的 7612 端口。
+ * - connect（本机主动连出去）：对端是个服务，本机当客户端。
+ */
+export interface TcpConfig {
+  mode: 'listen' | 'connect';
+  /** listen 时是本机绑的地址；connect 时是对端地址 */
+  host: string;
+  port: number;
+}
+
 /** 规范化后的运行参数 */
-export type ChannelConfig = SerialConfig;
+export type ChannelConfig = SerialConfig | TcpConfig;
 
 /** 定界方式：怎么把字节流切成一条条 */
 export type FramingKind = 'delimiter' | 'fixed' | 'length' | 'timeout';
@@ -268,6 +294,36 @@ export interface ProtocolCommand {
 }
 
 /**
+ * 一条能组出来的命令。
+ *
+ * 「解析」是把收到的字节读成人话，「组包」是反过来：
+ * 把人要的东西组装成字节发出去。两者共用一套协议知识，
+ * 所以能组什么、每条要填哪些参数，都由解码器说了算——
+ * 界面照着这份清单渲染表单，不自己猜。
+ */
+export interface ProtocolBuild {
+  /** 命令 id：组包时用它指明要组哪一条 */
+  kind: string;
+  /** 人看的名字，如「平台注册应答」 */
+  name: string;
+  /** 一句话说明这条命令干什么 */
+  desc?: string;
+  /** 要填哪些参数 */
+  fields?: ProtocolBuildField[];
+}
+
+/** 组包命令的一个参数 */
+export interface ProtocolBuildField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  defaultValue?: string;
+  required?: boolean;
+  /** 这个参数怎么理解 */
+  help?: string;
+}
+
+/**
  * 调试模式用的模板。
  *
  * 开通道时**不选协议**就走它：收到什么算什么，原样记下来。
@@ -308,6 +364,18 @@ export const BUILTIN_TEMPLATES: ProtocolTemplate[] = [
     encoding: 'hex',
     decoder: 'tongda-led2',
     defaults: { baudRate: '38400', dataBits: '8', stopBits: '1', parity: 'none', flowControl: 'none' },
+  },
+  {
+    id: 'jt-t808',
+    name: 'JT/T 808（道路运输车辆卫星定位系统）',
+    summary:
+      'JT/T 808-2019：帧标志 7E、消息体属性、序列号、消息 ID、数据长度、异或校验，包内有 7E/7D 要转义。' +
+      '终端注册、心跳、位置等消息读成字段；平台自动回注册应答与心跳应答，也能按命令组包下发。',
+    // 具名解码器自带切帧规则，这里的 framing 只是占位
+    framing: { kind: 'timeout', idleMs: 200 },
+    encoding: 'hex',
+    decoder: 'jt-t808',
+    defaults: { mode: 'listen', host: '0.0.0.0', port: '7612' },
   },
 ];
 
@@ -379,6 +447,16 @@ export interface ChannelSession {
    * 记在会话上，是为了让控制台能说清「这屏数据是谁解的」。
    */
   pluginId?: string;
+  /**
+   * 这条通道能组哪些命令。
+   *
+   * 「解析」是把收到的字节读成人话，「组包」反过来：给人几个参数，
+   * 组装成字节发出去。能组什么、每条要填哪些参数，由解析插件说了算——
+   * 界面照着这份清单渲染表单，不自己猜协议。
+   *
+   * 空 = 这套协议只能读，不能组。
+   */
+  builds?: ProtocolBuild[];
   recordCount: number;
   bytesIn: number;
   bytesOut: number;
@@ -434,6 +512,7 @@ export const TOOL_DEFS: ToolDef[] = [
         type: 'select',
         required: true,
         dynamic: 'serial-ports',
+        wide: true,
         placeholder: 'COM3',
         help: '下拉里是本机当前可用的串口；也可以直接填路径。',
       },
@@ -476,6 +555,44 @@ export const TOOL_DEFS: ToolDef[] = [
           { label: 'RTS+CTS', value: 'rtscts' },
         ],
         defaultValue: 'none',
+      },
+    ],
+  },
+  {
+    id: 'tcp',
+    name: '网口监听',
+    group: 'network',
+    summary: '开一个 TCP 端口等设备连进来，或主动连到对端；收发的字节按协议模板拆成一条条记录。',
+    canSend: true,
+    activityLabel: '在监听',
+    fields: [
+      {
+        key: 'mode',
+        label: '方式',
+        type: 'select',
+        required: true,
+        options: [
+          { label: '监听（等设备连进来）', value: 'listen' },
+          { label: '连接（主动连过去）', value: 'connect' },
+        ],
+        defaultValue: 'listen',
+        help: 'JT/T 808 终端是主动连平台的，所以平台这边选「监听」。',
+      },
+      {
+        key: 'port',
+        label: '端口',
+        type: 'number',
+        required: true,
+        defaultValue: '7612',
+        help: 'JT/T 808 常用 7612。',
+      },
+      {
+        key: 'host',
+        label: '地址',
+        type: 'text',
+        wide: true,
+        defaultValue: '0.0.0.0',
+        help: '监听时是本机绑哪个网卡（0.0.0.0 = 全部）；连接时是对端地址。',
       },
     ],
   },

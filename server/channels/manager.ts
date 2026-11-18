@@ -21,7 +21,7 @@ import { RAW_TEMPLATE } from '../../shared/tools.ts';
 import { normalizeConfig } from './config.ts';
 import { findPlugin, findTemplateById, type PluginEntry } from './plugins/registry.ts';
 import type { ChannelDriver, DriverHandlers } from './driver.ts';
-import { decodeFrame, FrameParser, parseHex, type FrameSource } from './parser.ts';
+import { decodeFrame, FrameParser, parseHex, type EncodeRequest, type FrameSource } from './parser.ts';
 
 /**
  * 驱动工厂：给「开一个通道」这件事换个底。
@@ -35,6 +35,7 @@ export type DriverFactory = (
   handlers: DriverHandlers,
 ) => ChannelDriver;
 import { createSerialDriver } from './serial.ts';
+import { createTcpDriver } from './tcp.ts';
 
 /** 通道给界面推的事件 */
 export type ChannelEvent =
@@ -284,6 +285,28 @@ export class ChannelManager {
     return sent;
   }
 
+  /**
+   * 组一条命令并发出去。
+   *
+   * 「解析」是收到字节读成人话，「组包」反过来：
+   * 人给几个参数，组装成字节发出去。能组什么、参数怎么填，
+   * 由这套协议的解码器说了算（见 NamedDecoder.builds）。
+   */
+  async buildFrame(
+    id: string,
+    request: EncodeRequest,
+    peer?: string,
+  ): Promise<{ frame: Buffer; sent: number }> {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error('通道不存在');
+    const plugin = session.plugin;
+    if (!plugin?.encode) throw new Error('当前协议不支持组包');
+    const frame = plugin.encode(request);
+    if (!frame || !frame.length) throw new Error('组包失败：这条命令没组出字节');
+    const sent = await this.send(id, frame, peer);
+    return { frame, sent };
+  }
+
   /** 把一段字节解成待发送的载荷 */
   static encodePayload(data: string, format: 'text' | 'hex'): Buffer {
     if (format === 'hex') {
@@ -316,6 +339,15 @@ export class ChannelManager {
           },
           handlers,
         );
+      case 'tcp':
+        return createTcpDriver(
+          {
+            mode: config.mode === 'connect' ? 'connect' : 'listen',
+            host: config.host,
+            port: Number(config.port),
+          },
+          handlers,
+        );
     }
   }
 
@@ -338,13 +370,21 @@ export class ChannelManager {
     session: Session,
     input: { direction: 'in' | 'out'; bytes: number; peer?: string; frame: Buffer },
   ): void {
+    const decoded = session.plugin
+      ? session.plugin.decode(input.frame)
+      : decodeFrame(input.frame, session.template);
+
+    // 该回什么由解码器说了算：终端注册要回注册应答，心跳要回心跳应答。
+    // 不回，终端会一直重发——所以这步不是「锦上添花」，是协议的一部分。
+    // 放在记录开关之前：把记录关了，终端注册也得照样回话。
+    if (input.direction === 'in' && decoded.reply) {
+      void this.dispatchReply(session, input.peer, decoded.reply);
+    }
+
     // 记录开关：这个方向不记就不记。
     // 字节计数照旧——「收到多少」和「记下多少」是两回事。
     if (input.direction === 'in' && !session.recordIn) return;
     if (input.direction === 'out' && !session.recordOut) return;
-    const decoded = session.plugin
-      ? session.plugin.decode(input.frame)
-      : decodeFrame(input.frame, session.template);
     const record: ChannelRecord = {
       id: session.nextRecordId++,
       ts: Date.now(),
@@ -362,6 +402,24 @@ export class ChannelManager {
       session.records.splice(0, session.records.length - MAX_RECORDS);
     }
     this.emit(session, { type: 'record', record });
+  }
+
+  /** 把解码器要求的回包发回给来帧的那个对端 */
+  private async dispatchReply(
+    session: Session,
+    peer: string | undefined,
+    reply: { data: Buffer; note?: string },
+  ): Promise<void> {
+    try {
+      await this.send(session.id, reply.data, peer);
+    } catch (err) {
+      // 回包发不出去（比如对端已经断了）不该把通道搞挂：
+      // 记一笔状态，让界面知道「刚才那条没回成」。
+      session.error = `自动应答（${reply.note ?? '应答'}）没发出去：${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      this.emit(session, { type: 'status', session: this.view(session) });
+    }
   }
 
   /** 运行态变了 */
@@ -424,6 +482,8 @@ export class ChannelManager {
       config: session.config,
       templateId: session.template.id,
       pluginId: session.plugin?.id,
+      // 这条通道能组哪些命令：界面照着渲染组包表单
+      builds: session.plugin?.builds,
       recordCount: session.records.length,
       bytesIn: session.bytesIn,
       bytesOut: session.bytesOut,

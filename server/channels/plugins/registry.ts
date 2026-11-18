@@ -12,10 +12,10 @@
  * 用的人不该关心解析是谁写的，但该知道是谁写的。
  */
 import type { PluginSummary } from '../../../shared/plugins.ts';
-import type { ProtocolTemplate } from '../../../shared/tools.ts';
+import type { ProtocolBuild, ProtocolTemplate } from '../../../shared/tools.ts';
 import { BUILTIN_TEMPLATES } from '../../../shared/tools.ts';
 import { BUILTIN_DECODERS } from '../decoders/index.ts';
-import type { DecodedFrame, FrameSource } from '../parser.ts';
+import type { DecodedFrame, EncodeRequest, FrameSource } from '../parser.ts';
 import { listBuiltinDocRefs, seedPluginDoc } from '../../builtinDocs.ts';
 import { seedSpecDoc } from '../specDocs.ts';
 import { loadPlugins, resolvePluginDir } from './loader.ts';
@@ -26,6 +26,16 @@ export interface PluginEntry extends PluginSummary {
   createParser(): FrameSource;
   /** 解一帧 */
   decode(frame: Buffer): DecodedFrame;
+  /**
+   * 组包：把一条命令组装成字节帧。
+   *
+   * 「解析」是把收到的字节读成人话，「组包」反过来。
+   * 能组什么、每条要填哪些参数，都由插件的解码器说了算——
+   * 界面照着 builds 渲染表单，不自己猜协议。
+   */
+  encode?(request: EncodeRequest): Buffer | null;
+  /** 能组哪些命令（给界面渲染表单用） */
+  builds?: ProtocolBuild[];
 }
 
 /** 注册表的整体状态 */
@@ -60,6 +70,8 @@ function builtinPlugins(): PluginEntry[] {
     builtin: true,
     createParser: () => decoder.createParser(),
     decode: (frame: Buffer) => decoder.decode(frame),
+    encode: decoder.encode ? (request: EncodeRequest) => decoder.encode?.(request) ?? null : undefined,
+    builds: decoder.builds,
   }));
 }
 
@@ -111,6 +123,8 @@ function mergeExternal(
       source: manifest.id,
       createParser: () => loaded.createParser(),
       decode: (frame: Buffer) => loaded.decode(frame),
+      encode: loaded.encode ? (request: EncodeRequest) => loaded.encode?.(request) ?? null : undefined,
+      builds: loaded.builds,
     };
     plugins.push(entry);
     pluginIds.add(manifest.id);

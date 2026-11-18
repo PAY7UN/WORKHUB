@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Cable, ChevronRight, Loader2, Square } from 'lucide-react';
+import { Cable, ChevronRight, Loader2, Network, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, type ToolsCatalog } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
@@ -8,9 +8,10 @@ import { Button } from '@/components/ui/button';
 import type { ChannelSession, ToolCategory } from '../../../../shared/tools';
 import type { SkillSummary } from '../../../../shared/skills';
 
-/** 大类的图标：串口是接一根线 */
+/** 大类的图标：串口是接一根线，网口是走网络 */
 const CATEGORY_ICONS: Record<ToolCategory, typeof Cable> = {
   serial: Cable,
+  tcp: Network,
 };
 
 /** 跑了多久 */
@@ -209,7 +210,7 @@ export function ToolsPage() {
                   <span>· 已运行 {duration(session.startedAt)}</span>
                 </div>
                 <div className="mt-auto flex items-center gap-2 pt-1">
-                  <Button size="sm" onClick={() => navigate(`/tools/serial?session=${session.id}`)}>
+                  <Button size="sm" onClick={() => navigate(`/tools/${session.tool}?session=${session.id}`)}>
                     打开控制台
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => void handleStop(session)}>
@@ -239,7 +240,7 @@ export function ToolsPage() {
                     size="sm"
                     variant="ghost"
                     className="ml-auto h-7"
-                    onClick={() => navigate(`/tools/serial?session=${session.id}`)}
+                    onClick={() => navigate(`/tools/${session.tool}?session=${session.id}`)}
                   >
                     看记录
                   </Button>

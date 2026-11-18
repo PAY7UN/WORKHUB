@@ -42,7 +42,7 @@ import { listSerialPorts, serialAvailable } from './serial.ts';
 const HEARTBEAT_MS = 25_000;
 
 /** 合法工具种类 */
-const TOOL_KINDS: ToolKind[] = ['serial'];
+const TOOL_KINDS: ToolKind[] = ['serial', 'tcp'];
 
 /** 把异常翻译成人话 */
 function fail(res: Response, err: unknown, fallback = '操作失败'): void {
@@ -392,6 +392,46 @@ export function createToolsRouter(): Router {
       res.json({ sent });
     } catch (err) {
       fail(res, err, '发送失败');
+    }
+  });
+
+  /**
+   * 组一条命令并发出去。
+   *
+   * 「解析」是把收到的字节读成人话，「组包」反过来：
+   * 人填几个参数，服务按这套协议的规则组装成字节帧发出去。
+   *
+   * 能组什么、参数怎么填，由这条通道用的解析插件说了算——
+   * 界面照着 session.builds 渲染表单，这里只负责照着组、照着发。
+   *
+   * peer 指定发给哪个对端：JT/T 808 一个终端一条连接，
+   * 不指定就发给当前所有连着的对端。
+   */
+  router.post('/sessions/:id/build', async (req, res) => {
+    const id = String(req.params.id);
+    const body = req.body ?? {};
+    const kind = String(body.kind ?? '').trim();
+    if (!kind) {
+      res.status(400).json({ error: '要组哪条命令没说清楚' });
+      return;
+    }
+    const peer = typeof body.peer === 'string' && body.peer ? body.peer : undefined;
+    const args: Record<string, string> = {};
+    const rawArgs = (body.args ?? {}) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(rawArgs)) {
+      args[key] = typeof value === 'string' ? value : value == null ? '' : String(value);
+    }
+    try {
+      const result = await channelManager.buildFrame(id, { kind, args }, peer);
+      res.json({
+        sent: result.sent,
+        frame: result.frame.toString('hex').toUpperCase(),
+        bytes: result.frame.length,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // 组不出来是「命令或参数不对」，不是服务器炸了：这类错该是 400
+      res.status(400).json({ error: message || '组包失败' });
     }
   });
 

@@ -1,17 +1,21 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactElement } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import type { ToolsCatalog } from '@/lib/api';
-import type { SerialPortInfo, ToolDef } from '../../../../shared/tools';
+import type { SerialPortInfo, ToolDef, ToolField } from '../../../../shared/tools';
 import type { PluginSummary } from '../../../../shared/plugins';
 
 /** 原生 select 的统一样式 */
 const SELECT_CLASS =
   'h-8 w-full rounded-md border border-border/80 bg-background px-2 text-[12px] outline-none focus:border-indigo-500 focus:ring-2 focus:ring-ring/50';
 
+/** 原生 input 的统一样式 */
+const INPUT_CLASS =
+  'h-8 w-full rounded-md border border-border/80 bg-background px-2 text-[12px] outline-none focus:border-indigo-500 focus:ring-2 focus:ring-ring/50';
+
 export interface AccessConfigPanelProps {
-  /** 接入方式（串口监听） */
+  /** 接入方式（串口监听、网口监听） */
   tool: ToolDef;
   /** 工具目录 */
   catalog: ToolsCatalog;
@@ -43,12 +47,11 @@ export interface AccessConfigPanelProps {
 }
 
 /**
- * 左栏「基本信息」：接哪儿、跑多快、按哪套协议读。
+ * 左栏「基本信息」：接哪儿、按哪套协议读。
  *
- * 只留三件事，一件一段：
- * 1. **端口**：线插在哪个口上（扫不到就手填路径）。
- * 2. **波特率 / 数据位 / 停止位 / 校验 / 流控**：这根线跑多快、怎么说话。
- * 3. **协议类型**：这套字节长什么样——选它就是选读懂它的那套解析插件。
+ * 字段**不是写死的**：工具定义里有什么就摆什么——
+ * 串口是端口与线参数，网口是方式、地址与端口。
+ * 加一种新的接入方式，界面这边不用动。
  *
  * 参数跟着协议走：选了带推荐的协议（LED2 要 38400/8N1），
  * 没手动改过的字段自动跟上；人改过的不动——
@@ -91,29 +94,17 @@ export function AccessConfigPanel({
   }, [catalog.plugins, catalog.protocols]);
 
   const plugin = (catalog.plugins ?? []).find((p) => p.id === pluginId);
-  const serialField = tool.fields.find((f) => f.dynamic === 'serial-ports');
-  /** 本机一个口都没扫到 → 只能手填 */
-  const serialByHand = !serialField || serialPorts.length === 0;
+  /** 这一栏是不是串口：串口才有「本机口列表」与「串口不可用」这回事 */
+  const isSerial = tool.fields.some((f) => f.dynamic === 'serial-ports');
 
-  /** 两个一组的参数（截图里也是这么排的：波特率/数据位一行，停止位/校验一行） */
-  const field = (key: string): ToolDef['fields'][number] | undefined =>
-    tool.fields.find((f) => f.key === key);
-
-  return (
-    <div className="flex flex-col gap-3">
-      {/* 串口不可用：把原因摆出来，别让人对着「启动」按钮猜 */}
-      {!serialAvailable ? (
-        <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10px] leading-relaxed text-amber-700">
-          <span className="shrink-0">串口不可用：</span>
-          <span>{serialReason || '这台机器上读不到串口'}</span>
-        </div>
-      ) : null}
-
-      {/* 端口 */}
-      <section className="flex flex-col gap-1.5">
+  /** 串口字段：扫到口就用下拉，扫不到就手填路径 */
+  const renderSerialPort = (field: ToolField): ReactElement => {
+    const byHand = serialPorts.length === 0;
+    return (
+      <section key={field.key} className="col-span-2 flex flex-col gap-1.5">
         <div className="flex items-center gap-2">
           <Label className="text-[11px] text-muted-foreground" htmlFor="port-pick">
-            端口 <span className="text-rose-500">*</span>
+            {field.label} <span className="text-rose-500">*</span>
           </Label>
           <button
             type="button"
@@ -124,19 +115,19 @@ export function AccessConfigPanel({
             <RefreshCw className={`h-3 w-3 ${scanning ? 'animate-spin' : ''}`} />
           </button>
         </div>
-        {serialByHand ? (
+        {byHand ? (
           <input
             id="port-pick"
-            value={values.port ?? ''}
-            onChange={(e) => onChange('port', e.target.value)}
-            placeholder="COM3"
-            className={SELECT_CLASS}
+            value={values[field.key] ?? ''}
+            onChange={(e) => onChange(field.key, e.target.value)}
+            placeholder={field.placeholder ?? 'COM3'}
+            className={INPUT_CLASS}
           />
         ) : (
           <select
             id="port-pick"
-            value={values.port ?? ''}
-            onChange={(e) => onChange('port', e.target.value)}
+            value={values[field.key] ?? ''}
+            onChange={(e) => onChange(field.key, e.target.value)}
             className={SELECT_CLASS}
           >
             <option value="">选一个串口</option>
@@ -148,77 +139,66 @@ export function AccessConfigPanel({
             ))}
           </select>
         )}
+        {field.help ? (
+          <p className="text-[10px] leading-relaxed text-muted-foreground/80">{field.help}</p>
+        ) : null}
       </section>
+    );
+  };
 
-      {/* 波特率 / 数据位 */}
+  /** 一个普通字段：下拉、数字或文本 */
+  const renderField = (field: ToolField): ReactElement => (
+    <label
+      key={field.key}
+      className={`flex flex-col gap-1 ${field.wide ? 'col-span-2' : ''}`}
+    >
+      <span className="text-[11px] text-muted-foreground">
+        {field.label}
+        {field.required ? <span className="text-rose-500"> *</span> : null}
+      </span>
+      {field.type === 'select' ? (
+        <select
+          value={values[field.key] ?? field.defaultValue ?? ''}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          className={SELECT_CLASS}
+        >
+          {(field.options ?? []).map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type={field.type === 'number' ? 'number' : 'text'}
+          value={values[field.key] ?? field.defaultValue ?? ''}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          placeholder={field.placeholder}
+          className={INPUT_CLASS}
+        />
+      )}
+      {field.help ? (
+        <span className="text-[10px] leading-relaxed text-muted-foreground/80">{field.help}</span>
+      ) : null}
+    </label>
+  );
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* 串口不可用：把原因摆出来，别让人对着「启动」按钮猜 */}
+      {isSerial && !serialAvailable ? (
+        <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10px] leading-relaxed text-amber-700">
+          <span className="shrink-0">串口不可用：</span>
+          <span>{serialReason || '这台机器上读不到串口'}</span>
+        </div>
+      ) : null}
+
+      {/* 接入参数：字段由工具定义给出，界面照着摆 */}
       <section className="grid grid-cols-2 gap-2">
-        {(['baudRate', 'dataBits'] as const).map((key) => {
-          const f = field(key);
-          if (!f) return null;
-          return (
-            <label key={key} className="flex flex-col gap-1">
-              <span className="text-[11px] text-muted-foreground">{f.label}</span>
-              <select
-                value={values[key] ?? f.defaultValue ?? ''}
-                onChange={(e) => onChange(key, e.target.value)}
-                className={SELECT_CLASS}
-              >
-                {(f.options ?? []).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          );
-        })}
+        {tool.fields.map((field) =>
+          field.dynamic === 'serial-ports' ? renderSerialPort(field) : renderField(field),
+        )}
       </section>
-
-      {/* 停止位 / 校验 */}
-      <section className="grid grid-cols-2 gap-2">
-        {(['stopBits', 'parity'] as const).map((key) => {
-          const f = field(key);
-          if (!f) return null;
-          return (
-            <label key={key} className="flex flex-col gap-1">
-              <span className="text-[11px] text-muted-foreground">{f.label}</span>
-              <select
-                value={values[key] ?? f.defaultValue ?? ''}
-                onChange={(e) => onChange(key, e.target.value)}
-                className={SELECT_CLASS}
-              >
-                {(f.options ?? []).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          );
-        })}
-      </section>
-
-      {/* 流控 */}
-      {(() => {
-        const f = field('flowControl');
-        if (!f) return null;
-        return (
-          <section className="flex flex-col gap-1.5">
-            <Label className="text-[11px] text-muted-foreground">{f.label}</Label>
-            <select
-              value={values.flowControl ?? f.defaultValue ?? ''}
-              onChange={(e) => onChange('flowControl', e.target.value)}
-              className={SELECT_CLASS}
-            >
-              {(f.options ?? []).map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </section>
-        );
-      })()}
 
       {/* 协议类型：选它就是选解析插件 */}
       <section className="flex flex-col gap-1.5 border-t border-border/60 pt-3">

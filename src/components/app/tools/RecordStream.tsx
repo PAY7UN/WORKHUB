@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Copy, Download, Eraser, Radio, Send, Upload, Wand2 } from 'lucide-react';
+import { Copy, Download, Eraser, Package, Radio, Send, Upload, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { saveBlob } from '@/utils';
@@ -16,6 +16,10 @@ export interface RecordStreamProps {
   onSend: () => void;
   /** 打开解 HEX 面板 */
   onDecodeHex: () => void;
+  /** 这套协议能不能组包（能才摆「组包」按钮） */
+  canBuild?: boolean;
+  /** 打开组包面板 */
+  onBuild?: () => void;
   /** 导入别处抓来的记录 */
   onImport: (records: ChannelRecord[]) => void;
   /** 外部给的类名（排版用） */
@@ -141,6 +145,8 @@ export function RecordStream({
   onClear,
   onSend,
   onDecodeHex,
+  canBuild,
+  onBuild,
   onImport,
   className,
 }: RecordStreamProps) {
@@ -155,7 +161,7 @@ export function RecordStream({
 
   /** 导出用的默认文件名 */
   const fileName = useMemo(
-    () => safeFileName(`串口记录-${new Date().toISOString().slice(0, 10)}.csv`),
+    () => safeFileName(`收发记录-${new Date().toISOString().slice(0, 10)}.csv`),
     [],
   );
 
@@ -248,6 +254,18 @@ export function RecordStream({
             <Send className="h-3.5 w-3.5" />
             发送
           </Button>
+          {canBuild ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px]"
+              onClick={onBuild}
+              title="按协议规则组装一帧发出去"
+            >
+              <Package className="h-3.5 w-3.5" />
+              组包
+            </Button>
+          ) : null}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={onDecodeHex}>
             <Wand2 className="h-3.5 w-3.5" />
             解 HEX
@@ -271,7 +289,7 @@ export function RecordStream({
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center">
             <p className="text-[12px] text-muted-foreground">还没有数据。</p>
             <p className="text-[11px] leading-relaxed text-muted-foreground/80">
-              左边选好端口与协议类型，点右上角「启动」。
+              左边选好接入方式与协议类型，点右上角「启动」。
               收到的字节会实时按协议解析，一条条摊在这儿。
             </p>
           </div>
