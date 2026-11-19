@@ -67,8 +67,17 @@ export const JT808_MESSAGES: Record<number, { name: string; dir: 'up' | 'down'; 
   0x8003: { name: '平台注销应答', dir: 'down' },
   0x8004: { name: '平台通用应答', dir: 'down' },
   0x8005: { name: '平台补注册应答', dir: 'down' },
+  0x8100: { name: '车辆控制命令', dir: 'down' },
   0x8101: { name: '文本信息下发', dir: 'down' },
+  0x8102: { name: '查询车载终端设备信息', dir: 'down' },
   0x8103: { name: '实时位置查询', dir: 'down' },
+  0x8104: { name: '远程设置参数', dir: 'down' },
+  0x8105: { name: '终端注册状态查询', dir: 'down' },
+  0x8106: { name: '查询卫星定位状态', dir: 'down' },
+  0x8107: { name: '查询导航信息', dir: 'down' },
+  0x8108: { name: '请求终端漫游', dir: 'down' },
+  0x8109: { name: '请求人工监听车辆', dir: 'down' },
+  0x8110: { name: '查询车辆信号灯', dir: 'down' },
 };
 
 /** 消息 ID → 该消息正文的字段含义（给协议详情用） */
@@ -123,17 +132,39 @@ export const JT808_COMMAND_FIELDS: Record<number, Array<{ name: string; desc: st
     { name: '鉴权码', desc: '16 字节，2019 版可选' },
   ],
   0x8002: [{ name: '（无正文）', desc: '心跳应答没有正文' }],
+  0x8003: [{ name: '（无正文）', desc: '注销应答没有正文' }],
   0x8004: [
     { name: '应答序列号', desc: '2 字节' },
     { name: '应答消息 ID', desc: '2 字节，被应答的是哪条消息' },
     { name: '结果', desc: '1 字节，0 成功 1 失败' },
     { name: '失败原因', desc: '1 字节，仅失败时存在' },
   ],
+  0x8005: [
+    { name: '应答序列号', desc: '2 字节，终端补注册那一帧的序列号' },
+    { name: '应答标志', desc: '1 字节，0 成功 1 失败' },
+    { name: '失败原因', desc: '1 字节，仅失败时存在' },
+    { name: '鉴权码', desc: '16 字节，2019 版可选' },
+  ],
+  0x8100: [
+    { name: '指令字', desc: '1 字节，指令编号' },
+    { name: '指令参数', desc: '变长，依指令字而定' },
+  ],
   0x8101: [
     { name: '标志', desc: '1 字节' },
     { name: '文本信息', desc: '变长，GBK 编码' },
   ],
+  0x8102: [{ name: '（无正文）', desc: '查询命令没有正文' }],
   0x8103: [{ name: '（无正文）', desc: '查询命令没有正文' }],
+  0x8104: [
+    { name: '参数标识', desc: '4 字节，参数 ID' },
+    { name: '数据体', desc: '变长，参数的值，长度依参数而定' },
+  ],
+  0x8105: [{ name: '（无正文）', desc: '查询命令没有正文' }],
+  0x8106: [{ name: '（无正文）', desc: '查询命令没有正文' }],
+  0x8107: [{ name: '（无正文）', desc: '查询命令没有正文' }],
+  0x8108: [{ name: '（无正文）', desc: '查询命令没有正文' }],
+  0x8109: [{ name: '（无正文）', desc: '查询命令没有正文' }],
+  0x8110: [{ name: '（无正文）', desc: '查询命令没有正文' }],
 };
 
 /* ------------------------------ 字节与文本 ------------------------------ */
@@ -583,6 +614,60 @@ function decodeText(body: Buffer): DecodedField[] {
   return fields;
 }
 
+/** 表单里的数字：十进制或 0x 十六进制 */
+function numArg(args: Record<string, string>, key: string, fallback: number): number {
+  const raw = (args[key] ?? '').trim();
+  if (!raw) return fallback;
+  const value = raw.toLowerCase().startsWith('0x')
+    ? Number.parseInt(raw.slice(2), 16)
+    : Number.parseInt(raw, 10);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+/** 表单里的十六进制字节：留空就是没有 */
+function hexArg(args: Record<string, string>, key: string): Buffer {
+  const raw = (args[key] ?? '').trim();
+  return raw ? parseHex(raw) : Buffer.alloc(0);
+}
+
+/**
+ * 没正文的命令：应答与查询，正文空着。
+ *
+ * 一堆查询命令长得一样——发出去的就只是那个消息 ID，
+ * 所以归到一张表里，不用一条条 switch。
+ */
+const EMPTY_BODY_IDS: Record<string, number> = {
+  'platform.heartbeat.reply': 0x8002,
+  'platform.logout.reply': 0x8003,
+  'platform.device.query': 0x8102,
+  'platform.location.query': 0x8103,
+  'platform.register.status.query': 0x8105,
+  'platform.gps.status.query': 0x8106,
+  'platform.navigation.query': 0x8107,
+  'platform.roaming.request': 0x8108,
+  'platform.monitor.request': 0x8109,
+  'platform.signal.query': 0x8110,
+};
+
+/** 注册应答与补注册应答：正文一样，只有消息 ID 不同 */
+function buildRegisterReply(args: Record<string, string>, messageId: number): Buffer {
+  const seq = numArg(args, 'seq', 0) & 0xffff;
+  const failed = numArg(args, 'result', 0) !== 0;
+  const body = Buffer.alloc(failed ? 4 : 3);
+  body.writeUInt16BE(seq, 0);
+  body[2] = failed ? 1 : 0;
+  if (failed) body[3] = numArg(args, 'reason', 0) & 0xff;
+  // 鉴权码（2019 版）：填了就带 16 字节，不填说明平台不搞加密
+  const auth = (args.authKey ?? '').trim();
+  if (auth) {
+    const key = parseHex(auth);
+    const full = Buffer.alloc(16);
+    key.copy(full, 0, 0, Math.min(16, key.length));
+    return buildJt808Frame({ messageId, body: Buffer.concat([body, full]), seq });
+  }
+  return buildJt808Frame({ messageId, body, seq });
+}
+
 /**
  * 组一条平台要发的命令。
  *
@@ -590,43 +675,30 @@ function decodeText(body: Buffer): DecodedField[] {
  */
 export function buildJt808Command(request: EncodeRequest): Buffer {
   const args = request.args ?? {};
-  const num = (key: string, fallback: number): number => {
-    const raw = (args[key] ?? '').trim();
-    if (!raw) return fallback;
-    const value = raw.toLowerCase().startsWith('0x')
-      ? Number.parseInt(raw.slice(2), 16)
-      : Number.parseInt(raw, 10);
-    return Number.isFinite(value) ? value : fallback;
-  };
+
+  // 没正文的那些：查表就知道发哪条消息
+  const empty = EMPTY_BODY_IDS[request.kind];
+  if (empty !== undefined) {
+    return buildJt808Frame({
+      messageId: empty,
+      body: Buffer.alloc(0),
+      seq: numArg(args, 'seq', 0) & 0xffff,
+    });
+  }
 
   switch (request.kind) {
-    case 'platform.register.reply': {
-      const seq = num('seq', 0) & 0xffff;
-      const failed = num('result', 0) !== 0;
-      const body = Buffer.alloc(failed ? 4 : 3);
-      body.writeUInt16BE(seq, 0);
-      body[2] = failed ? 1 : 0;
-      if (failed) body[3] = num('reason', 0) & 0xff;
-      // 鉴权码（2019 版）：填了就带 16 字节，不填说明平台不搞加密
-      const auth = (args.authKey ?? '').trim();
-      if (auth) {
-        const key = parseHex(auth);
-        const full = Buffer.alloc(16);
-        key.copy(full, 0, 0, Math.min(16, key.length));
-        return buildJt808Frame({ messageId: 0x8001, body: Buffer.concat([body, full]), seq });
-      }
-      return buildJt808Frame({ messageId: 0x8001, body, seq });
-    }
-    case 'platform.heartbeat.reply':
-      return buildJt808Frame({ messageId: 0x8002, body: Buffer.alloc(0), seq: num('seq', 0) & 0xffff });
+    case 'platform.register.reply':
+      return buildRegisterReply(args, 0x8001);
+    case 'platform.reregister.reply':
+      return buildRegisterReply(args, 0x8005);
     case 'platform.general.reply': {
-      const failed = num('result', 0) !== 0;
+      const failed = numArg(args, 'result', 0) !== 0;
       const body = Buffer.alloc(failed ? 6 : 5);
-      body.writeUInt16BE(num('seq', 0) & 0xffff, 0);
-      body.writeUInt16BE(num('messageId', 0x0200) & 0xffff, 2);
+      body.writeUInt16BE(numArg(args, 'seq', 0) & 0xffff, 0);
+      body.writeUInt16BE(numArg(args, 'messageId', 0x0200) & 0xffff, 2);
       body[4] = failed ? 1 : 0;
-      if (failed) body[5] = num('reason', 0) & 0xff;
-      return buildJt808Frame({ messageId: 0x8004, body, seq: num('seq', 0) & 0xffff });
+      if (failed) body[5] = numArg(args, 'reason', 0) & 0xff;
+      return buildJt808Frame({ messageId: 0x8004, body, seq: numArg(args, 'seq', 0) & 0xffff });
     }
     case 'platform.text': {
       const raw = (args.text ?? '').trim();
@@ -634,20 +706,45 @@ export function buildJt808Command(request: EncodeRequest): Buffer {
       const payload = raw.toLowerCase().startsWith('hex:')
         ? parseHex(raw.slice(4))
         : Buffer.from(raw, 'utf8');
-      const body = Buffer.concat([Buffer.from([num('flag', 0) & 0xff]), payload]);
-      return buildJt808Frame({ messageId: 0x8101, body, seq: num('seq', 0) & 0xffff });
+      const body = Buffer.concat([Buffer.from([numArg(args, 'flag', 0) & 0xff]), payload]);
+      return buildJt808Frame({ messageId: 0x8101, body, seq: numArg(args, 'seq', 0) & 0xffff });
     }
-    case 'platform.location.query':
-      return buildJt808Frame({ messageId: 0x8103, body: Buffer.alloc(0), seq: num('seq', 0) & 0xffff });
+    case 'platform.vehicle.control': {
+      // 指令字 + 指令参数：参数长什么样由指令字说了算，给十六进制最省事
+      const body = Buffer.concat([Buffer.from([numArg(args, 'cmd', 0) & 0xff]), hexArg(args, 'params')]);
+      return buildJt808Frame({ messageId: 0x8100, body, seq: numArg(args, 'seq', 0) & 0xffff });
+    }
+    case 'platform.remote.set': {
+      // 参数标识（4 字节）+ 数据体
+      const id = Buffer.alloc(4);
+      id.writeUInt32BE(numArg(args, 'paramId', 0) >>> 0, 0);
+      const body = Buffer.concat([id, hexArg(args, 'value')]);
+      return buildJt808Frame({ messageId: 0x8104, body, seq: numArg(args, 'seq', 0) & 0xffff });
+    }
+    case 'platform.custom': {
+      // 上面没列的消息：自己给消息 ID 与正文
+      const messageId = numArg(args, 'messageId', 0) >>> 0;
+      return buildJt808Frame({
+        messageId,
+        body: hexArg(args, 'body'),
+        seq: numArg(args, 'seq', 0) & 0xffff,
+      });
+    }
     default:
       throw new Error(`不会组这条命令：${request.kind}`);
   }
 }
 
-/** 能组哪些命令（界面照着渲染表单） */
+/**
+ * 能组哪些命令（界面照着渲染表单）。
+ *
+ * 每条都带 **消息 ID**（code）：组包时人挑的是「发哪一条协议消息」，
+ * 那个 ID 得摆在名字旁边——不然挑了「文本信息下发」也不知道发出去的是 0x8101。
+ */
 export const JT808_BUILDS: ProtocolBuild[] = [
   {
     kind: 'platform.register.reply',
+    code: '0x8001',
     name: '平台注册应答',
     desc: '终端注册（0x0001）的回包。应答序列号要跟终端那一帧对上，终端认了这个才不发注册。',
     fields: [
@@ -658,13 +755,34 @@ export const JT808_BUILDS: ProtocolBuild[] = [
     ],
   },
   {
+    kind: 'platform.reregister.reply',
+    code: '0x8005',
+    name: '平台补注册应答',
+    desc: '终端补注册（0x0005）的回包，正文与注册应答一样。',
+    fields: [
+      { key: 'seq', label: '应答序列号', required: true, defaultValue: '1', help: '要应答的那一帧的序列号' },
+      { key: 'result', label: '应答标志', defaultValue: '0', help: '0 = 成功，1 = 失败' },
+      { key: 'reason', label: '失败原因', placeholder: '失败时才填' },
+      { key: 'authKey', label: '鉴权码', placeholder: '十六进制，16 字节', help: '2019 版可选；留空表示不加密' },
+    ],
+  },
+  {
+    kind: 'platform.logout.reply',
+    code: '0x8003',
+    name: '平台注销应答',
+    desc: '终端注销（0x0003）的回包，正文为空。',
+    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
     kind: 'platform.heartbeat.reply',
+    code: '0x8002',
     name: '平台心跳应答',
     desc: '终端心跳（0x0002）的回包，正文为空。终端收不到心跳应答会以为平台挂了。',
     fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
   },
   {
     kind: 'platform.general.reply',
+    code: '0x8004',
     name: '平台通用应答',
     desc: '应答终端发来的某条消息，比如它报了一次位置。',
     fields: [
@@ -676,6 +794,7 @@ export const JT808_BUILDS: ProtocolBuild[] = [
   },
   {
     kind: 'platform.text',
+    code: '0x8101',
     name: '文本信息下发',
     desc: '给终端发一段文字。',
     fields: [
@@ -684,10 +803,91 @@ export const JT808_BUILDS: ProtocolBuild[] = [
     ],
   },
   {
+    kind: 'platform.vehicle.control',
+    code: '0x8100',
+    name: '车辆控制命令',
+    desc: '给车下发控制指令。正文是「指令字 + 指令参数」，参数长什么样由指令字说了算。',
+    fields: [
+      { key: 'cmd', label: '指令字', required: true, defaultValue: '0', help: '1 字节，十进制或 0x 开头' },
+      { key: 'params', label: '指令参数', placeholder: '十六进制，可留空', help: '依指令字而定；留空表示无参数' },
+    ],
+  },
+  {
+    kind: 'platform.remote.set',
+    code: '0x8104',
+    name: '远程设置参数',
+    desc: '改终端上的一个参数：参数标识 + 参数值。',
+    fields: [
+      { key: 'paramId', label: '参数标识', required: true, defaultValue: '0x0000', help: '4 字节，如 0x0050' },
+      { key: 'value', label: '参数值', placeholder: '十六进制', help: '按参数定义的长度填，如 0x01' },
+    ],
+  },
+  {
     kind: 'platform.location.query',
+    code: '0x8103',
     name: '实时位置查询',
     desc: '让终端立刻报一次位置，正文为空。',
     fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
+    kind: 'platform.device.query',
+    code: '0x8102',
+    name: '查询车载终端设备信息',
+    desc: '让终端报一次自己的设备信息，正文为空。',
+    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
+    kind: 'platform.register.status.query',
+    code: '0x8105',
+    name: '终端注册状态查询',
+    desc: '问终端注册上没有，正文为空。',
+    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
+    kind: 'platform.gps.status.query',
+    code: '0x8106',
+    name: '查询卫星定位状态',
+    desc: '问终端现在搜到几颗星，正文为空。',
+    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
+    kind: 'platform.navigation.query',
+    code: '0x8107',
+    name: '查询导航信息',
+    desc: '问终端当前的导航信息，正文为空。',
+    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
+    kind: 'platform.roaming.request',
+    code: '0x8108',
+    name: '请求终端漫游',
+    desc: '要终端跨区漫游，正文为空。',
+    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
+    kind: 'platform.monitor.request',
+    code: '0x8109',
+    name: '请求人工监听车辆',
+    desc: '要平台人工监听这辆车，正文为空。',
+    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
+    kind: 'platform.signal.query',
+    code: '0x8110',
+    name: '查询车辆信号灯',
+    desc: '问车上的信号灯状态，正文为空。',
+    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+  },
+  {
+    kind: 'platform.custom',
+    code: '自定义',
+    name: '自定义消息',
+    desc: '上面没有的消息：自己给消息 ID 与正文（十六进制）。',
+    fields: [
+      { key: 'messageId', label: '消息 ID', required: true, defaultValue: '0x8101', help: '4 字节，如 0x8101' },
+      { key: 'seq', label: '序列号', defaultValue: '1' },
+      { key: 'body', label: '消息体', placeholder: '十六进制，可留空', help: '正文原始字节，十六进制' },
+    ],
   },
 ];
 

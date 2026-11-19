@@ -1,6 +1,7 @@
 import { useMemo, type ReactElement } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { PackageCheck, RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import type { ToolsCatalog } from '@/lib/api';
 import type { SerialPortInfo, ToolDef, ToolField } from '../../../../shared/tools';
@@ -41,6 +42,12 @@ export interface AccessConfigPanelProps {
   onPluginChange: (id: string) => void;
   /** 去看全部支持的协议 */
   onBrowseProtocols: () => void;
+  /** 这条通道能组包吗（开着通道、且这套协议能组） */
+  canBuild: boolean;
+  /** 为什么不能组——说清楚，别让人对着灰按钮猜 */
+  buildHint: string;
+  /** 打开组包面板 */
+  onOpenBuild: () => void;
   /** 这台机器的串口能不能用（不能就把原因摆出来） */
   serialAvailable: boolean;
   /** 不能用时的原因 */
@@ -69,6 +76,9 @@ export function AccessConfigPanel({
   pluginId,
   onPluginChange,
   onBrowseProtocols,
+  canBuild,
+  buildHint,
+  onOpenBuild,
   serialAvailable,
   serialReason,
 }: AccessConfigPanelProps) {
@@ -273,6 +283,23 @@ export function AccessConfigPanel({
             {tool.name}暂时还没有专用的解析插件——只能先看着原始字节。
           </p>
         ) : null}
+      </section>
+
+      {/* 组包下发：选完协议就能在这儿组一条发出去。
+          以前这个入口只在右下角记录区的工具栏里，选完协议得自己找过去——
+          选协议、填字段、发送，本该是一气呵成的一条路。 */}
+      <section className="flex flex-col gap-1.5 border-t border-border/60 pt-3">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 w-full text-[12px]"
+          onClick={onOpenBuild}
+          disabled={!canBuild}
+        >
+          <PackageCheck className="h-3.5 w-3.5" />
+          组包下发
+        </Button>
+        <p className="text-[10px] leading-relaxed text-muted-foreground/80">{buildHint}</p>
       </section>
     </div>
   );

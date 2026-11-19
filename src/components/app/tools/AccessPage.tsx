@@ -290,11 +290,11 @@ export function AccessPage() {
 
   /** 发一帧出去 */
   const handleSend = useCallback(
-    async (data: string, format: 'text' | 'hex') => {
+    async (data: string, format: 'text' | 'hex', peer?: string) => {
       if (!session) return;
       setSending(true);
       try {
-        await api.tools.send(session.id, data, format);
+        await api.tools.send(session.id, data, format, peer);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err));
       } finally {
@@ -464,6 +464,15 @@ export function AccessPage() {
               pluginId={pluginId}
               onPluginChange={handlePickParser}
               onBrowseProtocols={() => navigate('/tools/protocols')}
+              canBuild={builds.length > 0}
+              buildHint={
+                !running
+                  ? '先把通道开了，才能组包发出去。'
+                  : builds.length > 0
+                    ? '按上面这套协议组一条消息发出去。'
+                    : '这套协议只能读、不能组——换个解析插件试试。'
+              }
+              onOpenBuild={() => setBuildOpen(true)}
               serialAvailable={catalog?.serial.available ?? false}
               serialReason={catalog?.serial.reason ?? ''}
             />
@@ -492,7 +501,8 @@ export function AccessPage() {
         onOpenChange={setSendOpen}
         running={running}
         sending={sending}
-        onSend={(data, format) => void handleSend(data, format)}
+        peers={peers}
+        onSend={(data, format, peer) => void handleSend(data, format, peer)}
       />
       <HexDecodeDialog open={hexOpen} onOpenChange={setHexOpen} pluginId={pluginId} />
       <BuildDialog

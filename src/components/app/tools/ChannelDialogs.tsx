@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2, Play, Send } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
@@ -14,6 +14,10 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import type { DecodedField } from '../../../../shared/tools';
 
+/** 原生控件的统一样式 */
+const CONTROL_CLASS =
+  'h-8 w-full rounded-md border border-border/80 bg-background px-2 text-[12px] outline-none focus:border-indigo-500 focus:ring-2 focus:ring-ring/50';
+
 export interface SendDialogProps {
   /** 开着吗 */
   open: boolean;
@@ -22,18 +26,37 @@ export interface SendDialogProps {
   running: boolean;
   /** 发送中 */
   sending: boolean;
+  /** 连上来的对端：网口上一个连接就是一个终端 */
+  peers?: string[];
   /** 发一帧出去 */
-  onSend: (data: string, format: 'text' | 'hex') => void;
+  onSend: (data: string, format: 'text' | 'hex', peer?: string) => void;
 }
 
 /**
  * 发送：往通道里写一帧。
  *
  * 十六进制与文本两种：设备要字节就给字节，要人话就给文本。
+ *
+ * 网口上连着好几个终端时得说清发给谁——发错终端比发不出去更麻烦。
+ * 默认「全部对端」，要单发就挑一个。
  */
-export function SendDialog({ open, onOpenChange, running, sending, onSend }: SendDialogProps) {
+export function SendDialog({
+  open,
+  onOpenChange,
+  running,
+  sending,
+  peers = [],
+  onSend,
+}: SendDialogProps) {
   const [format, setFormat] = useState<'hex' | 'text'>('hex');
   const [payload, setPayload] = useState('');
+  /** 发给哪个对端：空 = 全部 */
+  const [peer, setPeer] = useState('');
+
+  // 对端走了就别再指着它发
+  useEffect(() => {
+    if (peer && !peers.includes(peer)) setPeer('');
+  }, [peers, peer]);
 
   const send = (): void => {
     const text = payload.trim();
@@ -41,7 +64,7 @@ export function SendDialog({ open, onOpenChange, running, sending, onSend }: Sen
       toast.error('要发什么还没填');
       return;
     }
-    onSend(text, format);
+    onSend(text, format, peer || undefined);
   };
 
   return (
@@ -82,6 +105,24 @@ export function SendDialog({ open, onOpenChange, running, sending, onSend }: Sen
             placeholder={format === 'hex' ? 'BB02…' : '要发出去的内容'}
             className="min-h-[7rem] resize-none font-mono text-[11px]"
           />
+          {/* 网口上连着几个终端：说清发给谁 */}
+          {peers.length > 1 ? (
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-muted-foreground">发给</span>
+              <select
+                value={peer}
+                onChange={(e) => setPeer(e.target.value)}
+                className={CONTROL_CLASS}
+              >
+                <option value="">全部对端</option>
+                {peers.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
 
         <DialogFooter>

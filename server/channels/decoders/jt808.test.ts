@@ -7,6 +7,8 @@ import {
   decodeJt808,
   escapeJt808,
   Jt808Parser,
+  JT808_BUILDS,
+  JT808_MESSAGES,
   jt808Checksum,
   parseJt808Header,
   unescapeJt808,
@@ -332,4 +334,99 @@ test('组实时位置查询：正文为空', () => {
 
 test('不会组的命令要报错，别默默发一帧废数据', () => {
   assert.throws(() => buildJt808Command({ kind: 'platform.nope', args: {} }), /不会组这条命令/);
+});
+
+/* ------------------------------ 按消息 ID 组包 ------------------------------ */
+
+/**
+ * 组包时人挑的是「发哪一条协议消息」——
+ * 所以每条命令都得标着自己的消息 ID，而且那个 ID 得在协议表里查得到。
+ */
+test('每条能组的命令都带着消息 ID，且协议表里查得到', () => {
+  for (const build of JT808_BUILDS) {
+    if (build.code === '自定义') continue; // 自定义消息的 ID 是人自己填的
+    assert.ok(build.code, `「${build.name}」没标消息 ID`);
+    const id = Number.parseInt(build.code.replace(/^0x/i, ''), 16);
+    assert.ok(Number.isFinite(id), `「${build.name}」的消息 ID 看不懂：${build.code}`);
+    assert.ok(JT808_MESSAGES[id], `协议表里没有 ${build.code}（${build.name}）`);
+    // 协议表说是往终端发的（down），那就该是平台发出去的命令
+    assert.equal(JT808_MESSAGES[id].dir, 'down', `「${build.name}」不是平台发出去的消息`);
+  }
+});
+
+test('组平台补注册应答：消息 ID 是 0x8005，正文与注册应答一样', () => {
+  const frame = buildJt808Command({
+    kind: 'platform.reregister.reply',
+    args: { seq: '5', result: '0' },
+  });
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  assert.equal(parseJt808Header(inner)?.messageId, 0x8005);
+  const body = inner.subarray(12, inner.length - 1);
+  assert.equal(body.length, 3);
+  assert.equal(body.readUInt16BE(0), 5);
+  assert.equal(body[2], 0);
+});
+
+test('组平台注销应答：0x8003，正文为空', () => {
+  const frame = buildJt808Command({ kind: 'platform.logout.reply', args: { seq: '3' } });
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  const header = parseJt808Header(inner);
+  assert.equal(header?.messageId, 0x8003);
+  assert.equal(header?.bodyLength, 0);
+});
+
+test('组车辆控制命令：正文是指令字加指令参数', () => {
+  const frame = buildJt808Command({
+    kind: 'platform.vehicle.control',
+    args: { cmd: '0x02', params: 'A1B2' },
+  });
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  assert.equal(parseJt808Header(inner)?.messageId, 0x8100);
+  const body = inner.subarray(12, inner.length - 1);
+  assert.equal(body[0], 0x02);
+  assert.equal(body.subarray(1).toString('hex').toUpperCase(), 'A1B2');
+});
+
+test('组远程设置参数：正文是参数标识加参数值', () => {
+  const frame = buildJt808Command({
+    kind: 'platform.remote.set',
+    args: { paramId: '0x0050', value: '01' },
+  });
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  assert.equal(parseJt808Header(inner)?.messageId, 0x8104);
+  const body = inner.subarray(12, inner.length - 1);
+  assert.equal(body.readUInt32BE(0), 0x0050);
+  assert.equal(body[4], 0x01);
+});
+
+test('组自定义消息：消息 ID 与正文都按人填的来', () => {
+  const frame = buildJt808Command({
+    kind: 'platform.custom',
+    args: { messageId: '0x8102', seq: '9', body: 'AABB' },
+  });
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  const header = parseJt808Header(inner);
+  assert.equal(header?.messageId, 0x8102);
+  assert.equal(header?.bodyLength, 2);
+  assert.equal(header?.checksumOk, true);
+});
+
+test('那一批查询命令：正文为空，消息 ID 各不相同', () => {
+  const kinds = [
+    ['platform.device.query', 0x8102],
+    ['platform.register.status.query', 0x8105],
+    ['platform.gps.status.query', 0x8106],
+    ['platform.navigation.query', 0x8107],
+    ['platform.roaming.request', 0x8108],
+    ['platform.monitor.request', 0x8109],
+    ['platform.signal.query', 0x8110],
+  ] as const;
+  for (const [kind, id] of kinds) {
+    const frame = buildJt808Command({ kind, args: { seq: '1' } });
+    const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+    const header = parseJt808Header(inner);
+    assert.equal(header?.messageId, id, `${kind} 的消息 ID 不对`);
+    assert.equal(header?.bodyLength, 0, `${kind} 不该有正文`);
+    assert.equal(header?.checksumOk, true);
+  }
 });

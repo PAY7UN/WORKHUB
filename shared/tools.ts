@@ -348,6 +348,13 @@ export interface ProtocolBuild {
   kind: string;
   /** 人看的名字，如「平台注册应答」 */
   name: string;
+  /**
+   * 协议里的消息 ID，如 `0x8101`。
+   *
+   * 组包时人挑的是「发哪一条协议消息」——那个 ID 得看得见，
+   * 否则挑了「文本信息下发」也不知道发出去的是 0x8101。
+   */
+  code?: string;
   /** 一句话说明这条命令干什么 */
   desc?: string;
   /** 要填哪些参数 */

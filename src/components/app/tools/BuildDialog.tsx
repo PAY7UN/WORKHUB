@@ -134,11 +134,21 @@ export function BuildDialog({
             >
               {builds.map((b) => (
                 <option key={b.kind} value={b.kind}>
-                  {b.name}
+                  {b.code ? `${b.name} · ${b.code}` : b.name}
                 </option>
               ))}
             </select>
           </label>
+
+          {/* 消息 ID：组包发的是「协议里的哪一条消息」，那个 ID 得看得见 */}
+          {current?.code ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-muted-foreground">消息 ID</span>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                {current.code}
+              </code>
+            </div>
+          ) : null}
 
           {current?.desc ? (
             <p className="text-[10px] leading-relaxed text-muted-foreground/80">{current.desc}</p>
