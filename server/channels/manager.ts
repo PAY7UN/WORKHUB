@@ -18,7 +18,13 @@ import type {
   ToolKind,
 } from '../../shared/tools.ts';
 import { RAW_TEMPLATE } from '../../shared/tools.ts';
-import { normalizeConfig } from './config.ts';
+import {
+  appliesToTransport,
+  findTransport,
+  TOOL_KIND_LABELS,
+  transportScopeText,
+} from '../../shared/tools.ts';
+import { ConfigError, normalizeConfig } from './config.ts';
 import { findPlugin, findTemplateById, type PluginEntry } from './plugins/registry.ts';
 import type { ChannelDriver, DriverHandlers } from './driver.ts';
 import { decodeFrame, FrameParser, parseHex, type EncodeRequest, type FrameSource } from './parser.ts';
@@ -138,6 +144,20 @@ export class ChannelManager {
     // 解析插件：人指定了就用它，没指定就跟协议走（协议自带的默认插件）
     const plugin =
       (await findPlugin(input.pluginId ?? '')) ?? (await findPlugin(template.decoder ?? ''));
+
+    /**
+     * 解析插件得对得上接入方式。
+     *
+     * 串口的车载屏协议（通达 LED2）拿到网口上只会解出乱码，
+     * 网口的 JT/T 808 拿到串口线上也是——两边根本不是同一类设备。
+     * 插件自己说清了在哪种口上用得上，这里就按它说的拦下来。
+     */
+    if (plugin && !appliesToTransport(plugin.transports, input.tool)) {
+      const toolName = findTransport(input.tool)?.name ?? TOOL_KIND_LABELS[input.tool];
+      throw new ConfigError(
+        `解析插件「${plugin.name}」不适用于${toolName}（它适用于：${transportScopeText(plugin.transports)}）`,
+      );
+    }
 
     // 驱动的回调要指回会话，可会话又要先有驱动才建得出来：
     // 用一个可变的引用把两头接上，别让谁等谁。

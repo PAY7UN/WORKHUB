@@ -6,6 +6,7 @@ import { api, type ToolsCatalog } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import type { ChannelRecord, SerialPortInfo } from '../../../../shared/tools';
+import { appliesToTransport } from '../../../../shared/tools';
 import { AccessConfigPanel } from './AccessConfigPanel';
 import { RecordStream } from './RecordStream';
 import { BuildDialog } from './BuildDialog';
@@ -170,9 +171,26 @@ export function AccessPage() {
   useEffect(() => {
     if (!parserParam || !catalog) return;
     if (pluginIdRef.current) return;
-    if (!catalog.plugins.some((p) => p.id === parserParam)) return;
+    const plugin = catalog.plugins.find((p) => p.id === parserParam);
+    if (!plugin) return;
+    // 串口的协议别带到网口页来：那边根本用不了
+    if (tool && !appliesToTransport(plugin.transports, tool.id)) return;
     handlePickParser(parserParam);
-  }, [parserParam, catalog, handlePickParser]);
+  }, [parserParam, catalog, handlePickParser, tool]);
+
+  /**
+   * 换接入方式时，把对不上的解析插件撤掉。
+   *
+   * 串口页选的通达 LED2 切到网口页就用不了了——留着会让界面显示一个
+   * 「选了却用不上」的插件，不如直接撤掉，让它回到「不解析」。
+   */
+  useEffect(() => {
+    if (!tool || !catalog || !pluginId) return;
+    const plugin = catalog.plugins.find((p) => p.id === pluginId);
+    if (!plugin) return;
+    if (appliesToTransport(plugin.transports, tool.id)) return;
+    handlePickParser('');
+  }, [tool, catalog, pluginId, handlePickParser]);
 
   /** 改一个参数 */
   const handleChange = useCallback((key: string, value: string) => {

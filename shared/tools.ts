@@ -11,12 +11,44 @@
  *
  * 分清「工具」与「协议」是这套东西的关键：
  * 工具回答「字节从哪儿来」，协议回答「这串字节怎么切、切完怎么读」。
- * 两者各管各的，串口能跑任意一套协议——这正是它们该共用一条流水线
- * （数据源 → 协议解析 → 记录）的原因。
+ * 两者各管各的，流水线（数据源 → 协议解析 → 记录）是共用的。
+ *
+ * 但共用流水线不等于共用清单：串口接的车载屏与网口接的定位终端
+ * 不是一类设备，协议/plugin 各有各的适用范围（见 TransportScope）。
  */
 
 /** 工具（通道）的种类 */
 export type ToolKind = 'serial' | 'tcp';
+
+/** 接入方式的名字：说人话，界面与报错都用它 */
+export const TOOL_KIND_LABELS: Record<ToolKind, string> = {
+  serial: '串口',
+  tcp: '网口',
+};
+
+/**
+ * 一套协议/插件**适用于哪些接入方式**。
+ *
+ * 串口接的车载屏与网口接的定位终端不是一套东西：
+ * 通达 LED2 跑在串口上，JT/T 808 跑在 TCP 上。
+ * 两边的协议清单本就不该是同一份——不然在网口监听里翻出一个
+ * 车载屏协议，选了也只会解出乱码。
+ *
+ * 空 = 不挑，哪儿的口都能用（比如「不解析」与来路不明的第三方插件）。
+ */
+export type TransportScope = ToolKind[];
+
+/** 这套协议/插件在这个接入方式下能不能用 */
+export function appliesToTransport(scope: TransportScope | undefined, kind: ToolKind): boolean {
+  if (!scope || scope.length === 0) return true;
+  return scope.includes(kind);
+}
+
+/** 适用范围的说法：给界面与报错用 */
+export function transportScopeText(scope: TransportScope | undefined): string {
+  if (!scope || scope.length === 0) return '不限接入方式';
+  return scope.map((k) => TOOL_KIND_LABELS[k]).join(' / ');
+}
 
 /** 接口类型：工具区按它分组，不按工具个数分组 */
 export type ToolGroup = 'serial' | 'network';
@@ -198,6 +230,16 @@ export interface ProtocolTemplate {
   /** 该协议推荐的接入参数（如通达 LED2 要 38400/8N1） */
   defaults?: Record<string, string>;
   /**
+   * 这套协议适用于哪些接入方式。
+   *
+   * 串口与网口是两种设备：车载屏在串口上，定位终端在网口上。
+   * 写清楚了，界面才只给对的那一套解析插件——
+   * 在网口监听里翻出一个车载屏协议，选了也只会解出乱码。
+   *
+   * 空 = 不挑，哪儿的口都能用。
+   */
+  transports?: TransportScope;
+  /**
    * 这套协议的说明书在哪。
    *
    * 说明书住在记录区的内置目录里，「看文档」只有一处；
@@ -363,6 +405,8 @@ export const BUILTIN_TEMPLATES: ProtocolTemplate[] = [
     framing: { kind: 'timeout', idleMs: 200 },
     encoding: 'hex',
     decoder: 'tongda-led2',
+    // 车载屏是插在本机串口上的设备，不是网络协议
+    transports: ['serial'],
     defaults: { baudRate: '38400', dataBits: '8', stopBits: '1', parity: 'none', flowControl: 'none' },
   },
   {
@@ -375,6 +419,8 @@ export const BUILTIN_TEMPLATES: ProtocolTemplate[] = [
     framing: { kind: 'timeout', idleMs: 200 },
     encoding: 'hex',
     decoder: 'jt-t808',
+    // 终端是客户端、平台是服务端：走的是 TCP，不是串口线
+    transports: ['tcp'],
     defaults: { mode: 'listen', host: '0.0.0.0', port: '7612' },
   },
 ];

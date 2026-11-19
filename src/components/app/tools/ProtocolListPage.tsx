@@ -7,7 +7,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { PluginSummary } from '../../../../shared/plugins';
-import type { ProtocolTemplate } from '../../../../shared/tools';
+import type { ProtocolTemplate, ToolKind } from '../../../../shared/tools';
+import { TOOL_KIND_LABELS } from '../../../../shared/tools';
 import { docOriginLabel, framingText } from './protocolBits';
 
 /**
@@ -143,6 +144,12 @@ export function ProtocolListPage() {
                         {plugins.length} 个解析插件
                       </Badge>
                     ) : null}
+                    {/* 这套协议接在哪种口上：串口的车载屏协议与网口的 808 终端不是一回事 */}
+                    {template.transports?.length ? (
+                      <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                        {template.transports.map((k) => TOOL_KIND_LABELS[k]).join(' / ')}
+                      </Badge>
+                    ) : null}
                   </div>
                   <p className="truncate text-[11px] text-muted-foreground">{template.summary}</p>
                 </div>
@@ -165,8 +172,8 @@ export function ProtocolListPage() {
                     // 说明书住在记录区：深链过去，落在这篇文档上
                     navigate(`/?doc=${encodeURIComponent(doc.nodeId)}`);
                   }}
-                  onUseParser={(plugin) =>
-                    navigate(`/tools/serial?parser=${encodeURIComponent(plugin.id)}`)
+                  onUseParser={(plugin, kind) =>
+                    navigate(`/tools/${kind}?parser=${encodeURIComponent(plugin.id)}`)
                   }
                 />
               ) : null}
@@ -194,6 +201,16 @@ export function ProtocolListPage() {
   );
 }
 
+/**
+ * 这个插件能在哪种接入方式上用。
+ *
+ * 没写适用范围 = 不挑，两种口都给入口；
+ * 写了就只给那种口——串口的车载屏协议与网口的 808 终端不是一回事。
+ */
+function transportsOf(plugin: PluginSummary): ToolKind[] {
+  return plugin.transports?.length ? plugin.transports : ['serial', 'tcp'];
+}
+
 /** 展开后的内容：说明书在哪儿、这套协议由谁实现 */
 function ProtocolExpandedPanel({
   template,
@@ -204,7 +221,7 @@ function ProtocolExpandedPanel({
   template: ProtocolTemplate;
   plugins: PluginSummary[];
   onOpenDoc: () => void;
-  onUseParser: (plugin: PluginSummary) => void;
+  onUseParser: (plugin: PluginSummary, kind: ToolKind) => void;
 }) {
   const doc = template.doc;
   return (
@@ -264,16 +281,21 @@ function ProtocolExpandedPanel({
                 {plugin.summary ? (
                   <p className="text-[11px] leading-relaxed text-muted-foreground">{plugin.summary}</p>
                 ) : null}
-                <div className="mt-auto pt-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 px-2 text-[11px]"
-                    onClick={() => onUseParser(plugin)}
-                  >
-                    <Terminal className="h-3 w-3" />
-                    用串口调试
-                  </Button>
+                <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
+                  {/* 插件在哪种口上用得上，就给哪种口一个入口：
+                      串口的协议别把人领到网口去 */}
+                  {transportsOf(plugin).map((kind) => (
+                    <Button
+                      key={kind}
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => onUseParser(plugin, kind)}
+                    >
+                      <Terminal className="h-3 w-3" />
+                      用{TOOL_KIND_LABELS[kind]}调试
+                    </Button>
+                  ))}
                 </div>
               </article>
             ))}

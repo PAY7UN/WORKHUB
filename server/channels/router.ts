@@ -65,6 +65,7 @@ function pluginBriefs(plugins: PluginSummary[]): PluginSummary[] {
     version: plugin.version,
     summary: plugin.summary,
     protocolId: plugin.protocolId,
+    transports: plugin.transports,
     builtin: plugin.builtin,
     source: plugin.source,
   }));
@@ -278,6 +279,8 @@ export function createToolsRouter(): Router {
         res.status(400).json({ error: '未知的解析插件' });
         return;
       }
+      // 解析插件跟接入方式对不对得上，由通道管理器统一把关
+      // （串口的车载屏协议拿到网口上只会解出乱码）。
 
       const session = await channelManager.start({
         tool,

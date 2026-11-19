@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import type { ToolsCatalog } from '@/lib/api';
 import type { SerialPortInfo, ToolDef, ToolField } from '../../../../shared/tools';
+import { appliesToTransport, transportScopeText } from '../../../../shared/tools';
 import type { PluginSummary } from '../../../../shared/plugins';
 
 /** 原生 select 的统一样式 */
@@ -77,10 +78,14 @@ export function AccessConfigPanel({
    * 之所以这样摆，是因为「选协议类型」和「选解析插件」本来就是一次选择——
    * 插件自己带着协议 id，选中它，协议也就定了。
    * 同一个协议下有多把钥匙时（各家各写了一套读法），才需要人挑一把。
+   *
+   * **只摆当前接入方式用得上的那些**：串口页不该出现 JT/T 808，
+   * 网口页不该出现通达 LED2——选错了只会解出乱码。
    */
   const groups = useMemo(() => {
     const byProtocol = new Map<string, PluginSummary[]>();
     for (const p of catalog.plugins ?? []) {
+      if (!appliesToTransport(p.transports, tool.id)) continue;
       const list = byProtocol.get(p.protocolId) ?? [];
       list.push(p);
       byProtocol.set(p.protocolId, list);
@@ -91,9 +96,11 @@ export function AccessConfigPanel({
         catalog.protocols.find((t) => t.id === protocolId)?.name ?? protocolId,
       plugins,
     }));
-  }, [catalog.plugins, catalog.protocols]);
+  }, [catalog.plugins, catalog.protocols, tool.id]);
 
   const plugin = (catalog.plugins ?? []).find((p) => p.id === pluginId);
+  /** 选中的插件跟当前接入方式对不上（从别的页带过来的）：得说出来 */
+  const pluginMismatch = plugin ? !appliesToTransport(plugin.transports, tool.id) : false;
   /** 这一栏是不是串口：串口才有「本机口列表」与「串口不可用」这回事 */
   const isSerial = tool.fields.some((f) => f.dynamic === 'serial-ports');
 
@@ -241,12 +248,31 @@ export function AccessConfigPanel({
             <span className="text-[10px] text-muted-foreground">
               {plugin.publisher} · v{plugin.version}
             </span>
+            {plugin.transports?.length ? (
+              <span className="text-[10px] text-muted-foreground/80">
+                · 用于{transportScopeText(plugin.transports)}
+              </span>
+            ) : null}
           </div>
         ) : (
           <p className="text-[10px] leading-relaxed text-muted-foreground/80">
             不解析——收到什么算什么，空闲 200ms 切一条。
           </p>
         )}
+
+        {/* 插件跟接入方式对不上：说清楚，别让人以为已经选上了 */}
+        {pluginMismatch && plugin ? (
+          <p className="text-[10px] leading-relaxed text-amber-600">
+            「{plugin.name}」不适用于{tool.name}（它适用于：{transportScopeText(plugin.transports)}），
+            换个接入方式才能用。
+          </p>
+        ) : null}
+
+        {groups.length === 0 ? (
+          <p className="text-[10px] leading-relaxed text-muted-foreground/80">
+            {tool.name}暂时还没有专用的解析插件——只能先看着原始字节。
+          </p>
+        ) : null}
       </section>
     </div>
   );

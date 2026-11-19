@@ -21,7 +21,7 @@ import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 import type { PluginManifest } from '../../../shared/plugins.ts';
-import type { ProtocolBuild, ProtocolTemplate } from '../../../shared/tools.ts';
+import type { ProtocolBuild, ProtocolTemplate, ToolKind, TransportScope } from '../../../shared/tools.ts';
 import type { DecodedFrame, EncodeRequest, FrameSource } from '../parser.ts';
 
 /** 一个已载入的插件 */
@@ -112,7 +112,27 @@ function validateManifest(raw: unknown): PluginManifest {
     publisher: manifest.publisher?.trim() || '未署名',
     version: manifest.version?.trim() || '0.0.0',
     entry: manifest.entry?.trim() || 'index.mjs',
+    transports: parseTransports(manifest.transports),
   };
+}
+
+/**
+ * 读清单里的适用范围。
+ *
+ * 写错了就当这个插件没装——半个字都比不让装强：
+ * 插件作者得知道自己写错了什么，而不是装上了却在界面上不出现。
+ */
+function parseTransports(raw: unknown): TransportScope | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) throw new Error('transports 必须是数组');
+  const out: ToolKind[] = [];
+  for (const item of raw) {
+    if (item !== 'serial' && item !== 'tcp') {
+      throw new Error(`transports 里只能是 serial 或 tcp，收到的是「${String(item)}」`);
+    }
+    if (!out.includes(item)) out.push(item);
+  }
+  return out.length ? out : undefined;
 }
 
 /**
@@ -182,6 +202,8 @@ async function loadOne(dir: string): Promise<LoadedPlugin> {
         encoding: manifest.protocol.encoding ?? 'utf8',
         // 自带协议的默认解析插件就是它自己
         decoder: manifest.id,
+        // 适用范围跟着插件走：这套协议在哪种口上用得上
+        transports: manifest.transports,
         defaults: manifest.protocol.defaults,
       }
     : undefined;

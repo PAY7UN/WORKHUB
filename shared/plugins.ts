@@ -14,7 +14,7 @@
  * 放进 plugins/ 下就能被界面选到。插件自己坏掉时只记一条警告，
  * 不影响别的插件，更不能让整个服务起不来。
  */
-import type { ChannelEncoding, Framing, ProtocolSpec } from './tools.ts';
+import type { ChannelEncoding, Framing, ProtocolSpec, TransportScope } from './tools.ts';
 
 /**
  * 插件清单：开发者发布的 manifest.json。
@@ -39,6 +39,16 @@ export interface PluginManifest {
   entry?: string;
   /** 挂在哪套协议下（协议类型 id）：同一套协议有第二种实现时用它 */
   protocolId?: string;
+  /**
+   * 这个插件适用于哪些接入方式。
+   *
+   * 串口与网口是两种设备：车载屏在串口上，定位终端在网口上。
+   * 插件说清楚自己在哪种口上用得上，界面才只给对的那一套——
+   * 在网口监听里翻出一个车载屏协议，选了也只会解出乱码。
+   *
+   * 不写 = 不挑，哪儿的口都能用。
+   */
+  transports?: TransportScope;
   /** 插件自带的协议：只有这个开发者认这套协议时用它 */
   protocol?: {
     /** 协议类型名 */
@@ -79,6 +89,8 @@ export interface PluginSummary {
   summary?: string;
   /** 属于哪套协议（协议类型 id） */
   protocolId: string;
+  /** 适用于哪些接入方式：空 = 不挑 */
+  transports?: TransportScope;
   /** 协议详情 */
   spec?: ProtocolSpec;
   /** 内置插件，还是外部发布的 */

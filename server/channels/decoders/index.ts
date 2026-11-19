@@ -10,7 +10,7 @@
  * 开发者自己发布的插件走 server/channels/plugins/ 那条路，
  * 两者在界面上一视同仁（都出现在「解析插件类型」里），只是署名不同。
  */
-import type { DecodedField, ProtocolBuild, ProtocolSpec } from '../../../shared/tools.ts';
+import type { DecodedField, ProtocolBuild, ProtocolSpec, TransportScope } from '../../../shared/tools.ts';
 import type { DecodedFrame, EncodeRequest, FrameSource } from '../parser.ts';
 import {
   JT808_BUILDS,
@@ -46,6 +46,16 @@ export interface NamedDecoder {
   version?: string;
   /** 属于哪套协议（协议类型 id） */
   protocolId?: string;
+  /**
+   * 适用于哪些接入方式。
+   *
+   * 串口接的车载屏与网口接的定位终端不是一套东西：
+   * LED2 跑在串口上，JT/T 808 跑在 TCP 上。
+   * 写清楚了，界面在串口页就不该出现 808 的插件，反之亦然。
+   *
+   * 不写 = 不挑，哪儿的口都能用。
+   */
+  transports?: TransportScope;
   /**
    * 协议详情：帧结构、地址表、命令码表、每条命令的数据区字段含义。
    *
@@ -93,6 +103,8 @@ const tongdaLed2: NamedDecoder = {
   publisher: 'WorkHub 内置',
   version: '1.0.0',
   protocolId: LED2_DECODER_ID,
+  // 车载屏是插在本机串口线上的设备
+  transports: ['serial'],
   spec: {
     frame: [...LED2_FRAME_PARTS],
     addresses: [...LED2_ADDRESSES],
@@ -138,6 +150,8 @@ const jt808: NamedDecoder = {
   publisher: 'WorkHub 内置',
   version: '1.0.0',
   protocolId: JT808_DECODER_ID,
+  // 终端是客户端、平台是服务端：走 TCP，不是串口线
+  transports: ['tcp'],
   spec: {
     frame: [...JT808_FRAME_PARTS],
     commands: Object.entries(JT808_MESSAGES).map(([code, meta]) => {
