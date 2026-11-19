@@ -17,7 +17,7 @@ import { buildAskMessages, retrieveForAsk } from '../agentContext.ts';
 import { readUpstreamStream } from '../upstream.ts';
 import { isValidProtocolId } from '../channels/protocolDocs.ts';
 import { writeBuiltinDoc } from '../builtinDocs.ts';
-import { refreshPluginRegistry } from '../channels/plugins/registry.ts';
+import { findTemplateById, refreshPluginRegistry } from '../channels/plugins/registry.ts';
 import { convertDocumentToMarkdown } from '../docToMarkdown.ts';
 import { fetchWeb } from './webFetch.ts';
 import { analyze, formatAnalyzeResult } from './dataAnalyze.ts';
@@ -350,7 +350,9 @@ const docToMarkdown: SkillRunner = async (params, ctx) => {
   if (protocolId) {
     if (!ctx.isAdmin) throw new SkillRunError('绑定协议文档是管理员的活，先转出来让人看');
     if (!isValidProtocolId(protocolId)) throw new SkillRunError('协议 id 不合法');
-    writeBuiltinDoc(protocolId, result.markdown);
+    // 落在「串口」还是「网口」目录里，看这套协议适用于哪种接入方式
+    const template = await findTemplateById(protocolId);
+    writeBuiltinDoc(protocolId, result.markdown, template?.transports);
     await refreshPluginRegistry();
     bound = true;
   }

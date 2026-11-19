@@ -133,10 +133,12 @@ function mergeExternal(
     attached.set(manifest.id, manifest.protocolId?.trim() || undefined);
 
     // 插件自带的说明书也进记录区的内置目录——
-    // 「看文档」全站只有一处，插件也不例外
+    // 「看文档」全站只有一处，插件也不例外。
+    // 落在「串口」还是「网口」目录里，看这套解析适用于哪种接入方式。
+    const scope = loaded.template?.transports ?? manifest.transports;
     if (loaded.doc && loaded.template) {
       try {
-        seedPluginDoc(loaded.template.id, loaded.doc.markdown, loaded.doc.title);
+        seedPluginDoc(loaded.template.id, loaded.doc.markdown, loaded.doc.title, scope);
       } catch (err) {
         warnings.push(`插件 ${manifest.id} 的说明书没能进记录区：${reason(err)}`);
       }
@@ -145,7 +147,7 @@ function mergeExternal(
     // 没有说明书、却有协议详情 → 用详情生成一份速查放进记录区。
     // 协议详情不是界面上的东西了：它住在记录区，跟说明书住在一起。
     if (loaded.template && manifest.spec) {
-      seedSpecDoc(loaded.template.id, loaded.template.name, manifest.spec);
+      seedSpecDoc(loaded.template.id, loaded.template.name, manifest.spec, scope);
     }
   }
 

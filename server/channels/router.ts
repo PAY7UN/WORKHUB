@@ -195,7 +195,9 @@ export function createToolsRouter(): Router {
         return;
       }
 
-      writeBuiltinDoc(protocolId, converted.markdown);
+      // 落在「串口」还是「网口」目录里，看这套协议适用于哪种接入方式
+      const template = await findTemplateById(protocolId);
+      writeBuiltinDoc(protocolId, converted.markdown, template?.transports);
       // 协议清单是进程内缓存，不重建的话界面还显示旧文档
       await refreshPluginRegistry();
       const nodeId = builtinDocNodeIdFor(protocolId);

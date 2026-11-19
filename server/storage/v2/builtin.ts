@@ -12,6 +12,7 @@
  * 保留段以 ~ 开头：界面不允许用 ~ 开头的名字建目录或文件，
  * 所以这一段不可能被用户的目录撞上。
  */
+import type { ToolKind } from '../../../shared/tools.ts';
 
 /** 保留路径段：内置文档全在这个段下面 */
 export const BUILTIN_ROOT_SEGMENT = '~builtin';
@@ -21,6 +22,34 @@ export const BUILTIN_TOOLS_DIR_ID = 'builtin-tools';
 
 /** 内置工具目录在记录区里的显示名 */
 export const BUILTIN_TOOLS_DIR_NAME = '工具';
+
+/**
+ * 工具目录下的子目录：按接入方式分。
+ *
+ * 串口接的车载屏与网口接的定位终端不是一类东西，两边的说明书
+ * 混在一个目录里翻起来费劲。各归各的目录，找的时候一眼就知道该翻哪边。
+ *
+ * 节点 id 是固定的（跨启动不变）：否则每次启动都会多出一对新目录。
+ */
+export interface BuiltinToolsSubdir {
+  /** 节点 id */
+  id: string;
+  /** 显示名 */
+  name: string;
+  /** 对应的接入方式 */
+  kind: ToolKind;
+}
+
+/** 按接入方式分的子目录 */
+export const BUILTIN_TOOLS_SUBDIRS: BuiltinToolsSubdir[] = [
+  { id: 'builtin-tools-serial', name: '串口', kind: 'serial' },
+  { id: 'builtin-tools-tcp', name: '网口', kind: 'tcp' },
+];
+
+/** 某个接入方式对应的子目录 */
+export function builtinToolsSubdirOf(kind: ToolKind): BuiltinToolsSubdir | undefined {
+  return BUILTIN_TOOLS_SUBDIRS.find((d) => d.kind === kind);
+}
 
 /**
  * 路径是不是落在保留段里。

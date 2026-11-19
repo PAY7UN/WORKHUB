@@ -24,15 +24,18 @@ import {
   BUILTIN_ROOT_SEGMENT,
   BUILTIN_TOOLS_DIR_ID,
   BUILTIN_TOOLS_DIR_NAME,
+  BUILTIN_TOOLS_SUBDIRS,
   builtinDocNodeId,
+  builtinToolsSubdirOf,
   protocolIdOfBuiltinNode as builtinNodeProtocolId,
+  type BuiltinToolsSubdir,
 } from './storage/v2/builtin.ts';
 import { contentHash } from './storage/v2/vault.ts';
 import {
   BUILTIN_PROTOCOL_DOCS_DIR,
   DEFAULT_PROTOCOL_DOCS_DIR,
 } from './channels/protocolDocs.ts';
-import { findTemplate } from '../shared/tools.ts';
+import { findTemplate, type TransportScope } from '../shared/tools.ts';
 
 /** 写入者署名：内置文档不是谁「上传」的，是系统安顿的 */
 const SYSTEM_ACTOR = 'system';
@@ -207,24 +210,56 @@ export function protocolIdOfBuiltinNode(nodeId: string): string | undefined {
 
 /* ------------------------------ 播种与同步 ------------------------------ */
 
-/** 建内置目录（记录区里的「工具」） */
+/**
+ * 这份说明书该放哪个子目录。
+ *
+ * 按接入方式分：只归串口的进「串口」，只归网口的进「网口」。
+ * 两种口都能用的（或者说不挑口的）留在「工具」根下——
+ * 塞进哪一边都不对，复制一份更糟（改一处漏一处）。
+ */
+function subdirFor(scope: TransportScope | undefined): BuiltinToolsSubdir | undefined {
+  if (!scope || scope.length !== 1) return undefined;
+  return builtinToolsSubdirOf(scope[0]);
+}
+
+/** 建内置目录（记录区里的「工具」）与它下面的两个子目录 */
 function ensureBuiltinDir(): void {
   const existing = db.prepare('SELECT id FROM nodes WHERE id = ?').get(BUILTIN_TOOLS_DIR_ID);
-  if (existing) return;
-  const now = Date.now();
-  insertDoc(
-    {
-      id: BUILTIN_TOOLS_DIR_ID,
-      name: BUILTIN_TOOLS_DIR_NAME,
-      type: 'folder',
-      parentId: null,
-      createdAt: now,
-      updatedAt: now,
-      createdBy: SYSTEM_ACTOR,
-      updatedBy: SYSTEM_ACTOR,
-    },
-    { path: BUILTIN_ROOT_SEGMENT },
-  );
+  if (!existing) {
+    const now = Date.now();
+    insertDoc(
+      {
+        id: BUILTIN_TOOLS_DIR_ID,
+        name: BUILTIN_TOOLS_DIR_NAME,
+        type: 'folder',
+        parentId: null,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: SYSTEM_ACTOR,
+        updatedBy: SYSTEM_ACTOR,
+      },
+      { path: BUILTIN_ROOT_SEGMENT },
+    );
+  }
+
+  // 串口 / 网口两个子目录：说明书的落点由它决定
+  for (const dir of BUILTIN_TOOLS_SUBDIRS) {
+    if (db.prepare('SELECT id FROM nodes WHERE id = ?').get(dir.id)) continue;
+    const now = Date.now();
+    insertDoc(
+      {
+        id: dir.id,
+        name: dir.name,
+        type: 'folder',
+        parentId: BUILTIN_TOOLS_DIR_ID,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: SYSTEM_ACTOR,
+        updatedBy: SYSTEM_ACTOR,
+      },
+      { path: `${BUILTIN_ROOT_SEGMENT}/${dir.name}` },
+    );
+  }
 }
 
 /**
@@ -233,10 +268,19 @@ function ensureBuiltinDir(): void {
  * 覆盖只在「没人动过」时发生：现场版被改过就原样留着，
  * 由界面提示「代码里有新版」——该合还是该换，由人决定。
  */
-function applySource(protocolId: string, source: BuiltinSource): SyncStatus {
+function applySource(
+  protocolId: string,
+  source: BuiltinSource,
+  scope: TransportScope | undefined,
+): SyncStatus {
   const sourceHash = contentHash(source.markdown);
   const nodeId = builtinDocNodeId(protocolId);
   const row = builtinRow(protocolId);
+  const dir = subdirFor(scope);
+  const parentId = dir?.id ?? BUILTIN_TOOLS_DIR_ID;
+  const path = dir
+    ? `${BUILTIN_ROOT_SEGMENT}/${dir.name}/${source.title}`
+    : `${BUILTIN_ROOT_SEGMENT}/${source.title}`;
 
   if (!row) {
     const now = Date.now();
@@ -245,14 +289,14 @@ function applySource(protocolId: string, source: BuiltinSource): SyncStatus {
         id: nodeId,
         name: source.title,
         type: 'file',
-        parentId: BUILTIN_TOOLS_DIR_ID,
+        parentId,
         content: source.markdown,
         createdAt: now,
         updatedAt: now,
         createdBy: SYSTEM_ACTOR,
         updatedBy: SYSTEM_ACTOR,
       },
-      { path: `${BUILTIN_ROOT_SEGMENT}/${source.title}` },
+      { path },
     );
     saveBaseline(protocolId, nodeId, source, sourceHash);
     return 'created';
@@ -260,6 +304,12 @@ function applySource(protocolId: string, source: BuiltinSource): SyncStatus {
 
   const baseline = baselineRow(protocolId);
   const currentHash = row.content_hash ?? '';
+
+  // 落点变了：这份说明书挪到按接入方式分的子目录里去。
+  // 现场改没改过都挪——挪的是位置，不是内容，改过的那份一个字都不动。
+  if (row.parent_id !== parentId) {
+    updateDocRow(nodeId, { parentId }, SYSTEM_ACTOR);
+  }
 
   // 现场改过：代码里的更新不覆盖
   if (baseline && currentHash !== baseline.baseline_hash) {
@@ -282,12 +332,17 @@ function applySource(protocolId: string, source: BuiltinSource): SyncStatus {
 export function syncBuiltinDoc(protocolId: string): SyncStatus {
   const markdown = readBuiltinSource(protocolId);
   if (markdown === null) return 'unchanged';
-  return applySource(protocolId, {
-    markdown,
-    title: builtinDocName(protocolId),
-    kind: 'repo',
-    path: join(BUILTIN_PROTOCOL_DOCS_DIR, `${protocolId}.md`),
-  });
+  return applySource(
+    protocolId,
+    {
+      markdown,
+      title: builtinDocName(protocolId),
+      kind: 'repo',
+      path: join(BUILTIN_PROTOCOL_DOCS_DIR, `${protocolId}.md`),
+    },
+    // 仓库里的说明书都是内置协议的：适用范围看协议自己怎么说
+    findTemplate(protocolId)?.transports,
+  );
 }
 
 /**
@@ -295,14 +350,25 @@ export function syncBuiltinDoc(protocolId: string): SyncStatus {
  *
  * 插件包也是跟着版本走的：插件升级时它那份说明书也换了。
  * 所以它跟仓库内置版用同一套基线——没人改过就跟着插件升级一起换。
+ *
+ * scope 是这套解析适用的接入方式：决定它落在「串口」还是「网口」目录里。
  */
-export function seedPluginDoc(protocolId: string, markdown: string, title: string): SyncStatus {
-  return applySource(protocolId, {
-    markdown,
-    title: title.endsWith('.md') ? title : `${title}.md`,
-    kind: 'plugin',
-    path: '',
-  });
+export function seedPluginDoc(
+  protocolId: string,
+  markdown: string,
+  title: string,
+  scope?: TransportScope,
+): SyncStatus {
+  return applySource(
+    protocolId,
+    {
+      markdown,
+      title: title.endsWith('.md') ? title : `${title}.md`,
+      kind: 'plugin',
+      path: '',
+    },
+    scope,
+  );
 }
 
 /**
@@ -355,7 +421,7 @@ function migrateLegacyImportedDocs(): void {
     try {
       // 现场已经改过就别覆盖——搬家的目的是保住现场版本，不是抹掉它
       const { localModified } = builtinDocState(protocolId);
-      if (!localModified) writeBuiltinDoc(protocolId, markdown);
+      if (!localModified) writeBuiltinDoc(protocolId, markdown, findTemplate(protocolId)?.transports);
       rmSync(file, { force: true });
     } catch (err) {
       logger.warn('旧导入文档迁移失败', protocolId, err);
@@ -370,29 +436,39 @@ function migrateLegacyImportedDocs(): void {
  *
  * 写进去之后它就与内置版「不一样」了——同步时会认成「本地改过」，
  * 以后代码更新不会把它覆盖掉。
+ *
+ * scope 是这套协议的适用范围：决定它落在「串口」还是「网口」目录里。
  */
-export function writeBuiltinDoc(protocolId: string, markdown: string, userId = SYSTEM_ACTOR): boolean {
+export function writeBuiltinDoc(
+  protocolId: string,
+  markdown: string,
+  scope?: TransportScope,
+  userId = SYSTEM_ACTOR,
+): boolean {
   const nodeId = builtinDocNodeId(protocolId);
   const row = builtinRow(protocolId);
+  const dir = subdirFor(scope);
+  const parentId = dir?.id ?? BUILTIN_TOOLS_DIR_ID;
+  const title = builtinDocName(protocolId);
+  const path = dir ? `${BUILTIN_ROOT_SEGMENT}/${dir.name}/${title}` : `${BUILTIN_ROOT_SEGMENT}/${title}`;
 
   if (!row) {
     // 没有内置版（协议是插件自带的，现场导入的那份），直接建节点。
     // 基线留空：这样它永远算「本地改过」，代码以后补上内置版也不会覆盖现场版。
     const now = Date.now();
-    const title = builtinDocName(protocolId);
     insertDoc(
       {
         id: nodeId,
         name: title,
         type: 'file',
-        parentId: BUILTIN_TOOLS_DIR_ID,
+        parentId,
         content: markdown,
         createdAt: now,
         updatedAt: now,
         createdBy: userId,
         updatedBy: userId,
       },
-      { path: `${BUILTIN_ROOT_SEGMENT}/${title}` },
+      { path },
     );
     saveBaseline(
       protocolId,
@@ -401,6 +477,11 @@ export function writeBuiltinDoc(protocolId: string, markdown: string, userId = S
       '',
     );
     return true;
+  }
+
+  // 落点不对就挪过去（老版本把说明书直接放在「工具」根下）
+  if (row.parent_id !== parentId) {
+    updateDocRow(nodeId, { parentId }, userId);
   }
 
   return updateDocRow(nodeId, { content: markdown }, userId);

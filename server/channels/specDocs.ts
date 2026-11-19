@@ -9,7 +9,7 @@
  * 有说明书就不生成：说明书是给人写的，比自动生成的速查全，
  * 两份摆在一起只会互相盖。
  */
-import type { ProtocolSpec } from '../../shared/tools.ts';
+import type { ProtocolSpec, TransportScope } from '../../shared/tools.ts';
 import { findTemplate } from '../../shared/tools.ts';
 import { builtinDocNodeIdFor, seedPluginDoc } from '../builtinDocs.ts';
 import { BUILTIN_DECODERS } from './decoders/index.ts';
@@ -20,13 +20,20 @@ import { specMarkdown } from './specMarkdown.ts';
  *
  * 已经有说明书的不生成。生成失败也不拦服务：速查只是资料，
  * 缺一份不该让整个站起不来。
+ *
+ * scope 是这套解析适用的接入方式：决定它落在「串口」还是「网口」目录里。
  */
-export function seedSpecDoc(protocolId: string, title: string, spec: ProtocolSpec): boolean {
+export function seedSpecDoc(
+  protocolId: string,
+  title: string,
+  spec: ProtocolSpec,
+  scope?: TransportScope,
+): boolean {
   if (builtinDocNodeIdFor(protocolId)) return false;
   const markdown = specMarkdown(spec, title);
   if (!markdown) return false;
   try {
-    seedPluginDoc(protocolId, markdown, title);
+    seedPluginDoc(protocolId, markdown, title, scope);
     return true;
   } catch {
     return false;
@@ -39,6 +46,6 @@ export function ensureBuiltinSpecDocs(): void {
     if (!decoder.spec) continue;
     const protocolId = decoder.protocolId ?? decoder.id;
     const title = findTemplate(protocolId)?.name ?? decoder.name;
-    seedSpecDoc(protocolId, title, decoder.spec);
+    seedSpecDoc(protocolId, title, decoder.spec, decoder.transports);
   }
 }
