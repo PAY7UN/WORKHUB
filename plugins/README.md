@@ -126,6 +126,69 @@ export function decode(frame) {
 | `summary` | 概览行；不写就用 `text` |
 | `parsed` | 结构化结果（可选） |
 
+## 组包（可选）：不只能读，还能发
+
+插件不导出 `builds` 与 `encode` 也完全能用——它就只是个「只能读不能写」的解析器。
+
+导出了，界面上「组包下发」才有内容：人填几个参数，服务端按协议组装成字节帧发出去。
+
+```js
+/**
+ * 能组哪些命令：界面照着这份清单渲染表单，不自己猜协议。
+ */
+export const builds = [
+  {
+    kind: 'platform.text',
+    code: '0x8101',          // 协议里的消息 ID，摆出来人才知道发出去的是哪条
+    dir: 'down',
+    name: '文本信息下发',
+    desc: '一句话说明这条命令干什么',
+    fields: [
+      { key: 'text', label: '文本内容', type: 'text', maxBytes: 1023, required: true },
+      { key: 'flag', label: '标志', type: 'u8', bytes: 1, defaultValue: '0' },
+    ],
+  },
+];
+
+/**
+ * 组一条命令：把参数组装成字节帧。
+ * 参数填错要抛错——静默截断会发出去一帧「看着对、其实错」的东西。
+ */
+export function encode(request) {
+  // request = { kind: 'platform.text', args: { text: 'hello', flag: '0' } }
+  return Buffer.from([/* ... */]);
+}
+
+/**
+ * 把组出来的帧按协议结构切成几段（可选）：发之前让人逐段核对。
+ */
+export function describeFrame(frame) {
+  // 返回 [{ name: '消息 ID', hex: '00008101' }, ...]
+  return [];
+}
+```
+
+### 字段类型
+
+字段的 `type` 决定人怎么填、占几个字节。`bytes` 是定长字段的宽度，
+`maxBytes` 是变长字段的上限——**两者至少要写一个**，界面才校验得出来。
+
+| 类型 | 人怎么填 | 宽度 |
+| --- | --- | --- |
+| `u8` / `u16` / `u32` | 十进制（`0x` 开头也认） | 1 / 2 / 4 字节 |
+| `hexU8` / `hexU16` / `hexU32` | **十六进制** | 1 / 2 / 4 字节 |
+| `text` | 文本，按 UTF-8 发出 | `maxBytes` |
+| `hex` | 十六进制字节 | `bytes` 或 `maxBytes` |
+
+整数字段分两族，是因为**同一个数字有两种读法**：
+消息 ID 在 JT/T 808 里历来写成 `0x8101`，按十进制填 `8101` 会被当成 33025——
+一个完全合法却完全不是那个意思的值。用 `hexU16` 把这件事写进类型里，
+界面就按十六进制校验，不给人犯糊涂的机会。
+
+`custom: true` 那条命令表示「协议清单里没有的消息」：
+人自己给消息 ID，正文也得一行一个字段地定义（名字、类型、宽度、值），
+服务端照着拼。
+
 ## 装在哪
 
 服务按这个顺序找插件目录，谁存在用谁：

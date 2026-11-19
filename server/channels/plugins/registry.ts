@@ -12,7 +12,7 @@
  * 用的人不该关心解析是谁写的，但该知道是谁写的。
  */
 import type { PluginSummary } from '../../../shared/plugins.ts';
-import type { ProtocolBuild, ProtocolTemplate } from '../../../shared/tools.ts';
+import type { ProtocolBuild, ProtocolTemplate, FrameSegment } from '../../../shared/tools.ts';
 import { BUILTIN_TEMPLATES } from '../../../shared/tools.ts';
 import { BUILTIN_DECODERS } from '../decoders/index.ts';
 import type { DecodedFrame, EncodeRequest, FrameSource } from '../parser.ts';
@@ -36,6 +36,8 @@ export interface PluginEntry extends PluginSummary {
   encode?(request: EncodeRequest): Buffer | null;
   /** 能组哪些命令（给界面渲染表单用） */
   builds?: ProtocolBuild[];
+  /** 把组出来的帧按协议结构切成几段（给界面逐段核对用） */
+  describeFrame?(frame: Buffer): FrameSegment[];
 }
 
 /** 注册表的整体状态 */
@@ -73,6 +75,7 @@ function builtinPlugins(): PluginEntry[] {
     decode: (frame: Buffer) => decoder.decode(frame),
     encode: decoder.encode ? (request: EncodeRequest) => decoder.encode?.(request) ?? null : undefined,
     builds: decoder.builds,
+    describeFrame: decoder.describeFrame,
   }));
 }
 
@@ -127,6 +130,7 @@ function mergeExternal(
       decode: (frame: Buffer) => loaded.decode(frame),
       encode: loaded.encode ? (request: EncodeRequest) => loaded.encode?.(request) ?? null : undefined,
       builds: loaded.builds,
+      describeFrame: loaded.describeFrame,
     };
     plugins.push(entry);
     pluginIds.add(manifest.id);

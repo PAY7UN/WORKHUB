@@ -411,6 +411,9 @@ export function createToolsRouter(): Router {
    *
    * peer 指定发给哪个对端：JT/T 808 一个终端一条连接，
    * 不指定就发给当前所有连着的对端。
+   *
+   * dryRun 为真时只组不发：发之前先看一眼这帧长什么样，
+   * 组错了当场就能发现。
    */
   router.post('/sessions/:id/build', async (req, res) => {
     const id = String(req.params.id);
@@ -421,17 +424,21 @@ export function createToolsRouter(): Router {
       return;
     }
     const peer = typeof body.peer === 'string' && body.peer ? body.peer : undefined;
+    const dryRun = body.dryRun === true;
     const args: Record<string, string> = {};
     const rawArgs = (body.args ?? {}) as Record<string, unknown>;
     for (const [key, value] of Object.entries(rawArgs)) {
       args[key] = typeof value === 'string' ? value : value == null ? '' : String(value);
     }
     try {
-      const result = await channelManager.buildFrame(id, { kind, args }, peer);
+      const result = await channelManager.buildFrame(id, { kind, args }, peer, dryRun);
       res.json({
         sent: result.sent,
         frame: result.frame.toString('hex').toUpperCase(),
         bytes: result.frame.length,
+        dryRun,
+        // 按协议结构切开的几段：界面照着逐段核对
+        segments: result.segments,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -10,7 +10,13 @@
  * 开发者自己发布的插件走 server/channels/plugins/ 那条路，
  * 两者在界面上一视同仁（都出现在「解析插件类型」里），只是署名不同。
  */
-import type { DecodedField, ProtocolBuild, ProtocolSpec, TransportScope } from '../../../shared/tools.ts';
+import type {
+  DecodedField,
+  FrameSegment,
+  ProtocolBuild,
+  ProtocolSpec,
+  TransportScope,
+} from '../../../shared/tools.ts';
 import type { DecodedFrame, EncodeRequest, FrameSource } from '../parser.ts';
 import {
   JT808_BUILDS,
@@ -21,6 +27,7 @@ import {
   Jt808Parser,
   buildJt808Command,
   decodeJt808,
+  describeJt808Frame,
 } from './jt808.ts';
 import {
   LED2_ADDRESSES,
@@ -77,6 +84,13 @@ export interface NamedDecoder {
   encode?(request: EncodeRequest): Buffer | null;
   /** 能组哪些命令 */
   builds?: ProtocolBuild[];
+  /**
+   * 把组出来的帧按协议结构切成几段（给界面逐段核对用）。
+   *
+   * 没有它就只给一整串十六进制——看不出哪段是消息 ID、
+   * 哪段是校验码，核对就成了眼力活。
+   */
+  describeFrame?(frame: Buffer): FrameSegment[];
 }
 
 /**
@@ -188,6 +202,8 @@ const jt808: NamedDecoder = {
   },
   builds: JT808_BUILDS,
   encode: (request: EncodeRequest): Buffer => buildJt808Command(request),
+  // 组出来的帧按结构切段：发之前能逐段核对
+  describeFrame: (frame: Buffer): FrameSegment[] => describeJt808Frame(frame),
 };
 
 /** 全部内置解码器（它们也是内置插件） */

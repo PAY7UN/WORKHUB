@@ -355,11 +355,43 @@ export interface ProtocolBuild {
    * 否则挑了「文本信息下发」也不知道发出去的是 0x8101。
    */
   code?: string;
+  /** 方向：平台发下去的是 `down`，终端报上来的是 `up` */
+  dir?: 'up' | 'down';
+  /**
+   * 正文得由人自己按字节定义吗？
+   *
+   * 协议清单里没有的消息就是这样：消息 ID 人给，
+   * 正文也得人一行一个字段地定义（名字、类型、宽度、值）。
+   */
+  custom?: boolean;
   /** 一句话说明这条命令干什么 */
   desc?: string;
   /** 要填哪些参数 */
   fields?: ProtocolBuildField[];
 }
+
+/**
+ * 组包字段的类型：决定人怎么填、占几个字节。
+ *
+ * 整数字段分两族：
+ *
+ * - `u8` / `u16` / `u32`：按**十进制**填（`0x` 开头也能认）。
+ * - `hexU8` / `hexU16` / `hexU32`：按**十六进制**填。
+ *
+ * 为什么单开一族：消息 ID 在 JT/T 808 里历来写成 `0x8101`，
+ * 人按十进制填 `8101` 会被当成 33025（0x1FA5）——
+ * 一个完全合法却完全错误的消息 ID，静默发出去。
+ * 类型写清楚，界面上就按十六进制校验，不给人犯糊涂的机会。
+ */
+export type BuildFieldType =
+  | 'u8'
+  | 'u16'
+  | 'u32'
+  | 'hexU8'
+  | 'hexU16'
+  | 'hexU32'
+  | 'text'
+  | 'hex';
 
 /** 组包命令的一个参数 */
 export interface ProtocolBuildField {
@@ -370,6 +402,54 @@ export interface ProtocolBuildField {
   required?: boolean;
   /** 这个参数怎么理解 */
   help?: string;
+  /**
+   * 这个字段怎么填、占几个字节。
+   *
+   * 光有名字猜不出宽度——「序列号」是 1 字节还是 2 字节？
+   * 写清楚了，界面上就能按字节校验，填错当场拦下，
+   * 而不是发出去一帧废数据等终端不理。
+   */
+  type?: BuildFieldType;
+  /** 定长字段占几个字节 */
+  bytes?: number;
+  /** 变长字段最多几个字节 */
+  maxBytes?: number;
+  /** 字节序，默认大端 */
+  endian?: 'be' | 'le';
+}
+
+/**
+ * 自定义消息里人自己定义的一个字段。
+ *
+ * 上面的清单是协议写死的；这条消息协议里没有，
+ * 那字段就得由人按字节定义——名字、类型、宽度、值，
+ * 服务端照着拼成正文。
+ */
+export interface CustomBuildField {
+  /** 字段名：给人看的 */
+  name: string;
+  /** 类型 */
+  type: BuildFieldType;
+  /** 占几个字节（变长类型给上限） */
+  bytes?: number;
+  /** 字节序，默认大端 */
+  endian?: 'be' | 'le';
+  /** 值 */
+  value: string;
+}
+
+/**
+ * 帧的一段：发出去的字节按协议切成几段，一段一个意思。
+ *
+ * 「可靠」不是嘴上说的——得让人逐段核对：
+ * 消息 ID 对不对、长度填得对不对、校验码算得对不对。
+ * 一整串十六进制看的人眼花，切成几段就一眼看得出来。
+ */
+export interface FrameSegment {
+  /** 这一段叫什么 */
+  name: string;
+  /** 这一段的字节（十六进制，不带空格） */
+  hex: string;
 }
 
 /**

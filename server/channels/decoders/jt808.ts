@@ -21,7 +21,13 @@
  * 终端身份靠连接区分：JT/T 808 终端是客户端，一个终端一条连接，
  * 所以「哪条连接」就是「哪个终端」，注册消息里的终端编号只是补个名字。
  */
-import type { DecodedField, ProtocolBuild, ProtocolFramePart } from '../../../shared/tools.ts';
+import type {
+  CustomBuildField,
+  DecodedField,
+  FrameSegment,
+  ProtocolBuild,
+  ProtocolFramePart,
+} from '../../../shared/tools.ts';
 import type { EncodeRequest } from '../parser.ts';
 import { parseHex, toHex } from '../parser.ts';
 
@@ -297,6 +303,35 @@ export function buildJt808Frame(opts: Jt808FrameOptions): Buffer {
   const frame = Buffer.concat([inner, Buffer.from([jt808Checksum(inner)])]);
   const escaped = escapeJt808(frame, opts.escape0x7f ?? true);
   return Buffer.concat([Buffer.from([JT808_FLAG]), escaped, Buffer.from([JT808_FLAG])]);
+}
+
+/**
+ * 把一帧按协议结构切成几段：每段一个意思。
+ *
+ * 发出去之前让人逐段核对——消息 ID 对不对、长度填得对不对、
+ * 校验码算得对不对。一整串十六进制看的人眼花，切开就一眼看得出来。
+ *
+ * 显示的是**去转义后**的字节：0x7E、0x7D 那些转义是链路上的事，
+ * 拿它们对着协议看只会看糊涂。
+ */
+export function describeJt808Frame(frame: Buffer): FrameSegment[] {
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  const header = parseJt808Header(inner);
+  const bodyLength = header?.bodyLength ?? 0;
+  const segments: FrameSegment[] = [];
+  const push = (name: string, bytes: Buffer): void => {
+    if (!bytes.length) return;
+    segments.push({ name, hex: bytes.toString('hex').toUpperCase() });
+  };
+  push('帧标志', frame.subarray(0, 1));
+  push('消息体属性', inner.subarray(0, 2));
+  push('序列号', inner.subarray(2, 4));
+  push('消息 ID', inner.subarray(4, 8));
+  push('数据长度', inner.subarray(8, 12));
+  push('数据体', inner.subarray(12, 12 + bodyLength));
+  push('校验码', inner.subarray(12 + bodyLength, 13 + bodyLength));
+  push('帧标志', frame.subarray(frame.length - 1));
+  return segments;
 }
 
 /* ------------------------------ 切帧 ------------------------------ */
@@ -614,20 +649,97 @@ function decodeText(body: Buffer): DecodedField[] {
   return fields;
 }
 
-/** 表单里的数字：十进制或 0x 十六进制 */
-function numArg(args: Record<string, string>, key: string, fallback: number): number {
+/**
+ * 表单里的无符号整数：十进制或 0x 十六进制。
+ *
+ * 超范围当场报错——静默截断会发出去一帧「看着对、其实错」的东西，
+ * 那比报错坏得多：终端不理，人还不知道错在哪。
+ */
+function uintArg(
+  args: Record<string, string>,
+  key: string,
+  label: string,
+  bits: 8 | 16 | 32,
+  fallback: number,
+): number {
   const raw = (args[key] ?? '').trim();
   if (!raw) return fallback;
   const value = raw.toLowerCase().startsWith('0x')
     ? Number.parseInt(raw.slice(2), 16)
     : Number.parseInt(raw, 10);
-  return Number.isFinite(value) ? value : fallback;
+  if (!Number.isFinite(value)) throw new Error(`${label} 不是数字：${raw}`);
+  const max = bits === 8 ? 0xff : bits === 16 ? 0xffff : 0xffffffff;
+  if (value < 0 || value > max) {
+    throw new Error(`${label} 超出 ${bits} 位范围（0 ~ ${max}），现在是 ${value}`);
+  }
+  return value;
+}
+
+/**
+ * 表单里的十六进制整数：消息 ID 这类字段历来写成 0x8101。
+ *
+ * 按十六进制填，不按十进制——人填 8101 指的是 0x8101，
+ * 按十进制解会变成 33025（0x1FA5）：一个合法却完全错误的消息 ID。
+ *
+ * `0x` 前缀可有可无，两种写法都认。
+ */
+function hexUintArg(
+  args: Record<string, string>,
+  key: string,
+  label: string,
+  bits: 8 | 16 | 32,
+  fallback: number,
+): number {
+  const raw = (args[key] ?? '').trim();
+  if (!raw) return fallback;
+  const body = raw.toLowerCase().startsWith('0x') ? raw.slice(2) : raw;
+  if (!/^[0-9a-fA-F]+$/.test(body)) throw new Error(`${label} 不是十六进制：${raw}`);
+  const value = Number.parseInt(body, 16);
+  if (!Number.isFinite(value)) throw new Error(`${label} 不是十六进制：${raw}`);
+  const max = bits === 8 ? 0xff : bits === 16 ? 0xffff : 0xffffffff;
+  if (value < 0 || value > max) {
+    throw new Error(`${label} 超出 ${bits} 位范围（0 ~ ${max}），现在是 ${value}`);
+  }
+  return value;
 }
 
 /** 表单里的十六进制字节：留空就是没有 */
-function hexArg(args: Record<string, string>, key: string): Buffer {
+function hexArg(
+  args: Record<string, string>,
+  key: string,
+  label: string,
+  maxBytes?: number,
+): Buffer {
   const raw = (args[key] ?? '').trim();
-  return raw ? parseHex(raw) : Buffer.alloc(0);
+  if (!raw) return Buffer.alloc(0);
+  const bytes = parseHex(raw); // 长度不是偶数、混进非十六进制字符，这里就报错
+  if (maxBytes !== undefined && bytes.length > maxBytes) {
+    throw new Error(`${label} 最多 ${maxBytes} 字节，现在 ${bytes.length} 字节`);
+  }
+  return bytes;
+}
+
+/**
+ * 表单里的文本：按 UTF-8 发。
+ *
+ * 终端只认 GBK 时，用 hex: 前缀直接给字节。
+ * 长度按字节算——协议限的是字节数，不是字数。
+ */
+function textArg(
+  args: Record<string, string>,
+  key: string,
+  label: string,
+  maxBytes: number,
+): Buffer {
+  const raw = (args[key] ?? '').trim();
+  if (!raw) return Buffer.alloc(0);
+  const bytes = raw.toLowerCase().startsWith('hex:')
+    ? parseHex(raw.slice(4))
+    : Buffer.from(raw, 'utf8');
+  if (bytes.length > maxBytes) {
+    throw new Error(`${label} 最多 ${maxBytes} 字节，现在 ${bytes.length} 字节`);
+  }
+  return bytes;
 }
 
 /**
@@ -651,21 +763,99 @@ const EMPTY_BODY_IDS: Record<string, number> = {
 
 /** 注册应答与补注册应答：正文一样，只有消息 ID 不同 */
 function buildRegisterReply(args: Record<string, string>, messageId: number): Buffer {
-  const seq = numArg(args, 'seq', 0) & 0xffff;
-  const failed = numArg(args, 'result', 0) !== 0;
+  const seq = uintArg(args, 'seq', '应答序列号', 16, 0);
+  const failed = uintArg(args, 'result', '应答标志', 8, 0) !== 0;
   const body = Buffer.alloc(failed ? 4 : 3);
   body.writeUInt16BE(seq, 0);
   body[2] = failed ? 1 : 0;
-  if (failed) body[3] = numArg(args, 'reason', 0) & 0xff;
+  if (failed) body[3] = uintArg(args, 'reason', '失败原因', 8, 0);
   // 鉴权码（2019 版）：填了就带 16 字节，不填说明平台不搞加密
   const auth = (args.authKey ?? '').trim();
   if (auth) {
     const key = parseHex(auth);
+    if (key.length > 16) throw new Error('鉴权码最多 16 字节');
     const full = Buffer.alloc(16);
     key.copy(full, 0, 0, Math.min(16, key.length));
     return buildJt808Frame({ messageId, body: Buffer.concat([body, full]), seq });
   }
   return buildJt808Frame({ messageId, body, seq });
+}
+
+/** 自定义消息里人自己定义的一个字段：按定义拼成字节 */
+function buildCustomField(field: CustomBuildField): Buffer {
+  const label = field.name?.trim() || '字段';
+  const value = (field.value ?? '').trim();
+  switch (field.type) {
+    case 'u8': {
+      const out = Buffer.alloc(1);
+      out.writeUInt8(uintArg({ v: value }, 'v', label, 8, 0), 0);
+      return out;
+    }
+    case 'u16': {
+      const out = Buffer.alloc(2);
+      out.writeUInt16BE(uintArg({ v: value }, 'v', label, 16, 0), 0);
+      return out;
+    }
+    case 'u32': {
+      const out = Buffer.alloc(4);
+      out.writeUInt32BE(uintArg({ v: value }, 'v', label, 32, 0), 0);
+      return out;
+    }
+    case 'hexU8': {
+      const out = Buffer.alloc(1);
+      out.writeUInt8(hexUintArg({ v: value }, 'v', label, 8, 0), 0);
+      return out;
+    }
+    case 'hexU16': {
+      const out = Buffer.alloc(2);
+      out.writeUInt16BE(hexUintArg({ v: value }, 'v', label, 16, 0), 0);
+      return out;
+    }
+    case 'hexU32': {
+      const out = Buffer.alloc(4);
+      out.writeUInt32BE(hexUintArg({ v: value }, 'v', label, 32, 0), 0);
+      return out;
+    }
+    case 'text': {
+      const bytes = value.toLowerCase().startsWith('hex:')
+        ? parseHex(value.slice(4))
+        : Buffer.from(value, 'utf8');
+      const max = field.bytes ?? 255;
+      if (bytes.length > max) throw new Error(`${label} 最多 ${max} 字节，现在 ${bytes.length} 字节`);
+      return bytes;
+    }
+    case 'hex':
+    default: {
+      const bytes = value ? parseHex(value) : Buffer.alloc(0);
+      if (field.bytes !== undefined && bytes.length > field.bytes) {
+        throw new Error(`${label} 最多 ${field.bytes} 字节，现在 ${bytes.length} 字节`);
+      }
+      return bytes;
+    }
+  }
+}
+
+/**
+ * 自定义消息的正文。
+ *
+ * 协议清单里没有的消息，正文得由人按字节定义：
+ * 一行一个字段（名字、类型、宽度、值），服务端照着拼。
+ * 一行定义都没给时，退回整段十六进制——图省事的人也有。
+ */
+function customBody(args: Record<string, string>): Buffer {
+  const raw = (args.customFields ?? '').trim();
+  if (!raw) return hexArg(args, 'body', '消息体', 1024);
+  let list: CustomBuildField[];
+  try {
+    list = JSON.parse(raw) as CustomBuildField[];
+  } catch {
+    throw new Error('自定义字段写得不对，解析不了');
+  }
+  if (!Array.isArray(list)) throw new Error('自定义字段写得不对，得是一个数组');
+  const parts = list
+    .filter((f) => f && (f.name || f.value))
+    .map((f) => buildCustomField(f));
+  return Buffer.concat(parts);
 }
 
 /**
@@ -682,7 +872,7 @@ export function buildJt808Command(request: EncodeRequest): Buffer {
     return buildJt808Frame({
       messageId: empty,
       body: Buffer.alloc(0),
-      seq: numArg(args, 'seq', 0) & 0xffff,
+      seq: uintArg(args, 'seq', '序列号', 16, 0),
     });
   }
 
@@ -692,42 +882,57 @@ export function buildJt808Command(request: EncodeRequest): Buffer {
     case 'platform.reregister.reply':
       return buildRegisterReply(args, 0x8005);
     case 'platform.general.reply': {
-      const failed = numArg(args, 'result', 0) !== 0;
+      const failed = uintArg(args, 'result', '结果', 8, 0) !== 0;
       const body = Buffer.alloc(failed ? 6 : 5);
-      body.writeUInt16BE(numArg(args, 'seq', 0) & 0xffff, 0);
-      body.writeUInt16BE(numArg(args, 'messageId', 0x0200) & 0xffff, 2);
+      body.writeUInt16BE(uintArg(args, 'seq', '应答序列号', 16, 0), 0);
+      body.writeUInt16BE(hexUintArg(args, 'messageId', '被应答的消息 ID', 16, 0x0200), 2);
       body[4] = failed ? 1 : 0;
-      if (failed) body[5] = numArg(args, 'reason', 0) & 0xff;
-      return buildJt808Frame({ messageId: 0x8004, body, seq: numArg(args, 'seq', 0) & 0xffff });
+      if (failed) body[5] = uintArg(args, 'reason', '失败原因', 8, 0);
+      return buildJt808Frame({
+        messageId: 0x8004,
+        body,
+        seq: uintArg(args, 'seq', '应答序列号', 16, 0),
+      });
     }
     case 'platform.text': {
-      const raw = (args.text ?? '').trim();
-      // 文本按 UTF-8 发；终端只认 GBK 时，用 hex: 前缀直接给字节
-      const payload = raw.toLowerCase().startsWith('hex:')
-        ? parseHex(raw.slice(4))
-        : Buffer.from(raw, 'utf8');
-      const body = Buffer.concat([Buffer.from([numArg(args, 'flag', 0) & 0xff]), payload]);
-      return buildJt808Frame({ messageId: 0x8101, body, seq: numArg(args, 'seq', 0) & 0xffff });
+      const payload = textArg(args, 'text', '文本内容', 1023);
+      const body = Buffer.concat([Buffer.from([uintArg(args, 'flag', '标志', 8, 0)]), payload]);
+      return buildJt808Frame({
+        messageId: 0x8101,
+        body,
+        seq: uintArg(args, 'seq', '序列号', 16, 0),
+      });
     }
     case 'platform.vehicle.control': {
       // 指令字 + 指令参数：参数长什么样由指令字说了算，给十六进制最省事
-      const body = Buffer.concat([Buffer.from([numArg(args, 'cmd', 0) & 0xff]), hexArg(args, 'params')]);
-      return buildJt808Frame({ messageId: 0x8100, body, seq: numArg(args, 'seq', 0) & 0xffff });
+      const body = Buffer.concat([
+        Buffer.from([uintArg(args, 'cmd', '指令字', 8, 0)]),
+        hexArg(args, 'params', '指令参数', 255),
+      ]);
+      return buildJt808Frame({
+        messageId: 0x8100,
+        body,
+        seq: uintArg(args, 'seq', '序列号', 16, 0),
+      });
     }
     case 'platform.remote.set': {
       // 参数标识（4 字节）+ 数据体
       const id = Buffer.alloc(4);
-      id.writeUInt32BE(numArg(args, 'paramId', 0) >>> 0, 0);
-      const body = Buffer.concat([id, hexArg(args, 'value')]);
-      return buildJt808Frame({ messageId: 0x8104, body, seq: numArg(args, 'seq', 0) & 0xffff });
+      id.writeUInt32BE(uintArg(args, 'paramId', '参数标识', 32, 0), 0);
+      const body = Buffer.concat([id, hexArg(args, 'value', '参数值', 255)]);
+      return buildJt808Frame({
+        messageId: 0x8104,
+        body,
+        seq: uintArg(args, 'seq', '序列号', 16, 0),
+      });
     }
     case 'platform.custom': {
       // 上面没列的消息：自己给消息 ID 与正文
-      const messageId = numArg(args, 'messageId', 0) >>> 0;
+      const messageId = hexUintArg(args, 'messageId', '消息 ID', 16, 0);
       return buildJt808Frame({
         messageId,
-        body: hexArg(args, 'body'),
-        seq: numArg(args, 'seq', 0) & 0xffff,
+        body: customBody(args),
+        seq: uintArg(args, 'seq', '序列号', 16, 0),
       });
     }
     default:
@@ -745,148 +950,295 @@ export const JT808_BUILDS: ProtocolBuild[] = [
   {
     kind: 'platform.register.reply',
     code: '0x8001',
+    dir: 'down',
     name: '平台注册应答',
     desc: '终端注册（0x0001）的回包。应答序列号要跟终端那一帧对上，终端认了这个才不发注册。',
     fields: [
-      { key: 'seq', label: '应答序列号', required: true, defaultValue: '1', help: '要应答的那一帧的序列号' },
-      { key: 'result', label: '应答标志', defaultValue: '0', help: '0 = 成功，1 = 失败' },
-      { key: 'reason', label: '失败原因', placeholder: '失败时才填', help: '原因码见标准附录' },
-      { key: 'authKey', label: '鉴权码', placeholder: '十六进制，16 字节', help: '2019 版可选；留空表示不加密' },
+      {
+        key: 'seq',
+        label: '应答序列号',
+        type: 'u16',
+        bytes: 2,
+        required: true,
+        defaultValue: '1',
+        help: '要应答的那一帧的序列号',
+      },
+      {
+        key: 'result',
+        label: '应答标志',
+        type: 'u8',
+        bytes: 1,
+        defaultValue: '0',
+        help: '0 = 成功，1 = 失败',
+      },
+      {
+        key: 'reason',
+        label: '失败原因',
+        type: 'u8',
+        bytes: 1,
+        placeholder: '失败时才填',
+        help: '原因码见标准附录',
+      },
+      {
+        key: 'authKey',
+        label: '鉴权码',
+        type: 'hex',
+        bytes: 16,
+        placeholder: '十六进制，16 字节',
+        help: '2019 版可选；留空表示不加密',
+      },
     ],
   },
   {
     kind: 'platform.reregister.reply',
     code: '0x8005',
+    dir: 'down',
     name: '平台补注册应答',
     desc: '终端补注册（0x0005）的回包，正文与注册应答一样。',
     fields: [
-      { key: 'seq', label: '应答序列号', required: true, defaultValue: '1', help: '要应答的那一帧的序列号' },
-      { key: 'result', label: '应答标志', defaultValue: '0', help: '0 = 成功，1 = 失败' },
-      { key: 'reason', label: '失败原因', placeholder: '失败时才填' },
-      { key: 'authKey', label: '鉴权码', placeholder: '十六进制，16 字节', help: '2019 版可选；留空表示不加密' },
+      {
+        key: 'seq',
+        label: '应答序列号',
+        type: 'u16',
+        bytes: 2,
+        required: true,
+        defaultValue: '1',
+        help: '要应答的那一帧的序列号',
+      },
+      {
+        key: 'result',
+        label: '应答标志',
+        type: 'u8',
+        bytes: 1,
+        defaultValue: '0',
+        help: '0 = 成功，1 = 失败',
+      },
+      {
+        key: 'reason',
+        label: '失败原因',
+        type: 'u8',
+        bytes: 1,
+        placeholder: '失败时才填',
+      },
+      {
+        key: 'authKey',
+        label: '鉴权码',
+        type: 'hex',
+        bytes: 16,
+        placeholder: '十六进制，16 字节',
+        help: '2019 版可选；留空表示不加密',
+      },
     ],
   },
   {
     kind: 'platform.logout.reply',
     code: '0x8003',
+    dir: 'down',
     name: '平台注销应答',
     desc: '终端注销（0x0003）的回包，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.heartbeat.reply',
     code: '0x8002',
+    dir: 'down',
     name: '平台心跳应答',
     desc: '终端心跳（0x0002）的回包，正文为空。终端收不到心跳应答会以为平台挂了。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.general.reply',
     code: '0x8004',
+    dir: 'down',
     name: '平台通用应答',
     desc: '应答终端发来的某条消息，比如它报了一次位置。',
     fields: [
-      { key: 'seq', label: '应答序列号', required: true, defaultValue: '1' },
-      { key: 'messageId', label: '被应答的消息 ID', required: true, defaultValue: '0x0200', help: '十六进制，如 0x0200' },
-      { key: 'result', label: '结果', defaultValue: '0', help: '0 = 成功，1 = 失败' },
-      { key: 'reason', label: '失败原因', placeholder: '失败时才填' },
+      {
+        key: 'seq',
+        label: '应答序列号',
+        type: 'u16',
+        bytes: 2,
+        required: true,
+        defaultValue: '1',
+      },
+      {
+        key: 'messageId',
+        label: '被应答的消息 ID',
+        type: 'hexU16',
+        bytes: 2,
+        required: true,
+        defaultValue: '0x0200',
+        help: '按十六进制填，如 0x0200',
+      },
+      {
+        key: 'result',
+        label: '结果',
+        type: 'u8',
+        bytes: 1,
+        defaultValue: '0',
+        help: '0 = 成功，1 = 失败',
+      },
+      {
+        key: 'reason',
+        label: '失败原因',
+        type: 'u8',
+        bytes: 1,
+        placeholder: '失败时才填',
+      },
     ],
   },
   {
     kind: 'platform.text',
     code: '0x8101',
+    dir: 'down',
     name: '文本信息下发',
     desc: '给终端发一段文字。',
     fields: [
-      { key: 'text', label: '文本内容', required: true, help: '中文按 UTF-8 发出；终端只认 GBK 时填 hex:4F60597D' },
-      { key: 'flag', label: '标志', defaultValue: '0' },
+      {
+        key: 'text',
+        label: '文本内容',
+        type: 'text',
+        maxBytes: 1023,
+        required: true,
+        help: '中文按 UTF-8 发出；终端只认 GBK 时填 hex:4F60597D',
+      },
+      { key: 'flag', label: '标志', type: 'u8', bytes: 1, defaultValue: '0' },
     ],
   },
   {
     kind: 'platform.vehicle.control',
     code: '0x8100',
+    dir: 'down',
     name: '车辆控制命令',
     desc: '给车下发控制指令。正文是「指令字 + 指令参数」，参数长什么样由指令字说了算。',
     fields: [
-      { key: 'cmd', label: '指令字', required: true, defaultValue: '0', help: '1 字节，十进制或 0x 开头' },
-      { key: 'params', label: '指令参数', placeholder: '十六进制，可留空', help: '依指令字而定；留空表示无参数' },
+      {
+        key: 'cmd',
+        label: '指令字',
+        type: 'u8',
+        bytes: 1,
+        required: true,
+        defaultValue: '0',
+        help: '十进制或 0x 开头',
+      },
+      {
+        key: 'params',
+        label: '指令参数',
+        type: 'hex',
+        maxBytes: 255,
+        placeholder: '十六进制，可留空',
+        help: '依指令字而定；留空表示无参数',
+      },
     ],
   },
   {
     kind: 'platform.remote.set',
     code: '0x8104',
+    dir: 'down',
     name: '远程设置参数',
     desc: '改终端上的一个参数：参数标识 + 参数值。',
     fields: [
-      { key: 'paramId', label: '参数标识', required: true, defaultValue: '0x0000', help: '4 字节，如 0x0050' },
-      { key: 'value', label: '参数值', placeholder: '十六进制', help: '按参数定义的长度填，如 0x01' },
+      {
+        key: 'paramId',
+        label: '参数标识',
+        type: 'u32',
+        bytes: 4,
+        required: true,
+        defaultValue: '0x0000',
+        help: '如 0x0050',
+      },
+      {
+        key: 'value',
+        label: '参数值',
+        type: 'hex',
+        maxBytes: 255,
+        placeholder: '十六进制',
+        help: '按参数定义的长度填，如 0x01',
+      },
     ],
   },
   {
     kind: 'platform.location.query',
     code: '0x8103',
+    dir: 'down',
     name: '实时位置查询',
     desc: '让终端立刻报一次位置，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.device.query',
     code: '0x8102',
+    dir: 'down',
     name: '查询车载终端设备信息',
     desc: '让终端报一次自己的设备信息，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.register.status.query',
     code: '0x8105',
+    dir: 'down',
     name: '终端注册状态查询',
     desc: '问终端注册上没有，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.gps.status.query',
     code: '0x8106',
+    dir: 'down',
     name: '查询卫星定位状态',
     desc: '问终端现在搜到几颗星，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.navigation.query',
     code: '0x8107',
+    dir: 'down',
     name: '查询导航信息',
     desc: '问终端当前的导航信息，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.roaming.request',
     code: '0x8108',
+    dir: 'down',
     name: '请求终端漫游',
     desc: '要终端跨区漫游，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.monitor.request',
     code: '0x8109',
+    dir: 'down',
     name: '请求人工监听车辆',
     desc: '要平台人工监听这辆车，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.signal.query',
     code: '0x8110',
+    dir: 'down',
     name: '查询车辆信号灯',
     desc: '问车上的信号灯状态，正文为空。',
-    fields: [{ key: 'seq', label: '序列号', defaultValue: '1' }],
+    fields: [{ key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' }],
   },
   {
     kind: 'platform.custom',
     code: '自定义',
+    dir: 'down',
+    custom: true,
     name: '自定义消息',
-    desc: '上面没有的消息：自己给消息 ID 与正文（十六进制）。',
+    desc: '上面没有的消息：自己给消息 ID，正文按字节定义。',
     fields: [
-      { key: 'messageId', label: '消息 ID', required: true, defaultValue: '0x8101', help: '4 字节，如 0x8101' },
-      { key: 'seq', label: '序列号', defaultValue: '1' },
-      { key: 'body', label: '消息体', placeholder: '十六进制，可留空', help: '正文原始字节，十六进制' },
+      {
+        key: 'messageId',
+        label: '消息 ID',
+        type: 'hexU16',
+        bytes: 2,
+        required: true,
+        defaultValue: '0x8101',
+        help: '按十六进制填，如 0x8101',
+      },
+      { key: 'seq', label: '序列号', type: 'u16', bytes: 2, defaultValue: '1' },
     ],
   },
 ];

@@ -793,7 +793,7 @@ export function DocEditor({ doc, onClose }: DocEditorProps) {
   const toolbarGroups: ToolbarItem[][] = [];
   {
     let group: ToolbarItem[] = [];
-    // eslint-disable-next-line react-hooks/refs -- 工具栏 item.action 只在点击时执行，渲染期不会被调用
+    // 工具栏 item.action 只在点击时执行，渲染期不会被调用
     for (const item of toolbarItems) {
       if (item.sep) {
         if (group.length) toolbarGroups.push(group);

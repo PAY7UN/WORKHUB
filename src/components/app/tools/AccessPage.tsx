@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { api, type ToolsCatalog } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import type { ChannelRecord, SerialPortInfo } from '../../../../shared/tools';
+import type { ChannelRecord, FrameSegment, SerialPortInfo } from '../../../../shared/tools';
 import { appliesToTransport } from '../../../../shared/tools';
 import { AccessConfigPanel } from './AccessConfigPanel';
 import { RecordStream } from './RecordStream';
@@ -309,19 +309,44 @@ export function AccessPage() {
    *
    * 组包与发送是同一件事的两面：「发送」是给字节，
    * 「组包」是给参数——由协议决定字节长什么样。
+   *
+   * 发出去的那几字节返回去摆着：发完还知道到底发了什么。
    */
   const handleBuild = useCallback(
-    async (kind: string, args: Record<string, string>, peer?: string) => {
+    async (
+      kind: string,
+      args: Record<string, string>,
+      peer?: string,
+    ): Promise<{ frame: string; segments?: FrameSegment[] } | void> => {
       if (!session) return;
       setBuilding(true);
       try {
         const result = await api.tools.build(session.id, kind, args, peer);
         toast.success(`已发出 ${result.bytes} 字节`);
+        return { frame: result.frame, segments: result.segments };
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err));
       } finally {
         setBuilding(false);
       }
+    },
+    [session],
+  );
+
+  /**
+   * 只组不发：发之前先看一眼这帧长什么样。
+   *
+   * 组错了当场就能看出来，总比发出去等终端不理强。
+   */
+  const handlePreview = useCallback(
+    async (
+      kind: string,
+      args: Record<string, string>,
+      peer?: string,
+    ): Promise<{ frame: string; segments?: FrameSegment[] }> => {
+      if (!session) return { frame: '' };
+      const result = await api.tools.build(session.id, kind, args, peer, true);
+      return { frame: result.frame, segments: result.segments };
     },
     [session],
   );
@@ -512,7 +537,8 @@ export function AccessPage() {
         peers={peers}
         running={running}
         building={building}
-        onBuild={(kind, args, peer) => void handleBuild(kind, args, peer)}
+        onBuild={(kind, args, peer) => handleBuild(kind, args, peer)}
+        onPreview={(kind, args, peer) => handlePreview(kind, args, peer)}
       />
     </div>
   );

@@ -23,6 +23,7 @@ import type {
   ChannelRecord,
   ChannelSession,
   DecodedField,
+  FrameSegment,
   ProtocolDocRef,
   ProtocolTemplate,
   SerialPortInfo,
@@ -759,16 +760,31 @@ export const api = {
      *
      * 能组什么、每条要填哪些参数，由这条通道的解析插件说了算
      * （见 session.builds），界面照着渲染表单，不自己猜协议。
+     *
+     * dryRun 为真时只组不发，返回的是「将要发出去的那几字节」。
      */
     build: async (
       id: string,
       kind: string,
       args: Record<string, string>,
       peer?: string,
-    ): Promise<{ sent: number; frame: string; bytes: number }> => {
-      return request<{ sent: number; frame: string; bytes: number }>(`/tools/sessions/${id}/build`, {
+      dryRun?: boolean,
+    ): Promise<{
+      sent: number;
+      frame: string;
+      bytes: number;
+      dryRun?: boolean;
+      segments?: FrameSegment[];
+    }> => {
+      return request<{
+        sent: number;
+        frame: string;
+        bytes: number;
+        dryRun?: boolean;
+        segments?: FrameSegment[];
+      }>(`/tools/sessions/${id}/build`, {
         method: 'POST',
-        body: JSON.stringify({ kind, args, peer }),
+        body: JSON.stringify({ kind, args, peer, dryRun: dryRun === true }),
       });
     },
 

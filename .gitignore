@@ -52,6 +52,9 @@ logs/
 # 冒烟测试的一次性目录（临时库 + 临时仓库目录，跑完就该删）
 /.smoke/
 
+# 浏览器自测留下的快照与控制台日志（每次跑都会新建一个带时间戳的目录）
+/.playwright-cli/
+
 # 托盘工具的机器相关配置：端口、代码目录、令牌都随机器而异，不该进版本库
 # （样例见 tray/tray.config.example.json）
 tray/tray.config.json

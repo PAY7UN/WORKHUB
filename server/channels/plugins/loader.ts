@@ -21,7 +21,13 @@ import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 import type { PluginManifest } from '../../../shared/plugins.ts';
-import type { ProtocolBuild, ProtocolTemplate, ToolKind, TransportScope } from '../../../shared/tools.ts';
+import type {
+  FrameSegment,
+  ProtocolBuild,
+  ProtocolTemplate,
+  ToolKind,
+  TransportScope,
+} from '../../../shared/tools.ts';
 import type { DecodedFrame, EncodeRequest, FrameSource } from '../parser.ts';
 
 /** 一个已载入的插件 */
@@ -40,6 +46,8 @@ export interface LoadedPlugin {
   encode?(request: EncodeRequest): Buffer | null;
   /** 能组哪些命令（可选）：界面照着渲染表单 */
   builds?: ProtocolBuild[];
+  /** 把组出来的帧按协议结构切成几段（可选）：界面逐段核对用 */
+  describeFrame?(frame: Buffer): FrameSegment[];
 }
 
 /** 载入结果 */
@@ -221,6 +229,10 @@ async function loadOne(dir: string): Promise<LoadedPlugin> {
         ? (request: EncodeRequest) => (mod.encode as (r: EncodeRequest) => Buffer | null)(request)
         : undefined,
     builds: Array.isArray(mod.builds) ? (mod.builds as ProtocolBuild[]) : undefined,
+    describeFrame:
+      typeof mod.describeFrame === 'function'
+        ? (frame: Buffer) => (mod.describeFrame as (f: Buffer) => FrameSegment[])(frame)
+        : undefined,
   };
 }
 

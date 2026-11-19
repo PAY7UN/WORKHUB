@@ -430,3 +430,180 @@ test('那一批查询命令：正文为空，消息 ID 各不相同', () => {
     assert.equal(header?.checksumOk, true);
   }
 });
+
+/* ------------------------------ 按字节填 ------------------------------ */
+
+/**
+ * 每个字段都得说清楚是几个字节、什么类型——
+ * 界面照着它校验，填错当场拦下，而不是发出去一帧看着对其实错的东西。
+ */
+test('每个字段都带着字节宽度与类型', () => {
+  for (const build of JT808_BUILDS) {
+    for (const field of build.fields ?? []) {
+      assert.ok(field.type, `「${build.name}」的「${field.label}」没写类型`);
+      assert.ok(
+        field.bytes !== undefined || field.maxBytes !== undefined,
+        `「${build.name}」的「${field.label}」没写字节宽度`,
+      );
+      // 定长类型的字节数得对得上
+      if (field.type === 'u8') assert.equal(field.bytes, 1, `「${field.label}」该是 1 字节`);
+      if (field.type === 'u16') assert.equal(field.bytes, 2, `「${field.label}」该是 2 字节`);
+      if (field.type === 'u32') assert.equal(field.bytes, 4, `「${field.label}」该是 4 字节`);
+    }
+  }
+});
+
+test('超出字节范围的数要报错，不能悄悄截断', () => {
+  // 序列号是 2 字节：70000 截断成 4464 会发出去一帧看着对、其实错的东西
+  assert.throws(
+    () => buildJt808Command({ kind: 'platform.heartbeat.reply', args: { seq: '70000' } }),
+    /16 位范围/,
+  );
+  assert.throws(
+    () => buildJt808Command({ kind: 'platform.vehicle.control', args: { cmd: '256' } }),
+    /8 位范围/,
+  );
+});
+
+test('十六进制填成奇数个字符要报错', () => {
+  assert.throws(
+    () => buildJt808Command({ kind: 'platform.vehicle.control', args: { cmd: '0', params: 'ABC' } }),
+    /十六进制/,
+  );
+});
+
+test('定长字节超了要报错', () => {
+  assert.throws(
+    () =>
+      buildJt808Command({
+        kind: 'platform.register.reply',
+        args: { seq: '1', authKey: '00112233445566778899AABBCCDDEEFF00' },
+      }),
+    /最多 16 字节/,
+  );
+});
+
+test('文本超长要报错——协议限的是字节数，不是字数', () => {
+  assert.throws(
+    () => buildJt808Command({ kind: 'platform.text', args: { text: '啊'.repeat(1100) } }),
+    /最多 1023 字节/,
+  );
+});
+
+test('自定义消息：正文按人定义的字段拼', () => {
+  const fields = [
+    { name: '参数标识', type: 'u32' as const, value: '0x0050' },
+    { name: '参数值', type: 'hex' as const, bytes: 1, value: '01' },
+    { name: '备注', type: 'text' as const, bytes: 16, value: 'OK' },
+  ];
+  const frame = buildJt808Command({
+    kind: 'platform.custom',
+    args: { messageId: '0x8104', seq: '7', customFields: JSON.stringify(fields) },
+  });
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  const header = parseJt808Header(inner);
+  assert.equal(header?.messageId, 0x8104);
+  const body = inner.subarray(12, inner.length - 1);
+  // 4 字节参数标识 + 1 字节参数值 + 2 字节文本
+  assert.equal(body.length, 7);
+  assert.equal(body.readUInt32BE(0), 0x0050);
+  assert.equal(body[4], 0x01);
+  assert.equal(body.subarray(5).toString('utf8'), 'OK');
+});
+
+test('自定义消息：人定义的字段超了上限要报错', () => {
+  const fields = [{ name: '短字段', type: 'hex' as const, bytes: 1, value: 'AABB' }];
+  assert.throws(
+    () =>
+      buildJt808Command({
+        kind: 'platform.custom',
+        args: { messageId: '0x8104', customFields: JSON.stringify(fields) },
+      }),
+    /最多 1 字节/,
+  );
+});
+
+/* --------------------------- 消息 ID 按十六进制填 --------------------------- */
+
+/**
+ * 消息 ID 在 JT/T 808 里历来写成 0x8101。
+ *
+ * 按十进制填 8101 会被当成 33025（0x1FA5）——一个完全合法、
+ * 却完全不是那个意思的消息 ID，静默发出去最坏。
+ */
+test('消息 ID 按十六进制填：写 8101 就是 0x8101，不是 33025', () => {
+  for (const raw of ['8101', '0x8101', '0X8101']) {
+    const frame = buildJt808Command({
+      kind: 'platform.custom',
+      args: { messageId: raw, seq: '1' },
+    });
+    const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+    const header = parseJt808Header(inner);
+    assert.equal(header?.messageId, 0x8101, `写成 ${raw} 时消息 ID 不对`);
+  }
+});
+
+test('消息 ID 不是十六进制要报错', () => {
+  assert.throws(
+    () => buildJt808Command({ kind: 'platform.custom', args: { messageId: '0x81ZZ' } }),
+    /不是十六进制/,
+  );
+});
+
+test('消息 ID 超出 16 位要报错，不能截断', () => {
+  assert.throws(
+    () => buildJt808Command({ kind: 'platform.custom', args: { messageId: '0x1FFFF' } }),
+    /16 位范围/,
+  );
+});
+
+test('被应答的消息 ID 也按十六进制填', () => {
+  const frame = buildJt808Command({
+    kind: 'platform.general.reply',
+    args: { seq: '1', messageId: '0200', result: '0' },
+  });
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  const header = parseJt808Header(inner);
+  assert.equal(header?.messageId, 0x8004);
+  // 正文第 2 字节起是被应答的消息 ID
+  const body = inner.subarray(12, inner.length - 1);
+  assert.equal(body.readUInt16BE(2), 0x0200);
+});
+
+test('自定义字段也能用十六进制整数', () => {
+  const fields = [
+    { name: '设备号', type: 'hexU16' as const, bytes: 2, value: '1234' },
+    { name: '标志', type: 'hexU8' as const, bytes: 1, value: '0x0F' },
+  ];
+  const frame = buildJt808Command({
+    kind: 'platform.custom',
+    args: { messageId: '0x8104', seq: '1', customFields: JSON.stringify(fields) },
+  });
+  const inner = unescapeJt808(frame.subarray(1, frame.length - 1));
+  const body = inner.subarray(12, inner.length - 1);
+  assert.equal(body.length, 3);
+  assert.equal(body.readUInt16BE(0), 0x1234);
+  assert.equal(body[2], 0x0f);
+});
+
+test('自定义字段的十六进制整数超范围要报错', () => {
+  const fields = [{ name: '设备号', type: 'hexU16' as const, bytes: 2, value: '1FFFF' }];
+  assert.throws(
+    () =>
+      buildJt808Command({
+        kind: 'platform.custom',
+        args: { messageId: '0x8104', customFields: JSON.stringify(fields) },
+      }),
+    /16 位范围/,
+  );
+});
+
+test('十六进制整数类型的字段必须写清字节宽度', () => {
+  for (const build of JT808_BUILDS) {
+    for (const field of build.fields ?? []) {
+      if (field.type === 'hexU8') assert.equal(field.bytes, 1, `「${field.label}」该是 1 字节`);
+      if (field.type === 'hexU16') assert.equal(field.bytes, 2, `「${field.label}」该是 2 字节`);
+      if (field.type === 'hexU32') assert.equal(field.bytes, 4, `「${field.label}」该是 4 字节`);
+    }
+  }
+});

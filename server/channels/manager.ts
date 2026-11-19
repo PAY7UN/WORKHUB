@@ -14,6 +14,7 @@ import type {
   ChannelRecord,
   ChannelSession,
   ChannelStatus,
+  FrameSegment,
   ProtocolTemplate,
   ToolKind,
 } from '../../shared/tools.ts';
@@ -311,20 +312,28 @@ export class ChannelManager {
    * 「解析」是收到字节读成人话，「组包」反过来：
    * 人给几个参数，组装成字节发出去。能组什么、参数怎么填，
    * 由这套协议的解码器说了算（见 NamedDecoder.builds）。
+   *
+   * dryRun 只组不发：发之前先看一眼这帧长什么样。
+   * 组错了当场就能看出来，总比发出去等终端不理强。
    */
   async buildFrame(
     id: string,
     request: EncodeRequest,
     peer?: string,
-  ): Promise<{ frame: Buffer; sent: number }> {
+    dryRun = false,
+  ): Promise<{ frame: Buffer; sent: number; segments: FrameSegment[] }> {
     const session = this.sessions.get(id);
     if (!session) throw new Error('通道不存在');
     const plugin = session.plugin;
     if (!plugin?.encode) throw new Error('当前协议不支持组包');
     const frame = plugin.encode(request);
     if (!frame || !frame.length) throw new Error('组包失败：这条命令没组出字节');
+    // 按协议结构切段：发之前让人逐段核对
+    const segments = plugin.describeFrame?.(frame) ?? [];
+    // 只组不发：发之前先看一眼这帧长什么样
+    if (dryRun) return { frame, sent: 0, segments };
     const sent = await this.send(id, frame, peer);
-    return { frame, sent };
+    return { frame, sent, segments };
   }
 
   /** 把一段字节解成待发送的载荷 */
