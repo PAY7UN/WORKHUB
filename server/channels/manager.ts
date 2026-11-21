@@ -26,6 +26,7 @@ import {
   transportScopeText,
 } from '../../shared/tools.ts';
 import { ConfigError, normalizeConfig } from './config.ts';
+import { appPortOwner } from './appPorts.ts';
 import { findPlugin, findTemplateById, type PluginEntry } from './plugins/registry.ts';
 import type { ChannelDriver, DriverHandlers } from './driver.ts';
 import { decodeFrame, FrameParser, parseHex, type EncodeRequest, type FrameSource } from './parser.ts';
@@ -140,6 +141,24 @@ export class ChannelManager {
   /** 开启一个通道 */
   async start(input: StartSessionInput): Promise<ChannelSession> {
     const normalized = normalizeConfig(input.tool, input.config ?? {});
+
+    /**
+     * 网口监听不能占应用自己的端口。
+     *
+     * 占了自己就把自己堵死了：浏览器发来的请求会被这个原始 TCP 监听接走，
+     * 页面永远转圈，连这个监听都关不掉（关它也得先连得上服务端）。
+     * 与其让人陷进去再自己摸出来，不如在开之前就说清楚。
+     */
+    if (input.tool === 'tcp' && normalized.config.mode === 'listen') {
+      const owner = appPortOwner(Number(normalized.config.port));
+      if (owner) {
+        throw new ConfigError(
+          `端口 ${owner.port} 是本应用自己用的（${owner.what}），换一个没被占用的端口` +
+            '——监听到这个端口上，网页的请求会被自己的监听接走，页面就打不开了',
+        );
+      }
+    }
+
     // 协议是这一次选的：选了就按它来，没选就是调试模式（只记原始字节）
     const template = input.template ?? (await findTemplateById(input.protocolId ?? '')) ?? RAW_TEMPLATE;
     // 解析插件：人指定了就用它，没指定就跟协议走（协议自带的默认插件）

@@ -114,6 +114,22 @@ export function AccessConfigPanel({
   /** 这一栏是不是串口：串口才有「本机口列表」与「串口不可用」这回事 */
   const isSerial = tool.fields.some((f) => f.dynamic === 'serial-ports');
 
+  /**
+   * 端口是不是撞上了应用自己的。
+   *
+   * 撞上的后果不是「监听失败」，是「网页自己打不开了」：
+   * 浏览器发来的请求会被这个原始 TCP 监听接走（它说的是协议帧，不是 HTTP），
+   * 页面永远转圈，连这个监听都关不掉——关它也得先连得上服务端。
+   * 所以在填参数时就摆出来，别等人开完监听才发现网页废了。
+   */
+  const portConflict = useMemo(() => {
+    if (tool.id !== 'tcp') return null;
+    if ((values.mode ?? 'listen') !== 'listen') return null;
+    const port = Number(values.port);
+    if (!Number.isFinite(port)) return null;
+    return catalog.reservedPorts?.find((p) => p.port === port) ?? null;
+  }, [tool.id, values.mode, values.port, catalog.reservedPorts]);
+
   /** 串口字段：扫到口就用下拉，扫不到就手填路径 */
   const renderSerialPort = (field: ToolField): ReactElement => {
     const byHand = serialPorts.length === 0;
@@ -216,6 +232,14 @@ export function AccessConfigPanel({
           field.dynamic === 'serial-ports' ? renderSerialPort(field) : renderField(field),
         )}
       </section>
+
+      {/* 端口撞上应用自己：现在就摆出来，别等开完监听才发现网页打不开了 */}
+      {portConflict ? (
+        <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10px] leading-relaxed text-amber-700">
+          <span className="shrink-0">端口 {portConflict.port} 是本应用自己用的（{portConflict.what}）：</span>
+          <span>监听到这个端口上，网页的请求会被自己的监听接走，页面就打不开了。换个端口。</span>
+        </div>
+      ) : null}
 
       {/* 协议类型：选它就是选解析插件 */}
       <section className="flex flex-col gap-1.5 border-t border-border/60 pt-3">

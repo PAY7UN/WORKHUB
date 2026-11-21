@@ -107,6 +107,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 请求超时：超过这个时间还没回来，就算它失败。
+ *
+ * 少了它，请求一旦卡住就是永远卡住——界面上一圈「正在读取…」转到底，
+ * 既不报错也不重试，看起来像「没有数据」，其实是压根没连上。
+ *
+ * 常见的卡住原因：通道监听占用了网页自己的端口，
+ * 浏览器发来的请求被那个原始 TCP 监听接走了（它说的是协议帧，不是 HTTP）。
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
@@ -118,12 +129,38 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let res: Response;
+  // 自己控超时：调用方给的 signal 也一并接上，中途取消同样要真的停
+  const controller = new AbortController();
+  const callerSignal = init.signal;
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
   try {
     // credentials: 'include' —— 访客会话在 httpOnly cookie 里，不带上的话
     // 申请与授权都认不出「是谁」
-    res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' });
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers,
+      credentials: 'include',
+      signal: controller.signal,
+    });
   } catch {
+    if (timedOut) {
+      throw new ApiError(
+        `请求超时（${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒没等到服务端）：` +
+          '若通道监听占用了网页自己的端口，网页就会这样——换个监听端口再试',
+        0,
+      );
+    }
     throw new ApiError('无法连接服务端，请确认后端已启动（端口见 .env 的 WORKHUB_PORT）', 0);
+  } finally {
+    clearTimeout(timer);
   }
 
   // 只有服务端明确标记「令牌已过期/失效」时才清登录态。
@@ -234,6 +271,11 @@ export interface ToolsCatalog {
   /** 插件装载时的警告：插件坏了要让人看见，但不该拦住别的功能 */
   pluginWarnings: string[];
   serial: { available: boolean; reason: string };
+  /**
+   * 应用自己占着的端口：监听到这些端口上，网页会被自己的监听堵死。
+   * 界面据此在填参数时就提醒，而不是让人开完监听才发现网页打不开了。
+   */
+  reservedPorts?: { port: number; what: string }[];
 }
 
 /** 开启通道的请求体 */

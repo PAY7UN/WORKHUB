@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Cable, ChevronRight, Loader2, Network, Square } from 'lucide-react';
+import { Cable, ChevronRight, Loader2, Network, RefreshCw, Square, TriangleAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, type ToolsCatalog } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
@@ -47,13 +47,21 @@ export function ToolsPage() {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [sessions, setSessions] = useState<ChannelSession[]>([]);
   const [loading, setLoading] = useState(true);
+  /** 工具目录读不到时的原因（空串 = 读到了） */
+  const [catalogError, setCatalogError] = useState('');
+  /** 通道列表读不到时的原因（空串 = 读到了） */
+  const [sessionsError, setSessionsError] = useState('');
+  /** 能力清单读到没有：读不到时不能拿 0 冒充「一项都没有」 */
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
 
   /** 读工具目录 */
   const loadCatalog = useCallback(async () => {
+    setLoading(true);
     try {
       setCatalog(await api.tools.catalog());
+      setCatalogError('');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '读取工具目录失败');
+      setCatalogError(err instanceof Error ? err.message : '读取工具目录失败');
     } finally {
       setLoading(false);
     }
@@ -63,8 +71,9 @@ export function ToolsPage() {
   const loadSessions = useCallback(async () => {
     try {
       setSessions(await api.tools.sessions());
-    } catch {
-      /* 拿不到就先空着，不打断页面 */
+      setSessionsError('');
+    } catch (err) {
+      setSessionsError(err instanceof Error ? err.message : '读不到通道列表');
     }
   }, []);
 
@@ -73,6 +82,7 @@ export function ToolsPage() {
     try {
       const result = await api.skills.list();
       setSkills(result.skills);
+      setSkillsLoaded(true);
     } catch {
       /* 拿不到就不显示数量，不影响别的 */
     }
@@ -144,6 +154,8 @@ export function ToolsPage() {
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             正在读取工具目录…
           </div>
+        ) : catalogError ? (
+          <ErrorBox message={catalogError} onRetry={() => void loadCatalog()} />
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
             {categories.map((category) => {
@@ -185,7 +197,9 @@ export function ToolsPage() {
           <Badge variant={running.length ? 'default' : 'secondary'}>{running.length}</Badge>
         </div>
 
-        {running.length === 0 ? (
+        {sessionsError ? (
+          <ErrorBox message={`读不到通道列表：${sessionsError}`} onRetry={() => void loadSessions()} />
+        ) : running.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border/70 px-4 py-6 text-center text-[12px] text-muted-foreground">
             现在没有通道在跑。上面挑一个接入方式，进去开一个。
           </div>
@@ -257,18 +271,40 @@ export function ToolsPage() {
         <div className="grid gap-2.5 sm:grid-cols-2">
           <JumpCard
             title="支持的协议"
-            count={`${protocols.length} 套`}
+            count={catalogError ? '—' : `${protocols.length} 套`}
             desc="字节按哪一套切帧、按哪一套读"
             onClick={() => navigate('/tools/protocols')}
           />
           <JumpCard
             title="能力清单"
-            count={`${skills.length} 项`}
+            count={skillsLoaded ? `${skills.length} 项` : '—'}
             desc="接进来之后能干哪些活"
             onClick={() => navigate('/tools/capabilities')}
           />
         </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * 读不到东西时要说清楚。
+ *
+ * 早先这里把失败当成「空」：读不到通道就摆一句「现在没有通道在跑」，
+ * 读不到能力就摆一个「0 项」。看着像「本来就没有」，
+ * 实际上是没连上——人于是盯着空页面找原因，越找越没头绪。
+ */
+function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-rose-500/40 bg-rose-500/5 px-3.5 py-3">
+      <span className="flex items-start gap-1.5 text-[12px] leading-relaxed text-rose-600">
+        <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>{message}</span>
+      </span>
+      <Button size="sm" variant="outline" className="w-fit" onClick={onRetry}>
+        <RefreshCw className="h-3.5 w-3.5" />
+        重试
+      </Button>
     </div>
   );
 }

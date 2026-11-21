@@ -25,6 +25,7 @@ import {
 } from '../../shared/tools.ts';
 import type { PluginSummary } from '../../shared/plugins.ts';
 import { ConfigError } from './config.ts';
+import { reservedAppPorts } from './appPorts.ts';
 import { ChannelManager, channelManager, type ChannelEvent } from './manager.ts';
 import { decodeFrame, parseHex } from './parser.ts';
 import { findPlugin, findTemplateById, listPlugins, listTemplates, pluginWarnings, refreshPluginRegistry } from './plugins/registry.ts';
@@ -101,6 +102,8 @@ export function createToolsRouter(): Router {
         plugins: pluginBriefs(plugins),
         pluginWarnings: warnings,
         serial,
+        // 应用自己占着的端口：界面据此提醒人别把监听开到这些端口上
+        reservedPorts: reservedAppPorts(),
       });
     } catch (err) {
       fail(res, err, '读取工具目录失败');
