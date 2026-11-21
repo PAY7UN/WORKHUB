@@ -36,6 +36,7 @@
     "dev:all": "concurrently -n api,web -c magenta,cyan \"npm run server\" \"npm run dev\"",
     "admin:password": "node --env-file-if-exists=.env server/resetAdminPassword.ts",
     "manage:token": "node --env-file-if-exists=.env server/manageToken.ts",
+    "manage:channels": "node --env-file-if-exists=.env server/manageChannels.ts",
     "service:install": "powershell -ExecutionPolicy Bypass -File scripts/install-service.ps1",
     "service:uninstall": "powershell -ExecutionPolicy Bypass -File scripts/uninstall-service.ps1",
     "deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1",
